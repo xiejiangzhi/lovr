@@ -3,6 +3,7 @@
 #include "util.h"
 #include <stdlib.h>
 #include <string.h>
+#include <lj_obj.h>
 
 int l_lovrRandomGeneratorRandom(lua_State* L);
 int l_lovrRandomGeneratorRandomNormal(lua_State* L);
@@ -46,8 +47,20 @@ static void luax_destroypool(void) {
 }
 
 float* luax_tovector(lua_State* L, int index, VectorType* type) {
-  void* p = lua_touserdata(L, index);
+  if (lua_type(L, index) == LUA_TCDATA) {
+    /* Calculate absolute value in the stack. */
+    if (index < 0)
+        index = lua_gettop(L) + index + 1;
+    GCcdata *cd = cdataV(L->base + index - 1);
+    // *ctypeid = cd->ctypeid;
+    Vector v = { .pointer = *(void **)cdataptr(cd) };
+    if (v.handle.type > V_NONE && v.handle.type < MAX_VECTOR_TYPES) {
+      *type = v.handle.type;
+      return lovrPoolResolve(pool, v);
+    }
+  }
 
+  void* p = lua_touserdata(L, index);
   if (p) {
     if (lua_type(L, index) == LUA_TLIGHTUSERDATA) {
       Vector v = { .pointer = p };
@@ -277,6 +290,19 @@ static int l_lovrMathDrain(lua_State* L) {
   return 0;
 }
 
+static int l_lovrPoolAddrNum(lua_State* L) {
+  lua_pushinteger(L, lovrPoolAddr(pool));
+  return 1;
+}
+
+static int l_lovrPoolAlloc(lua_State* L) {
+  VectorType type = lua_tointeger(L, 1);
+  float* data;
+  Vector vector = lovrPoolAllocate(pool, type, &data);
+  lua_pushinteger(L, (intptr_t)vector.pointer);
+  return 1;
+}
+
 static const luaL_Reg lovrMath[] = {
   { "newCurve", l_lovrMathNewCurve },
   { "newRandomGenerator", l_lovrMathNewRandomGenerator },
@@ -293,6 +319,8 @@ static const luaL_Reg lovrMath[] = {
   { "newQuat", l_lovrMathNewQuat },
   { "newMat4", l_lovrMathNewMat4 },
   { "drain", l_lovrMathDrain },
+  { "getPoolAddrNum", l_lovrPoolAddrNum },
+  { "poolAlloc", l_lovrPoolAlloc },
   { NULL, NULL }
 };
 

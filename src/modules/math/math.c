@@ -278,6 +278,10 @@ void lovrPoolDrain(Pool* pool) {
   pool->generation = (pool->generation + 1) & 0xf;
 }
 
+intptr_t lovrPoolAddr(Pool* pool) {
+  return pool->data;
+}
+
 // RandomGenerator (compatible with LÖVE's)
 
 // Thomas Wang's 64-bit integer hashing function:

@@ -59,6 +59,7 @@ void lovrPoolGrow(Pool* pool, size_t count);
 Vector lovrPoolAllocate(Pool* pool, VectorType type, float** data);
 float* lovrPoolResolve(Pool* pool, Vector vector);
 void lovrPoolDrain(Pool* pool);
+intptr_t lovrPoolAddr(Pool* pool);
 
 // RandomGenerator
 

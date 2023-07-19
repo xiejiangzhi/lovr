@@ -1,6 +1,7 @@
 #include "api.h"
 #include "core/maf.h"
 #include "util.h"
+#include "lj_obj.h"
 
 #define EQ_THRESHOLD 1e-10f
 
@@ -158,6 +159,7 @@ int luax_readmat4(lua_State* L, int index, mat4 m, int scaleComponents) {
 
     case LUA_TLIGHTUSERDATA:
     case LUA_TUSERDATA:
+    case LUA_TCDATA:
     default: {
       VectorType type;
       float* p = luax_tovector(L, index, &type);
