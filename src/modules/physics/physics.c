@@ -359,7 +359,9 @@ bool lovrWorldQuerySphere(World* world, float position[3], float radius, QueryCa
 }
 
 bool lovrWorldQueryTriangle(World* world, float vertices[9], QueryCallback callback, void* userdata) {
-  QueryData data = { .callback = callback, .userdata = userdata, .called = false, .shouldStop = false };
+  QueryData data = {
+    .callback = callback, .userdata = userdata, .called = false, .shouldStop = false, .tagFilter = false
+  };
 
   dTriIndex indices[3] = { 0, 1, 2 };
 
