@@ -125,7 +125,9 @@ XR_FOREACH(XR_DECLARE)
 XR_FOREACH_PLATFORM(XR_DECLARE)
 
 enum {
-  ACTION_HAND_POSE,
+  ACTION_PINCH_POSE,
+  ACTION_POKE_POSE,
+  ACTION_GRIP_POSE,
   ACTION_POINTER_POSE,
   ACTION_TRACKER_POSE,
   ACTION_GAZE_POSE,
@@ -204,6 +206,7 @@ static struct {
     bool controllerModel;
     bool depth;
     bool gaze;
+    bool handInteraction;
     bool handTracking;
     bool handTrackingAim;
     bool handTrackingElbow;
@@ -320,7 +323,15 @@ static XrAction getPoseActionForDevice(Device device) {
       return XR_NULL_HANDLE; // Uses reference space
     case DEVICE_HAND_LEFT:
     case DEVICE_HAND_RIGHT:
-      return state.actions[ACTION_HAND_POSE];
+    case DEVICE_HAND_LEFT_GRIP:
+    case DEVICE_HAND_RIGHT_GRIP:
+      return state.actions[ACTION_GRIP_POSE];
+    case DEVICE_HAND_LEFT_PINCH:
+    case DEVICE_HAND_RIGHT_PINCH:
+      return state.features.handInteraction ? state.actions[ACTION_PINCH_POSE] : XR_NULL_HANDLE;
+    case DEVICE_HAND_LEFT_POKE:
+    case DEVICE_HAND_RIGHT_POKE:
+      return state.features.handInteraction ? state.actions[ACTION_POKE_POSE] : XR_NULL_HANDLE;
     case DEVICE_HAND_LEFT_POINT:
     case DEVICE_HAND_RIGHT_POINT:
       return state.actions[ACTION_POINTER_POSE];
@@ -438,7 +449,8 @@ static void openxr_destroy();
 static bool openxr_init(HeadsetConfig* config) {
   state.config = *config;
 
-#ifdef __ANDROID__
+  // Loader
+#if defined(__ANDROID__)
   static PFN_xrInitializeLoaderKHR xrInitializeLoaderKHR;
   XR_LOAD(xrInitializeLoaderKHR);
   if (!xrInitializeLoaderKHR) {
@@ -453,6 +465,12 @@ static bool openxr_init(HeadsetConfig* config) {
 
   if (XR_FAILED(xrInitializeLoaderKHR((XrLoaderInitInfoBaseHeaderKHR*) &loaderInfo))) {
     return false;
+  }
+#elif defined(__linux__) || defined(__APPLE__)
+  setenv("XR_LOADER_DEBUG", "none", 0);
+#elif defined(_WIN32)
+  if (GetEnvironmentVariable("XR_LOADER_DEBUG", NULL, 0) == 0 && GetLastError() == ERROR_ENVVAR_NOT_FOUND) {
+    SetEnvironmentVariable("XR_LOADER_DEBUG", "none");
   }
 #endif
 
@@ -487,6 +505,7 @@ static bool openxr_init(HeadsetConfig* config) {
       { "XR_KHR_convert_timespec_time", NULL, true },
 #endif
       { "XR_EXT_eye_gaze_interaction", &state.features.gaze, true },
+      { "XR_EXT_hand_interaction", &state.features.handInteraction, true },
       { "XR_EXT_hand_tracking", &state.features.handTracking, true },
       { "XR_EXT_local_floor", &state.features.localFloor, true },
       { "XR_BD_controller_interaction", &state.features.picoController, true },
@@ -626,8 +645,14 @@ static bool openxr_init(HeadsetConfig* config) {
     XR_INIT(xrStringToPath(state.instance, "/user/hand/left", &state.actionFilters[DEVICE_HAND_LEFT]), "Failed to create path");
     XR_INIT(xrStringToPath(state.instance, "/user/hand/right", &state.actionFilters[DEVICE_HAND_RIGHT]), "Failed to create path");
 
+    state.actionFilters[DEVICE_HAND_LEFT_GRIP] = state.actionFilters[DEVICE_HAND_LEFT];
     state.actionFilters[DEVICE_HAND_LEFT_POINT] = state.actionFilters[DEVICE_HAND_LEFT];
+    state.actionFilters[DEVICE_HAND_LEFT_PINCH] = state.actionFilters[DEVICE_HAND_LEFT];
+    state.actionFilters[DEVICE_HAND_LEFT_POKE] = state.actionFilters[DEVICE_HAND_LEFT];
+    state.actionFilters[DEVICE_HAND_RIGHT_GRIP] = state.actionFilters[DEVICE_HAND_RIGHT];
     state.actionFilters[DEVICE_HAND_RIGHT_POINT] = state.actionFilters[DEVICE_HAND_RIGHT];
+    state.actionFilters[DEVICE_HAND_RIGHT_PINCH] = state.actionFilters[DEVICE_HAND_RIGHT];
+    state.actionFilters[DEVICE_HAND_RIGHT_POKE] = state.actionFilters[DEVICE_HAND_RIGHT];
 
     if (state.features.viveTrackers) {
       XR_INIT(xrStringToPath(state.instance, "/user/vive_tracker_htcx/role/left_elbow", &state.actionFilters[DEVICE_ELBOW_LEFT]), "Failed to create path");
@@ -665,7 +690,9 @@ static bool openxr_init(HeadsetConfig* config) {
     };
 
     XrActionCreateInfo actionInfo[] = {
-      { 0, NULL, "hand_pose",        XR_ACTION_TYPE_POSE_INPUT,       2, hands, "Hand Pose" },
+      { 0, NULL, "pinch_pose",       XR_ACTION_TYPE_POSE_INPUT,       2, hands, "Pinch Pose" },
+      { 0, NULL, "poke_pose",        XR_ACTION_TYPE_POSE_INPUT,       2, hands, "Poke Pose" },
+      { 0, NULL, "grip_pose",        XR_ACTION_TYPE_POSE_INPUT,       2, hands, "Grip Pose" },
       { 0, NULL, "pointer_pose",     XR_ACTION_TYPE_POSE_INPUT,       2, hands, "Pointer Pose" },
       { 0, NULL, "tracker_pose",     XR_ACTION_TYPE_POSE_INPUT,       12, trackers, "Tracker Pose" },
       { 0, NULL, "gaze_pose",        XR_ACTION_TYPE_POSE_INPUT,       0, NULL, "Gaze Pose" },
@@ -748,8 +775,12 @@ static bool openxr_init(HeadsetConfig* config) {
 
     Binding* bindings[] = {
       [PROFILE_SIMPLE] = (Binding[]) {
-        { ACTION_HAND_POSE, "/user/hand/left/input/grip/pose" },
-        { ACTION_HAND_POSE, "/user/hand/right/input/grip/pose" },
+        { ACTION_PINCH_POSE, "/user/hand/left/pinch_ext/pose" },
+        { ACTION_PINCH_POSE, "/user/hand/right/pinch_ext/pose" },
+        { ACTION_POKE_POSE, "/user/hand/left/poke_ext/pose" },
+        { ACTION_POKE_POSE, "/user/hand/right/poke_ext/pose" },
+        { ACTION_GRIP_POSE, "/user/hand/left/input/grip/pose" },
+        { ACTION_GRIP_POSE, "/user/hand/right/input/grip/pose" },
         { ACTION_POINTER_POSE, "/user/hand/left/input/aim/pose" },
         { ACTION_POINTER_POSE, "/user/hand/right/input/aim/pose" },
         { ACTION_TRIGGER_DOWN, "/user/hand/left/input/select/click" },
@@ -761,8 +792,12 @@ static bool openxr_init(HeadsetConfig* config) {
         { 0, NULL }
       },
       [PROFILE_VIVE] = (Binding[]) {
-        { ACTION_HAND_POSE, "/user/hand/left/input/grip/pose" },
-        { ACTION_HAND_POSE, "/user/hand/right/input/grip/pose" },
+        { ACTION_PINCH_POSE, "/user/hand/left/pinch_ext/pose" },
+        { ACTION_PINCH_POSE, "/user/hand/right/pinch_ext/pose" },
+        { ACTION_POKE_POSE, "/user/hand/left/poke_ext/pose" },
+        { ACTION_POKE_POSE, "/user/hand/right/poke_ext/pose" },
+        { ACTION_GRIP_POSE, "/user/hand/left/input/grip/pose" },
+        { ACTION_GRIP_POSE, "/user/hand/right/input/grip/pose" },
         { ACTION_POINTER_POSE, "/user/hand/left/input/aim/pose" },
         { ACTION_POINTER_POSE, "/user/hand/right/input/aim/pose" },
         { ACTION_TRIGGER_DOWN, "/user/hand/left/input/trigger/click" },
@@ -786,8 +821,12 @@ static bool openxr_init(HeadsetConfig* config) {
         { 0, NULL }
       },
       [PROFILE_TOUCH] = (Binding[]) {
-        { ACTION_HAND_POSE, "/user/hand/left/input/grip/pose" },
-        { ACTION_HAND_POSE, "/user/hand/right/input/grip/pose" },
+        { ACTION_PINCH_POSE, "/user/hand/left/pinch_ext/pose" },
+        { ACTION_PINCH_POSE, "/user/hand/right/pinch_ext/pose" },
+        { ACTION_POKE_POSE, "/user/hand/left/poke_ext/pose" },
+        { ACTION_POKE_POSE, "/user/hand/right/poke_ext/pose" },
+        { ACTION_GRIP_POSE, "/user/hand/left/input/grip/pose" },
+        { ACTION_GRIP_POSE, "/user/hand/right/input/grip/pose" },
         { ACTION_POINTER_POSE, "/user/hand/left/input/aim/pose" },
         { ACTION_POINTER_POSE, "/user/hand/right/input/aim/pose" },
         { ACTION_TRIGGER_DOWN, "/user/hand/left/input/trigger/value" },
@@ -825,8 +864,12 @@ static bool openxr_init(HeadsetConfig* config) {
         { 0, NULL }
       },
       [PROFILE_GO] = (Binding[]) {
-        { ACTION_HAND_POSE, "/user/hand/left/input/grip/pose" },
-        { ACTION_HAND_POSE, "/user/hand/right/input/grip/pose" },
+        { ACTION_PINCH_POSE, "/user/hand/left/pinch_ext/pose" },
+        { ACTION_PINCH_POSE, "/user/hand/right/pinch_ext/pose" },
+        { ACTION_POKE_POSE, "/user/hand/left/poke_ext/pose" },
+        { ACTION_POKE_POSE, "/user/hand/right/poke_ext/pose" },
+        { ACTION_GRIP_POSE, "/user/hand/left/input/grip/pose" },
+        { ACTION_GRIP_POSE, "/user/hand/right/input/grip/pose" },
         { ACTION_POINTER_POSE, "/user/hand/left/input/aim/pose" },
         { ACTION_POINTER_POSE, "/user/hand/right/input/aim/pose" },
         { ACTION_TRIGGER_DOWN, "/user/hand/left/input/trigger/click" },
@@ -842,8 +885,12 @@ static bool openxr_init(HeadsetConfig* config) {
         { 0, NULL }
       },
       [PROFILE_INDEX] = (Binding[]) {
-        { ACTION_HAND_POSE, "/user/hand/left/input/grip/pose" },
-        { ACTION_HAND_POSE, "/user/hand/right/input/grip/pose" },
+        { ACTION_PINCH_POSE, "/user/hand/left/pinch_ext/pose" },
+        { ACTION_PINCH_POSE, "/user/hand/right/pinch_ext/pose" },
+        { ACTION_POKE_POSE, "/user/hand/left/poke_ext/pose" },
+        { ACTION_POKE_POSE, "/user/hand/right/poke_ext/pose" },
+        { ACTION_GRIP_POSE, "/user/hand/left/input/grip/pose" },
+        { ACTION_GRIP_POSE, "/user/hand/right/input/grip/pose" },
         { ACTION_POINTER_POSE, "/user/hand/left/input/aim/pose" },
         { ACTION_POINTER_POSE, "/user/hand/right/input/aim/pose" },
         { ACTION_TRIGGER_DOWN, "/user/hand/left/input/trigger/click" },
@@ -887,8 +934,12 @@ static bool openxr_init(HeadsetConfig* config) {
         { 0, NULL }
       },
       [PROFILE_WMR] = (Binding[]) {
-        { ACTION_HAND_POSE, "/user/hand/left/input/grip/pose" },
-        { ACTION_HAND_POSE, "/user/hand/right/input/grip/pose" },
+        { ACTION_PINCH_POSE, "/user/hand/left/pinch_ext/pose" },
+        { ACTION_PINCH_POSE, "/user/hand/right/pinch_ext/pose" },
+        { ACTION_POKE_POSE, "/user/hand/left/poke_ext/pose" },
+        { ACTION_POKE_POSE, "/user/hand/right/poke_ext/pose" },
+        { ACTION_GRIP_POSE, "/user/hand/left/input/grip/pose" },
+        { ACTION_GRIP_POSE, "/user/hand/right/input/grip/pose" },
         { ACTION_POINTER_POSE, "/user/hand/left/input/aim/pose" },
         { ACTION_POINTER_POSE, "/user/hand/right/input/aim/pose" },
         { ACTION_TRIGGER_DOWN, "/user/hand/left/input/trigger/value" },
@@ -920,8 +971,12 @@ static bool openxr_init(HeadsetConfig* config) {
         { 0, NULL }
       },
       [PROFILE_ML2] = (Binding[]) {
-        { ACTION_HAND_POSE, "/user/hand/left/input/grip/pose" },
-        { ACTION_HAND_POSE, "/user/hand/right/input/grip/pose" },
+        { ACTION_PINCH_POSE, "/user/hand/left/pinch_ext/pose" },
+        { ACTION_PINCH_POSE, "/user/hand/right/pinch_ext/pose" },
+        { ACTION_POKE_POSE, "/user/hand/left/poke_ext/pose" },
+        { ACTION_POKE_POSE, "/user/hand/right/poke_ext/pose" },
+        { ACTION_GRIP_POSE, "/user/hand/left/input/grip/pose" },
+        { ACTION_GRIP_POSE, "/user/hand/right/input/grip/pose" },
         { ACTION_POINTER_POSE, "/user/hand/left/input/aim/pose" },
         { ACTION_POINTER_POSE, "/user/hand/right/input/aim/pose" },
         { ACTION_TRIGGER_DOWN, "/user/hand/left/input/trigger/click" },
@@ -945,8 +1000,12 @@ static bool openxr_init(HeadsetConfig* config) {
         { 0, NULL }
       },
       [PROFILE_PICO_NEO3] = (Binding[]) {
-        { ACTION_HAND_POSE, "/user/hand/left/input/grip/pose" },
-        { ACTION_HAND_POSE, "/user/hand/right/input/grip/pose" },
+        { ACTION_PINCH_POSE, "/user/hand/left/pinch_ext/pose" },
+        { ACTION_PINCH_POSE, "/user/hand/right/pinch_ext/pose" },
+        { ACTION_POKE_POSE, "/user/hand/left/poke_ext/pose" },
+        { ACTION_POKE_POSE, "/user/hand/right/poke_ext/pose" },
+        { ACTION_GRIP_POSE, "/user/hand/left/input/grip/pose" },
+        { ACTION_GRIP_POSE, "/user/hand/right/input/grip/pose" },
         { ACTION_POINTER_POSE, "/user/hand/left/input/aim/pose" },
         { ACTION_POINTER_POSE, "/user/hand/right/input/aim/pose" },
         { ACTION_TRIGGER_DOWN, "/user/hand/left/input/trigger/click" },
@@ -982,8 +1041,12 @@ static bool openxr_init(HeadsetConfig* config) {
         { 0, NULL }
       },
       [PROFILE_PICO4] = (Binding[]) {
-        { ACTION_HAND_POSE, "/user/hand/left/input/grip/pose" },
-        { ACTION_HAND_POSE, "/user/hand/right/input/grip/pose" },
+        { ACTION_PINCH_POSE, "/user/hand/left/pinch_ext/pose" },
+        { ACTION_PINCH_POSE, "/user/hand/right/pinch_ext/pose" },
+        { ACTION_POKE_POSE, "/user/hand/left/poke_ext/pose" },
+        { ACTION_POKE_POSE, "/user/hand/right/poke_ext/pose" },
+        { ACTION_GRIP_POSE, "/user/hand/left/input/grip/pose" },
+        { ACTION_GRIP_POSE, "/user/hand/right/input/grip/pose" },
         { ACTION_POINTER_POSE, "/user/hand/left/input/aim/pose" },
         { ACTION_POINTER_POSE, "/user/hand/right/input/aim/pose" },
         { ACTION_TRIGGER_DOWN, "/user/hand/left/input/trigger/value" },
@@ -1057,6 +1120,19 @@ static bool openxr_init(HeadsetConfig* config) {
 
     if (!state.features.gaze) {
       bindings[PROFILE_GAZE][0].path = NULL;
+    }
+
+    // For this to work, pinch/poke need to be the first paths in the interaction profile
+    if (!state.features.handInteraction) {
+      bindings[PROFILE_SIMPLE] += 4;
+      bindings[PROFILE_VIVE] += 4;
+      bindings[PROFILE_TOUCH] += 4;
+      bindings[PROFILE_GO] += 4;
+      bindings[PROFILE_INDEX] += 4;
+      bindings[PROFILE_WMR] += 4;
+      if (state.features.ml2Controller) bindings[PROFILE_ML2] += 4;
+      if (state.features.picoController) bindings[PROFILE_PICO_NEO3] += 4;
+      if (state.features.picoController) bindings[PROFILE_PICO4] += 4;
     }
 
     XrPath path;
