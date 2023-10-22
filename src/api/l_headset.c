@@ -576,7 +576,8 @@ static int l_lovrHeadsetNewModel(lua_State* L) {
 }
 
 static int l_lovrHeadsetAnimate(lua_State* L) {
-  Model* model = luax_checktype(L, 1, Model);
+  int index = lua_type(L, 1) == LUA_TSTRING ? 2 : 1;
+  Model* model = luax_checktype(L, index, Model);
   lua_pushboolean(L, lovrHeadsetInterface->animate(model));
   return 1;
 }
@@ -733,7 +734,8 @@ int luaopen_lovr_headset(lua_State* L) {
     .stencil = false,
     .antialias = true,
     .submitDepth = true,
-    .overlay = false
+    .overlay = false,
+    .overlayOrder = 0
   };
 
   luax_pushconf(L);
@@ -776,6 +778,7 @@ int luaopen_lovr_headset(lua_State* L) {
 
       lua_getfield(L, -1, "overlay");
       config.overlay = lua_toboolean(L, -1);
+      config.overlayOrder = lua_type(L, -1) == LUA_TNUMBER ? luax_optu32(L, -1, 0) : 0;
       lua_pop(L, 1);
     }
     lua_pop(L, 1);

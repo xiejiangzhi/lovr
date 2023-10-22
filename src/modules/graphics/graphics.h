@@ -149,9 +149,19 @@ typedef enum {
   TYPE_MAT3,
   TYPE_MAT4,
   TYPE_INDEX16,
-  TYPE_INDEX32,
-  TYPE_COUNT
+  TYPE_INDEX32
 } DataType;
+
+typedef struct DataField {
+  const char* name;
+  uint32_t hash;
+  DataType type;
+  uint32_t offset;
+  uint32_t length;
+  uint32_t stride;
+  uint32_t fieldCount;
+  struct DataField* fields;
+} DataField;
 
 typedef enum {
   LAYOUT_PACKED,
@@ -159,23 +169,13 @@ typedef enum {
   LAYOUT_STD430
 } DataLayout;
 
-typedef struct DataField {
-  struct DataField* children;
-  uint32_t childCount;
-  uint32_t hash;
-  const char* name;
-  uint32_t location;
-  uint32_t offset;
-  uint32_t type;
-  uint32_t length;
-  uint32_t stride;
-} DataField;
+uint32_t lovrGraphicsAlignFields(DataField* parent, DataLayout layout);
 
 typedef struct {
   uint32_t size;
-  const DataField* format;
   uint32_t fieldCount;
-  DataLayout layout;
+  DataField* format;
+  bool complexFormat;
   const char* label;
   uintptr_t handle;
 } BufferInfo;
@@ -186,7 +186,7 @@ const BufferInfo* lovrBufferGetInfo(Buffer* buffer);
 void* lovrBufferGetData(Buffer* buffer, uint32_t offset, uint32_t extent);
 void* lovrBufferSetData(Buffer* buffer, uint32_t offset, uint32_t extent);
 void lovrBufferCopy(Buffer* src, Buffer* dst, uint32_t srcOffset, uint32_t dstOffset, uint32_t extent);
-void lovrBufferClear(Buffer* buffer, uint32_t offset, uint32_t extent);
+void lovrBufferClear(Buffer* buffer, uint32_t offset, uint32_t extent, uint32_t value);
 // Deprecated:
 Buffer* lovrGraphicsGetBuffer(const BufferInfo* info, void** data);
 bool lovrBufferIsTemporary(Buffer* buffer);
@@ -330,7 +330,9 @@ typedef struct {
   const char* label;
 } ShaderInfo;
 
-ShaderSource lovrGraphicsCompileShader(ShaderStage stage, ShaderSource* source);
+typedef void* ShaderIncluder(const char* filename, size_t* bytesRead);
+
+ShaderSource lovrGraphicsCompileShader(ShaderStage stage, ShaderSource* source, ShaderIncluder* includer);
 ShaderSource lovrGraphicsGetDefaultShaderSource(DefaultShader type, ShaderStage stage);
 Shader* lovrGraphicsGetDefaultShader(DefaultShader type);
 Shader* lovrShaderCreate(const ShaderInfo* info);
@@ -340,7 +342,7 @@ const ShaderInfo* lovrShaderGetInfo(Shader* shader);
 bool lovrShaderHasStage(Shader* shader, ShaderStage stage);
 bool lovrShaderHasAttribute(Shader* shader, const char* name, uint32_t location);
 void lovrShaderGetWorkgroupSize(Shader* shader, uint32_t size[3]);
-DataField* lovrShaderGetBufferFormat(Shader* shader, const char* name, size_t length, uint32_t slot, uint32_t* size, uint32_t* fieldCount);
+const DataField* lovrShaderGetBufferFormat(Shader* shader, const char* name, uint32_t* fieldCount);
 
 // Material
 
@@ -432,9 +434,8 @@ typedef enum {
 } DrawMode;
 
 typedef struct {
-  uint32_t fieldCount;
-  DataField format[16];
   Buffer* vertexBuffer;
+  DataField* vertexFormat;
   MeshStorage storage;
 } MeshInfo;
 
@@ -446,7 +447,7 @@ Buffer* lovrMeshGetIndexBuffer(Mesh* mesh);
 void lovrMeshSetIndexBuffer(Mesh* mesh, Buffer* buffer);
 void* lovrMeshGetVertices(Mesh* mesh, uint32_t index, uint32_t count);
 void* lovrMeshSetVertices(Mesh* mesh, uint32_t index, uint32_t count);
-void* lovrMeshGetIndices(Mesh* mesh, DataField* format);
+void* lovrMeshGetIndices(Mesh* mesh, uint32_t* count, DataType* type);
 void* lovrMeshSetIndices(Mesh* mesh, uint32_t count, DataType type);
 void lovrMeshGetTriangles(Mesh* mesh, float** vertices, uint32_t** indices, uint32_t* vertexCount, uint32_t* indexCount);
 bool lovrMeshGetBoundingBox(Mesh* mesh, float box[6]);
@@ -480,8 +481,8 @@ void lovrModelResetNodeTransforms(Model* model);
 void lovrModelAnimate(Model* model, uint32_t animationIndex, float time, float alpha);
 float lovrModelGetBlendShapeWeight(Model* model, uint32_t index);
 void lovrModelSetBlendShapeWeight(Model* model, uint32_t index, float weight);
-void lovrModelGetNodeTransform(Model* model, uint32_t node, float position[3], float scale[3], float rotation[4], OriginType origin);
-void lovrModelSetNodeTransform(Model* model, uint32_t node, float position[3], float scale[3], float rotation[4], float alpha);
+void lovrModelGetNodeTransform(Model* model, uint32_t node, float* position, float* scale, float* rotation, OriginType origin);
+void lovrModelSetNodeTransform(Model* model, uint32_t node, float* position, float* scale, float* rotation, float alpha);
 Buffer* lovrModelGetVertexBuffer(Model* model);
 Buffer* lovrModelGetIndexBuffer(Model* model);
 Mesh* lovrModelGetMesh(Model* model, uint32_t index);
@@ -491,11 +492,11 @@ Material* lovrModelGetMaterial(Model* model, uint32_t index);
 // Readback
 
 Readback* lovrReadbackCreateBuffer(Buffer* buffer, uint32_t offset, uint32_t extent);
-Readback* lovrReadbackCreateTexture(Texture* texture, uint32_t offset[4], uint32_t extent[2]);
+Readback* lovrReadbackCreateTexture(Texture* texture, uint32_t offset[4], uint32_t extent[3]);
 void lovrReadbackDestroy(void* ref);
 bool lovrReadbackIsComplete(Readback* readback);
 bool lovrReadbackWait(Readback* readback);
-void* lovrReadbackGetData(Readback* readback, DataField* format);
+void* lovrReadbackGetData(Readback* readback, DataField** format, uint32_t* count);
 struct Blob* lovrReadbackGetBlob(Readback* readback);
 struct Image* lovrReadbackGetImage(Readback* readback);
 
@@ -505,8 +506,8 @@ typedef struct {
   uint32_t draws;
   uint32_t computes;
   uint32_t drawsCulled;
-  size_t memoryReserved;
-  size_t memoryUsed;
+  size_t cpuMemoryReserved;
+  size_t cpuMemoryUsed;
   double submitTime;
   double gpuTime;
 } PassStats;
@@ -580,8 +581,8 @@ void lovrPassSetClear(Pass* pass, LoadAction loads[4], float clears[4][4], LoadA
 uint32_t lovrPassGetAttachmentCount(Pass* pass, bool* depth);
 uint32_t lovrPassGetWidth(Pass* pass);
 uint32_t lovrPassGetHeight(Pass* pass);
-uint32_t lovrPassGetViewCount(Pass* pass);
 
+uint32_t lovrPassGetViewCount(Pass* pass);
 void lovrPassGetViewMatrix(Pass* pass, uint32_t index, float viewMatrix[16]);
 void lovrPassSetViewMatrix(Pass* pass, uint32_t index, float viewMatrix[16]);
 void lovrPassGetProjection(Pass* pass, uint32_t index, float projection[16]);
@@ -622,7 +623,7 @@ void lovrPassSetWireframe(Pass* pass, bool wireframe);
 void lovrPassSendBuffer(Pass* pass, const char* name, size_t length, uint32_t slot, Buffer* buffer, uint32_t offset, uint32_t extent);
 void lovrPassSendTexture(Pass* pass, const char* name, size_t length, uint32_t slot, Texture* texture);
 void lovrPassSendSampler(Pass* pass, const char* name, size_t length, uint32_t slot, Sampler* sampler);
-void lovrPassSendData(Pass* pass, const char* name, size_t length, uint32_t slot, void** data, DataField** field);
+void lovrPassSendData(Pass* pass, const char* name, size_t length, uint32_t slot, void** data, DataField** format);
 
 void lovrPassPoints(Pass* pass, uint32_t count, float** vertices);
 void lovrPassLine(Pass* pass, uint32_t count, float** vertices);
@@ -649,7 +650,6 @@ uint32_t lovrPassBeginTally(Pass* pass);
 uint32_t lovrPassFinishTally(Pass* pass);
 Buffer* lovrPassGetTallyBuffer(Pass* pass, uint32_t* offset);
 void lovrPassSetTallyBuffer(Pass* pass, Buffer* buffer, uint32_t offset);
-const uint32_t* lovrPassGetTallyData(Pass* pass, uint32_t* count);
 
 void lovrPassCompute(Pass* pass, uint32_t x, uint32_t y, uint32_t z, Buffer* indirect, uint32_t offset);
 void lovrPassBarrier(Pass* pass);

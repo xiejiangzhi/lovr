@@ -149,6 +149,9 @@ bool os_vm_free(void* p, size_t size);
 bool os_vm_commit(void* p, size_t size);
 bool os_vm_release(void* p, size_t size);
 
+void os_thread_attach(void);
+void os_thread_detach(void);
+
 void os_poll_events(void);
 void os_on_quit(fn_quit* callback);
 void os_on_focus(fn_focus* callback);
@@ -164,6 +167,7 @@ bool os_window_open(const os_window_config* config);
 bool os_window_is_open(void);
 void os_window_get_size(uint32_t* width, uint32_t* height);
 float os_window_get_pixel_density(void);
+void os_window_message_box(const char* message);
 
 size_t os_get_home_directory(char* buffer, size_t size);
 size_t os_get_data_directory(char* buffer, size_t size);
@@ -175,3 +179,11 @@ void os_get_mouse_position(double* x, double* y);
 void os_set_mouse_mode(os_mouse_mode mode);
 bool os_is_mouse_down(os_mouse_button button);
 bool os_is_key_down(os_key key);
+
+uintptr_t os_get_win32_window(void);
+uintptr_t os_get_win32_instance(void);
+
+uintptr_t os_get_ca_metal_layer(void);
+
+uintptr_t os_get_xcb_connection(void);
+uintptr_t os_get_xcb_window(void);

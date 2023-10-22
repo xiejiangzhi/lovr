@@ -2,6 +2,7 @@
 #include "util.h"
 #include "graphics/graphics.h"
 #include "data/image.h"
+#include <string.h>
 
 static int l_lovrTextureNewView(lua_State* L) {
   Texture* texture = luax_checktype(L, 1, Texture);
@@ -113,13 +114,14 @@ static int l_lovrTextureHasUsage(lua_State* L) {
 
 static int l_lovrTextureNewReadback(lua_State* L) {
   Texture* texture = luax_totype(L, 1, Texture);
-  uint32_t offset[4], extent[2];
+  uint32_t offset[4], extent[3];
   offset[0] = luax_optu32(L, 2, 0);
   offset[1] = luax_optu32(L, 3, 0);
   offset[2] = luax_optu32(L, 4, 1) - 1;
   offset[3] = luax_optu32(L, 5, 1) - 1;
   extent[0] = luax_optu32(L, 6, ~0u);
   extent[1] = luax_optu32(L, 7, ~0u);
+  extent[2] = 1;
   Readback* readback = lovrReadbackCreateTexture(texture, offset, extent);
   luax_pushtype(L, Readback, readback);
   lovrRelease(readback, lovrReadbackDestroy);
@@ -202,12 +204,24 @@ static int l_lovrTextureSetPixels(lua_State* L) {
 
 static int l_lovrTextureClear(lua_State* L) {
   Texture* texture = luax_totype(L, 1, Texture);
+
+  int index;
   float value[4];
-  luax_optcolor(L, 2, value);
-  uint32_t layer = luax_optu32(L, 3, 1) - 1;
-  uint32_t layerCount = luax_optu32(L, 4, ~0u);
-  uint32_t level = luax_optu32(L, 5, 1) - 1;
-  uint32_t levelCount = luax_optu32(L, 6, ~0u);
+  if (lua_isnoneornil(L, 2)) {
+    memset(value, 0, sizeof(value));
+    index = 3;
+  } else if (lua_type(L, 2) == LUA_TNUMBER && lua_gettop(L) > 2) {
+    luax_readcolor(L, 2, value);
+    index = 6;
+  } else {
+    luax_optcolor(L, 2, value);
+    index = 3;
+  }
+
+  uint32_t layer = luax_optu32(L, index++, 1) - 1;
+  uint32_t layerCount = luax_optu32(L, index++, ~0u);
+  uint32_t level = luax_optu32(L, index++, 1) - 1;
+  uint32_t levelCount = luax_optu32(L, index++, ~0u);
   lovrTextureClear(texture, value, layer, layerCount, level, levelCount);
   return 0;
 }

@@ -14,6 +14,10 @@ bool os_init(void) {
   return true;
 }
 
+void os_destroy(void) {
+  glfwTerminate();
+}
+
 const char* os_get_name(void) {
   return "Linux";
 }
@@ -62,6 +66,14 @@ bool os_vm_commit(void* p, size_t size) {
 
 bool os_vm_release(void* p, size_t size) {
   return !madvise(p, size, MADV_DONTNEED);
+}
+
+void os_thread_attach(void) {
+  //
+}
+
+void os_thread_detach(void) {
+  //
 }
 
 size_t os_get_home_directory(char* buffer, size_t size) {

@@ -1,9 +1,5 @@
 #ifndef LOVR_USE_GLFW
 
-void os_destroy(void) {
-  //
-}
-
 void os_poll_events(void) {
   //
 }
@@ -73,33 +69,48 @@ bool os_is_key_down(os_key key) {
   return false;
 }
 
-#ifdef LOVR_VK
-const char** os_vk_get_instance_extensions(uint32_t* count) {
-  return *count = 0, NULL;
+uintptr_t os_get_win32_window(void) {
+  return 0;
 }
 
-uint32_t os_vk_create_surface(void* instance, void** surface) {
-  return -13; // VK_ERROR_UNKNOWN
+uintptr_t os_get_win32_instance(void) {
+  return 0;
 }
-#endif
+
+uintptr_t os_get_ca_metal_layer(void) {
+  return 0;
+}
+
+uintptr_t os_get_xcb_connection(void) {
+  return 0;
+}
+
+uintptr_t os_get_xcb_window(void) {
+  return 0;
+}
 
 #else
 
 #include <stdio.h>
 
-#ifdef LOVR_VK
-#include <vulkan/vulkan.h>
-#endif
-
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
-#ifndef EMSCRIPTEN
 #ifdef _WIN32
 #define GLFW_EXPOSE_NATIVE_WIN32
 #endif
-#include <GLFW/glfw3native.h>
+
+#ifdef __APPLE__
+#define GLFW_EXPOSE_NATIVE_COCOA
+#include <QuartzCore/CAMetalLayer.h>
 #endif
+
+#ifdef __linux__
+#define GLFW_EXPOSE_NATIVE_X11
+#include <X11/Xlib-xcb.h>
+#endif
+
+#include <GLFW/glfw3native.h>
 
 static struct {
   GLFWwindow* window;
@@ -111,6 +122,8 @@ static struct {
   fn_mouse_button* onMouseButton;
   fn_mouse_move* onMouseMove;
   fn_mousewheel_move* onMouseWheelMove;
+  uint32_t width;
+  uint32_t height;
 } glfwState;
 
 static void onError(int code, const char* description) {
@@ -130,8 +143,9 @@ static void onWindowFocus(GLFWwindow* window, int focused) {
 }
 
 static void onWindowResize(GLFWwindow* window, int width, int height) {
-  if (glfwState.onWindowResize) {
-    glfwGetFramebufferSize(window, &width, &height);
+  if (glfwState.onWindowResize && width > 0 && height > 0) {
+    glfwState.width = width;
+    glfwState.height = height;
     glfwState.onWindowResize(width, height);
   }
 }
@@ -291,10 +305,6 @@ static int convertKey(os_key key) {
   }
 }
 
-void os_destroy(void) {
-  glfwTerminate();
-}
-
 void os_poll_events(void) {
   if (glfwState.window) {
     glfwPollEvents();
@@ -314,10 +324,7 @@ bool os_window_open(const os_window_config* config) {
     return false;
   }
 
-#ifdef LOVR_VK
   glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-#endif
-
   glfwWindowHint(GLFW_RESIZABLE, config->resizable);
 
   GLFWmonitor* monitor = glfwGetPrimaryMonitor();
@@ -354,6 +361,8 @@ bool os_window_open(const os_window_config* config) {
   glfwSetMouseButtonCallback(glfwState.window, onMouseButton);
   glfwSetCursorPosCallback(glfwState.window, onMouseMove);
   glfwSetScrollCallback(glfwState.window, onMouseWheelMove);
+  glfwState.width = width;
+  glfwState.height = height;
   return true;
 }
 
@@ -362,15 +371,8 @@ bool os_window_is_open(void) {
 }
 
 void os_window_get_size(uint32_t* width, uint32_t* height) {
-  if (glfwState.window) {
-    int w, h;
-    glfwGetFramebufferSize(glfwState.window, &w, &h);
-    *width = w;
-    *height = h;
-  } else {
-    *width = 0;
-    *height = 0;
-  }
+  *width = glfwState.width;
+  *height = glfwState.height;
 }
 
 float os_window_get_pixel_density(void) {
@@ -381,7 +383,7 @@ float os_window_get_pixel_density(void) {
   int w, h, fw, fh;
   glfwGetWindowSize(glfwState.window, &w, &h);
   glfwGetFramebufferSize(glfwState.window, &fw, &fh);
-  return (w == 0 || fw == 0) ? 0.f : (float) fw / w;
+  return (w == 0 || fw == 0) ? 1.f : (float) fw / w;
 }
 
 void os_on_quit(fn_quit* callback) {
@@ -439,19 +441,32 @@ bool os_is_key_down(os_key key) {
   return glfwState.window ? glfwGetKey(glfwState.window, convertKey(key)) == GLFW_PRESS : false;
 }
 
-#ifdef _WIN32
-HANDLE os_get_win32_window(void) {
-  return (HANDLE) glfwGetWin32Window(glfwState.window);
-}
-#endif
-
-#ifdef LOVR_VK
-const char** os_vk_get_instance_extensions(uint32_t* count) {
-  return glfwGetRequiredInstanceExtensions(count);
+#if defined(_WIN32)
+uintptr_t os_get_win32_window(void) {
+  return (uintptr_t) glfwGetWin32Window(glfwState.window);
 }
 
-uint32_t os_vk_create_surface(void* instance, void** surface) {
-  return glfwCreateWindowSurface(instance, glfwState.window, NULL, (VkSurfaceKHR*) surface);
+uintptr_t os_get_win32_instance(void) {
+  return (uintptr_t) GetModuleHandle(NULL);
+}
+#elif defined(__APPLE__)
+uintptr_t os_get_ca_metal_layer(void) {
+  id window = glfwGetCocoaWindow(glfwState.window);
+  id view = msg(id, window, "contentView");
+  id layer = msg(id, cls(CAMetalLayer), "layer");
+  CGFloat scale = msg(CGFloat, window, "backingScaleFactor");
+  msg1(void, layer, "setContentsScale:", CGFloat, scale);
+  msg1(void, view, "setLayer:", id, layer);
+  msg1(void, view, "setWantsLayer:", BOOL, YES);
+  return (uintptr_t) layer;
+}
+#elif defined(__linux__) && !defined(__ANDROID__)
+uintptr_t os_get_xcb_connection(void) {
+  return (uintptr_t) XGetXCBConnection(glfwGetX11Display());
+}
+
+uintptr_t os_get_xcb_window(void) {
+  return (uintptr_t) glfwGetX11Window(glfwState.window);
 }
 #endif
 

@@ -1,11 +1,12 @@
 #include "thread/thread.h"
 #include "data/blob.h"
 #include "event/event.h"
+#include "core/os.h"
 #include "util.h"
-#include "lib/tinycthread/tinycthread.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <threads.h>
 
 struct Thread {
   uint32_t ref;
@@ -78,7 +79,11 @@ Channel* lovrThreadGetChannel(const char* name) {
 static int threadFunction(void* data) {
   Thread* thread = data;
 
+  os_thread_attach();
+
   char* error = thread->function(thread, thread->body, thread->arguments, thread->argumentCount);
+
+  os_thread_detach();
 
   mtx_lock(&thread->lock);
   thread->running = false;
@@ -160,7 +165,7 @@ Channel* lovrChannelCreate(uint64_t hash) {
   lovrAssert(channel, "Out of memory");
   channel->ref = 1;
   arr_init(&channel->messages, arr_alloc);
-  mtx_init(&channel->lock, mtx_plain | mtx_timed);
+  mtx_init(&channel->lock, mtx_plain);
   cnd_init(&channel->cond);
   channel->hash = hash;
   return channel;

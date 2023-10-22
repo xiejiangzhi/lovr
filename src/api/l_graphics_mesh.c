@@ -21,16 +21,16 @@ static int l_lovrMeshGetVertexStride(lua_State* L) {
 static int l_lovrMeshGetVertexFormat(lua_State* L) {
   Mesh* mesh = luax_checktype(L, 1, Mesh);
   const DataField* format = lovrMeshGetVertexFormat(mesh);
-  const DataField* attributes = format->childCount > 0 ? format->children : format;
-  uint32_t attributeCount = MAX(format->childCount, 1);
-  lua_createtable(L, (int) attributeCount, 0);
-  for (uint32_t i = 0; i < attributeCount; i++) {
-    const DataField* attribute = &attributes[i];
+  lua_createtable(L, (int) format->fieldCount, 0);
+  for (uint32_t i = 0; i < format->fieldCount; i++) {
+    const DataField* attribute = &format->fields[i];
     lua_createtable(L, 3, 0);
     lua_pushstring(L, attribute->name);
     lua_rawseti(L, -2, 1);
     luax_pushenum(L, DataType, attribute->type);
     lua_rawseti(L, -2, 2);
+    lua_pushinteger(L, attribute->offset);
+    lua_rawseti(L, -2, 3);
     lua_rawseti(L, -2, (int) i + 1);
   }
   return 1;
@@ -61,30 +61,67 @@ static int l_lovrMeshGetVertices(lua_State* L) {
   Mesh* mesh = luax_checktype(L, 1, Mesh);
   uint32_t index = luax_optu32(L, 2, 1) - 1;
   uint32_t count = luax_optu32(L, 3, ~0u);
-  DataField format = *lovrMeshGetVertexFormat(mesh);
   void* data = lovrMeshGetVertices(mesh, index, count);
-  format.length = count == ~0u ? format.length - index : count;
-  return luax_pushbufferdata(L, &format, data);
+  const DataField* format = lovrMeshGetVertexFormat(mesh);
+  return luax_pushbufferdata(L, format, count == ~0u ? format->length - index : count, data);
 }
 
 static int l_lovrMeshSetVertices(lua_State* L) {
+  Blob* blob = NULL;
   Mesh* mesh = luax_checktype(L, 1, Mesh);
+  const DataField* format = lovrMeshGetVertexFormat(mesh);
   uint32_t index = luax_optu32(L, 3, 1) - 1;
-  uint32_t count = luax_optu32(L, 4, ~0u);
-  void* data = lovrMeshSetVertices(mesh, index, count);
-  luax_checkbufferdata(L, 2, lovrMeshGetVertexFormat(mesh), data);
+  if ((blob = luax_totype(L, 2, Blob)) != NULL) {
+    uint32_t limit = (uint32_t) MIN(blob->size / format->stride, format->length - index);
+    uint32_t count = luax_optu32(L, 4, limit);
+    lovrCheck(blob->size / format->stride >= count, "Tried to read past the end of the Blob");
+    void* data = lovrMeshSetVertices(mesh, index, count);
+    memcpy(data, blob->data, count * format->stride);
+  } else if (lua_istable(L, 2)) {
+    uint32_t length = luax_len(L, 2);
+    uint32_t limit = MIN(length, format->length - index);
+    uint32_t count = luax_optu32(L, 4, limit);
+    lovrCheck(length <= limit, "Table does not have enough data to set %d items", count);
+    void* data = lovrMeshSetVertices(mesh, index, count);
+    luax_checkdatatuples(L, 2, 1, count, format, data);
+  } else {
+    return luax_typeerror(L, 2, "table or Blob");
+  }
   return 0;
 }
 
 static int l_lovrMeshGetIndices(lua_State* L) {
   Mesh* mesh = luax_checktype(L, 1, Mesh);
-  DataField format;
-  void* data = lovrMeshGetIndices(mesh, &format);
-  return luax_pushbufferdata(L, &format, data);
+
+  uint32_t count;
+  DataType type;
+  void* data = lovrMeshGetIndices(mesh, &count, &type);
+
+  if (!data) {
+    lua_pushnil(L);
+    return 1;
+  }
+
+  uint16_t* u16 = data;
+  uint32_t* u32 = data;
+  lua_createtable(L, (int) count, 0);
+  for (uint32_t i = 0; i < count; i++) {
+    switch (type) {
+      case TYPE_U16: lua_pushinteger(L, u16[i]); break;
+      case TYPE_U32: lua_pushinteger(L, u32[i]); break;
+      case TYPE_INDEX16: lua_pushinteger(L, u16[i] + 1); break;
+      case TYPE_INDEX32: lua_pushinteger(L, u32[i] + 1); break;
+      default: lovrUnreachable();
+    }
+    lua_rawseti(L, -2, i + 1);
+  }
+
+  return 1;
 }
 
 static int l_lovrMeshSetIndices(lua_State* L) {
   Mesh* mesh = luax_checktype(L, 1, Mesh);
+  const DataField* format = lovrMeshGetVertexFormat(mesh);
 
   switch (lua_type(L, 2)) {
     case LUA_TNONE:
@@ -93,10 +130,25 @@ static int l_lovrMeshSetIndices(lua_State* L) {
       return 0;
     case LUA_TTABLE: {
       uint32_t count = luax_len(L, 2);
-      DataType type = lovrMeshGetVertexFormat(mesh)->length > 0xffff ? TYPE_INDEX32 : TYPE_INDEX16;
-      void* data = lovrMeshSetIndices(mesh, count, type);
-      DataField format = { .type = type, .length = count, .stride = type == TYPE_INDEX32 ? 4 : 2 };
-      luax_checkbufferdata(L, 2, &format, data);
+      if (format->length > 0xffff) {
+        uint32_t* data = lovrMeshSetIndices(mesh, count, TYPE_INDEX32);
+        for (uint32_t i = 0; i < count; i++) {
+          lua_rawgeti(L, 2, i + 1);
+          lua_Integer x = lua_tointeger(L, -1);
+          lovrCheck(x > 0 && x <= format->length, "Mesh index #%d is out of range", i + 1);
+          data[i] = x - 1;
+          lua_pop(L, 1);
+        }
+      } else {
+        uint16_t* data = lovrMeshSetIndices(mesh, count, TYPE_INDEX16);
+        for (uint32_t i = 0; i < count; i++) {
+          lua_rawgeti(L, 2, i + 1);
+          lua_Integer x = lua_tointeger(L, -1);
+          lovrCheck(x > 0 && x <= format->length, "Mesh index #%d is out of range", i + 1);
+          data[i] = x - 1;
+          lua_pop(L, 1);
+        }
+      }
       break;
     }
     case LUA_TUSERDATA: {
@@ -104,7 +156,7 @@ static int l_lovrMeshSetIndices(lua_State* L) {
       DataType type = luax_checkenum(L, 3, DataType, NULL);
       lovrCheck(type == TYPE_U16 || type == TYPE_U32, "Blob type must be u16 or u32");
       size_t stride = type == TYPE_U16 ? 2 : 4;
-      uint32_t count = blob->size / stride;
+      uint32_t count = (uint32_t) MIN(blob->size / stride, UINT32_MAX);
       void* data = lovrMeshSetIndices(mesh, count, type);
       memcpy(data, blob->data, count * stride);
     }
@@ -182,7 +234,7 @@ static int l_lovrMeshGetDrawRange(lua_State* L) {
   lua_pushinteger(L, start + 1);
   lua_pushinteger(L, count);
   lua_pushinteger(L, offset);
-  return 2;
+  return 3;
 }
 
 static int l_lovrMeshSetDrawRange(lua_State* L) {

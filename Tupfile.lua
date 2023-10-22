@@ -91,7 +91,7 @@ flags = {
   config.debug and '-g' or '',
   config.optimize and '-Os' or '',
   config.supercharge and '-flto -march=native -DLOVR_UNCHECKED' or '',
-  config.sanitize and '-fsanitize=address' or '',
+  config.sanitize and '-fsanitize=address -fsanitize=undefined' or '',
 }
 
 cflags = {
@@ -104,7 +104,7 @@ cflags = {
   '-Ietc',
   '-Isrc',
   '-Isrc/modules',
-  '-Isrc/lib/stdatomic',
+  '-Isrc/lib/std',
   '-Ideps/vulkan-headers/include'
 }
 
@@ -114,6 +114,7 @@ lflags = '-L' .. bin
 lflags += not config.debug and '-Wl,-s' or ''
 lflags += config.optimize and (target == 'macos' and '-Wl,-dead_strip' or '-Wl,--gc-sections') or ''
 lflags += '-rdynamic'
+lflags += config.sanitize and '-lubsan' or ''
 
 if target == 'win32' then
   cflags += '-D_CRT_SECURE_NO_WARNINGS'
@@ -141,6 +142,7 @@ if target == 'linux' then
   cflags += '-D_DEFAULT_SOURCE'
   lflags += '-lm -lpthread -ldl'
   lflags += '-Wl,-rpath,\\$ORIGIN'
+  lflags += '-lX11 -lxcb -lX11-xcb'
 end
 
 if target == 'wasm' then
@@ -253,6 +255,7 @@ if config.modules.graphics and config.glslang then
   lflags += '-lglslang'
 
   glslang_cflags += '-fPIC'
+  glslang_cflags += '-std=c++17'
   glslang_cflags += '-fno-exceptions'
   glslang_cflags += '-fno-rtti'
   glslang_cflags += '-Ideps/glslang'
@@ -279,9 +282,11 @@ end
 
 if config.modules.data then
   cflags_rasterizer += '-Ideps/msdfgen'
+  cflags_rasterizer += '-DMSDFGEN_PUBLIC='
   lflags += '-lmsdfgen'
 
   msdfgen_cflags += '-fPIC'
+  msdfgen_cflags += target == 'win32' and '-DMSDFGEN_PUBLIC=__declspec(dllexport)' or '-DMSDFGEN_PUBLIC='
   msdfgen_src += 'deps/msdfgen/core/*.cpp'
   tup.foreach_rule(msdfgen_src, '^ CC msdfgen/%b^ $(cxx) $(flags) $(msdfgen_cflags) -c %f -o %o', '.obj/msdfgen/%B.o')
   tup.rule('.obj/msdfgen/*.o', '^ LD %o^ $(cxx) $(flags) -shared -o %o %f', lib('msdfgen'))
@@ -442,7 +447,6 @@ src += (config.modules.audio or config.modules.data) and 'src/lib/miniaudio/*.c'
 src += config.modules.data and 'src/lib/jsmn/*.c' or nil
 src += config.modules.data and 'src/lib/minimp3/*.c' or nil
 src += config.modules.math and 'src/lib/noise/*.c' or nil
-src += config.modules.thread and 'src/lib/tinycthread/*.c' or nil
 
 -- embed resource files with xxd
 

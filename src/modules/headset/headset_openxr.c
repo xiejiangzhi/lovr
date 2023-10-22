@@ -1211,7 +1211,8 @@ static void openxr_start(void) {
 #ifdef XR_EXTX_overlay
     XrSessionCreateInfoOverlayEXTX overlayInfo = {
       .type = XR_TYPE_SESSION_CREATE_INFO_OVERLAY_EXTX,
-      .next = info.next
+      .next = info.next,
+      .sessionLayersPlacement = state.config.overlayOrder
     };
 
     if (state.features.overlay) {
@@ -1618,12 +1619,17 @@ static bool openxr_setPassthrough(PassthroughMode mode) {
 }
 
 static bool openxr_isPassthroughSupported(PassthroughMode mode) {
+  if (state.features.questPassthrough && mode == PASSTHROUGH_BLEND) {
+    return true;
+  }
+
   XrEnvironmentBlendMode blendMode = convertPassthroughMode(mode);
   for (uint32_t i = 0; i < state.blendModeCount; i++) {
     if (state.blendModes[i] == blendMode) {
       return true;
     }
   }
+
   return false;
 }
 
@@ -2016,6 +2022,10 @@ static void openxr_stopVibration(Device device) {
 }
 
 static ModelData* openxr_newModelDataFB(XrHandTrackerEXT tracker, bool animated) {
+  if (!state.features.handTrackingMesh) {
+    return NULL;
+  }
+
   // First, figure out how much data there is
   XrHandTrackingMeshFB mesh = { .type = XR_TYPE_HAND_TRACKING_MESH_FB };
   XrResult result = xrGetHandMeshFB(tracker, &mesh);

@@ -27,8 +27,8 @@ static int l_lovrPassGetStats(lua_State* L) {
   lua_pushinteger(L, stats->draws), lua_setfield(L, -2, "draws");
   lua_pushinteger(L, stats->computes), lua_setfield(L, -2, "computes");
   lua_pushinteger(L, stats->drawsCulled), lua_setfield(L, -2, "drawsCulled");
-  lua_pushinteger(L, stats->memoryReserved), lua_setfield(L, -2, "memoryReserved");
-  lua_pushinteger(L, stats->memoryUsed), lua_setfield(L, -2, "memoryUsed");
+  lua_pushinteger(L, stats->cpuMemoryReserved), lua_setfield(L, -2, "cpuMemoryReserved");
+  lua_pushinteger(L, stats->cpuMemoryUsed), lua_setfield(L, -2, "cpuMemoryUsed");
   lua_pushnumber(L, stats->submitTime), lua_setfield(L, -2, "submitTime");
   lua_pushnumber(L, stats->gpuTime), lua_setfield(L, -2, "gpuTime");
   return 1;
@@ -66,7 +66,7 @@ int l_lovrPassSetCanvas(lua_State* L) {
   Pass* pass = luax_checktype(L, 1, Pass);
   Texture* textures[4] = { 0 };
   Texture* depthTexture = NULL;
-  uint32_t depthFormat = 0;
+  uint32_t depthFormat = FORMAT_D32F;
   uint32_t samples = 4;
   if (lua_istable(L, 2)) {
     int length = luax_len(L, 2);
@@ -96,11 +96,7 @@ int l_lovrPassSetCanvas(lua_State* L) {
     lua_pop(L, 1);
 
     lua_getfield(L, 2, "samples");
-    if (lua_isboolean(L, -1)) {
-      samples = lua_toboolean(L, -1) ? 4 : 1;
-    } else if (lua_type(L, -1) == LUA_TNUMBER) {
-      samples = lua_tointeger(L, -1);
-    }
+    samples = luax_optu32(L, -1, samples);
     lua_pop(L, 1);
   } else if (lua_isuserdata(L, 2)) {
     int top = lua_gettop(L);
@@ -177,7 +173,7 @@ static int l_lovrPassSetClear(lua_State* L) {
     if (lua_type(L, -1) == LUA_TNUMBER) {
       lua_pop(L, 1);
       loads[0] = LOAD_CLEAR;
-      luax_readcolor(L, -1, clears[0]);
+      luax_optcolor(L, -1, clears[0]);
       for (uint32_t i = 1; i < COUNTOF(clears); i++) {
         memcpy(clears[i], clears[0], 4 * sizeof(float));
         loads[i] = loads[0];
@@ -342,6 +338,10 @@ static int l_lovrPassGetViewport(lua_State* L) {
   Pass* pass = luax_checktype(L, 1, Pass);
   float viewport[6];
   lovrPassGetViewport(pass, viewport);
+  if (viewport[2] == 0.f && viewport[3] == 0.f) {
+    lua_pushnil(L);
+    return 1;
+  }
   lua_pushnumber(L, viewport[0]);
   lua_pushnumber(L, viewport[1]);
   lua_pushnumber(L, viewport[2]);
@@ -354,12 +354,20 @@ static int l_lovrPassGetViewport(lua_State* L) {
 static int l_lovrPassSetViewport(lua_State* L) {
   Pass* pass = luax_checktype(L, 1, Pass);
   float viewport[6];
-  viewport[0] = luax_checkfloat(L, 2);
-  viewport[1] = luax_checkfloat(L, 3);
-  viewport[2] = luax_checkfloat(L, 4);
-  viewport[3] = luax_checkfloat(L, 5);
-  viewport[4] = luax_optfloat(L, 6, 0.f);
-  viewport[5] = luax_optfloat(L, 7, 1.f);
+  if (lua_isnoneornil(L, 2)) {
+    memset(viewport, 0, sizeof(viewport));
+  } else {
+    viewport[0] = luax_checkfloat(L, 2);
+    viewport[1] = luax_checkfloat(L, 3);
+    viewport[2] = luax_checkfloat(L, 4);
+    viewport[3] = luax_checkfloat(L, 5);
+    viewport[4] = luax_optfloat(L, 6, 0.f);
+    viewport[5] = luax_optfloat(L, 7, 1.f);
+    lovrCheck(viewport[2] > 0.f, "Viewport width must be positive");
+    lovrCheck(viewport[3] != 0.f, "Viewport height can not be zero");
+    lovrCheck(viewport[4] >= 0.f && viewport[4] <= 1.f, "Viewport depth range must be between 0 and 1");
+    lovrCheck(viewport[5] >= 0.f && viewport[5] <= 1.f, "Viewport depth range must be between 0 and 1");
+  }
   lovrPassSetViewport(pass, viewport);
   return 0;
 }
@@ -368,6 +376,10 @@ static int l_lovrPassGetScissor(lua_State* L) {
   Pass* pass = luax_checktype(L, 1, Pass);
   uint32_t scissor[4];
   lovrPassGetScissor(pass, scissor);
+  if (scissor[2] == 0 && scissor[3] == 0) {
+    lua_pushnil(L);
+    return 1;
+  }
   lua_pushinteger(L, scissor[0]);
   lua_pushinteger(L, scissor[1]);
   lua_pushinteger(L, scissor[2]);
@@ -378,10 +390,14 @@ static int l_lovrPassGetScissor(lua_State* L) {
 static int l_lovrPassSetScissor(lua_State* L) {
   Pass* pass = luax_checktype(L, 1, Pass);
   uint32_t scissor[4];
-  scissor[0] = luax_checku32(L, 2);
-  scissor[1] = luax_checku32(L, 3);
-  scissor[2] = luax_checku32(L, 4);
-  scissor[3] = luax_checku32(L, 5);
+  if (lua_isnoneornil(L, 2)) {
+    memset(scissor, 0, sizeof(scissor));
+  } else {
+    scissor[0] = luax_checku32(L, 2);
+    scissor[1] = luax_checku32(L, 3);
+    scissor[2] = luax_checku32(L, 4);
+    scissor[3] = luax_checku32(L, 5);
+  }
   lovrPassSetScissor(pass, scissor);
   return 0;
 }
@@ -681,10 +697,55 @@ static int l_lovrPassSend(lua_State* L) {
     return 0;
   }
 
-  void* data;
+  void* pointer;
   DataField* format;
-  lovrPassSendData(pass, name, length, slot, &data, &format);
-  luax_checkbufferdata(L, 3, format, data);
+  lovrPassSendData(pass, name, length, slot, &pointer, &format);
+  char* data = pointer;
+
+  // Coerce booleans since they aren't supported in buffer formats
+  if (lua_isboolean(L, 3)) {
+    bool value = lua_toboolean(L, 3);
+    lua_settop(L, 2);
+    lua_pushinteger(L, value);
+  }
+
+  if (format->length > 0) {
+    luaL_checktype(L, 3, LUA_TTABLE);
+    if (format->fieldCount > 1) {
+      lua_rawgeti(L, 3, 1);
+      lovrCheck(lua_type(L, -1) == LUA_TTABLE, "Expected table of tables");
+      bool dictionary = luax_len(L, -1) == 0;
+      lua_pop(L, 1);
+
+      // Nested structs/arrays don't support the "tuple" table format
+      for (uint32_t i = 0; i < format->fieldCount; i++) {
+        if (format->fields[i].fieldCount > 0 || format->fields[i].length > 0) {
+          dictionary = true;
+          break;
+        }
+      }
+
+      if (dictionary) {
+        luax_checkdatakeys(L, 3, 1, format->length, format, data);
+      } else {
+        luax_checkdatatuples(L, 3, 1, format->length, format, data);
+      }
+    } else {
+      luax_checkfieldarray(L, 3, format, data);
+    }
+  } else if (format->fieldCount > 1) {
+    luaL_checktype(L, 3, LUA_TTABLE);
+    luax_checkstruct(L, 3, format->fields, format->fieldCount, data);
+  } else if (lua_type(L, 3) == LUA_TNUMBER) {
+    luax_checkfieldn(L, 3, format->type, data);
+  } else if (lua_isuserdata(L, 3)) {
+    luax_checkfieldv(L, 3, format->type, data);
+  } else if (lua_istable(L, 3)) {
+    luax_checkfieldt(L, 3, format->type, data);
+  } else {
+    return luax_typeerror(L, 3, "number, vector, or table");
+  }
+
   return 0;
 }
 
@@ -910,7 +971,7 @@ static int l_lovrPassText(lua_State* L) {
 
 static int l_lovrPassSkybox(lua_State* L) {
   Pass* pass = luax_checktype(L, 1, Pass);
-  Texture* texture = luax_checktype(L, 2, Texture);
+  Texture* texture = luax_totype(L, 2, Texture);
   lovrPassSkybox(pass, texture);
   return 0;
 }
@@ -938,7 +999,7 @@ static int l_lovrPassDraw(lua_State* L) {
 
   if (model) {
     int index = luax_readmat4(L, 3, transform, 1);
-    uint32_t instances = luax_optu32(L, index + 1, 1);
+    uint32_t instances = luax_optu32(L, index, 1);
     lovrPassDrawModel(pass, model, transform, instances);
     return 0;
   }
@@ -966,7 +1027,7 @@ static int l_lovrPassDraw(lua_State* L) {
 
 static int l_lovrPassMesh(lua_State* L) {
   Pass* pass = luax_checktype(L, 1, Pass);
-  Buffer* vertices = (!lua_toboolean(L, 2) || lua_type(L, 2) == LUA_TNUMBER) ? NULL : luax_checkbuffer(L, 2);
+  Buffer* vertices = (!lua_toboolean(L, 2) || lua_type(L, 2) == LUA_TNUMBER) ? NULL : luax_checktype(L, 2, Buffer);
   Buffer* indices = luax_totype(L, 3, Buffer);
   Buffer* indirect = luax_totype(L, 4, Buffer);
   if (indirect) {
@@ -1007,30 +1068,22 @@ static int l_lovrPassGetTallyBuffer(lua_State* L) {
   Pass* pass = luax_checktype(L, 1, Pass);
   uint32_t offset;
   Buffer* buffer = lovrPassGetTallyBuffer(pass, &offset);
-  luax_pushtype(L, Buffer, buffer);
-  lua_pushinteger(L, offset);
-  return 2;
+  if (buffer) {
+    luax_pushtype(L, Buffer, buffer);
+    lua_pushinteger(L, offset);
+    return 2;
+  } else {
+    lua_pushnil(L);
+    return 1;
+  }
 }
 
 static int l_lovrPassSetTallyBuffer(lua_State* L) {
   Pass* pass = luax_checktype(L, 1, Pass);
-  Buffer* buffer = luax_checktype(L, 2, Buffer);
+  Buffer* buffer = luax_totype(L, 2, Buffer);
   uint32_t offset = luax_optu32(L, 3, 0);
   lovrPassSetTallyBuffer(pass, buffer, offset);
   return 0;
-}
-
-static int l_lovrPassGetTallyData(lua_State* L) {
-  Pass* pass = luax_checktype(L, 1, Pass);
-  uint32_t count;
-  const uint32_t* data = lovrPassGetTallyData(pass, &count);
-  if (!data) return lua_pushnil(L), 0;
-  lua_createtable(L, (int) count, 0);
-  for (int i = 0; i < (int) count; i++) {
-    lua_pushinteger(L, data[i]);
-    lua_rawseti(L, -2, i + 1);
-  }
-  return 1;
 }
 
 static int l_lovrPassCompute(lua_State* L) {
@@ -1083,6 +1136,7 @@ const luaL_Reg lovrPass[] = {
   { "getWidth", l_lovrPassGetWidth },
   { "getHeight", l_lovrPassGetHeight },
   { "getDimensions", l_lovrPassGetDimensions },
+
   { "getViewCount", l_lovrPassGetViewCount },
   { "getViewPose", l_lovrPassGetViewPose },
   { "setViewPose", l_lovrPassSetViewPose },
@@ -1146,7 +1200,6 @@ const luaL_Reg lovrPass[] = {
   { "finishTally", l_lovrPassFinishTally },
   { "getTallyBuffer", l_lovrPassGetTallyBuffer },
   { "setTallyBuffer", l_lovrPassSetTallyBuffer },
-  { "getTallyData", l_lovrPassGetTallyData },
 
   { "compute", l_lovrPassCompute },
   { "barrier", l_lovrPassBarrier },

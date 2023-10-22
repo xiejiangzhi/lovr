@@ -144,11 +144,15 @@ endif()
 # MSDF
 if(LOVR_ENABLE_DATA)
   set(BUILD_SHARED_LIBS ON)
+  set(MSDFGEN_CORE_ONLY ON CACHE BOOL "")
+  set(MSDFGEN_BUILD_STANDALONE OFF CACHE BOOL "")
+  set(MSDFGEN_USE_VCPKG OFF CACHE BOOL "")
+  set(MSDFGEN_USE_CPP11 OFF CACHE BOOL "")
   add_subdirectory(deps/msdfgen msdfgen)
   include_directories(deps/msdfgen)
-  set(LOVR_MSDF msdfgen)
+  set(LOVR_MSDF msdfgen-core)
   if(APPLE)
-    set_target_properties(msdfgen PROPERTIES MACOSX_RPATH ON)
+    set_target_properties(msdfgen-core PROPERTIES MACOSX_RPATH ON)
   endif()
 endif()
 
@@ -325,7 +329,7 @@ set_target_properties(lovr PROPERTIES C_STANDARD_REQUIRED ON)
 target_include_directories(lovr PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${CMAKE_CURRENT_SOURCE_DIR}/src/modules
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/stdatomic
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/std
   ${CMAKE_CURRENT_SOURCE_DIR}/etc
 )
 
@@ -453,11 +457,11 @@ if(LOVR_ENABLE_GRAPHICS)
 
   function(compile_shaders)
     if(LOVR_USE_GLSLANG AND ENABLE_GLSLANG_BINARIES AND NOT ANDROID)
-      set(GLSLANG_VALIDATOR $<TARGET_FILE:glslangValidator>)
+      set(GLSLANG_VALIDATOR $<TARGET_FILE:glslang-standalone>)
     elseif(Vulkan_GLSLANG_VALIDATOR_EXECUTABLE)
       set(GLSLANG_VALIDATOR "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}")
     else()
-      find_program(GLSLANG_VALIDATOR glslangValidator)
+      find_program(GLSLANG_VALIDATOR glslang-standalone)
       if(NOT GLSLANG_VALIDATOR)
         message(FATAL_ERROR "Need glslangValidator installed or LOVR_USE_GLSLANG enabled")
       endif()
@@ -556,7 +560,6 @@ if(LOVR_ENABLE_THREAD)
     src/api/l_thread.c
     src/api/l_thread_channel.c
     src/api/l_thread_thread.c
-    src/lib/tinycthread/tinycthread.c
   )
 else()
   target_compile_definitions(lovr PRIVATE LOVR_DISABLE_THREAD)
@@ -853,6 +856,7 @@ elseif(ANDROID)
   endif()
 elseif(UNIX)
   target_sources(lovr PRIVATE src/core/os_linux.c)
+  target_link_libraries(lovr X11 xcb X11-xcb)
   set_target_properties(lovr PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     BUILD_WITH_INSTALL_RPATH TRUE
