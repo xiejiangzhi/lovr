@@ -319,7 +319,7 @@ typedef struct {
   struct { float x, y, z; } normal;
   struct { float u, v; } uv;
   struct { uint8_t r, g, b, a; } color;
-  struct { float x, y, z; } tangent;
+  struct { float x, y, z, w; } tangent;
 } ModelVertex;
 
 typedef struct {
@@ -787,7 +787,7 @@ bool lovrGraphicsInit(GraphicsConfig* config) {
     .attributes[1] = { 0, 11, offsetof(ModelVertex, normal), GPU_TYPE_F32x3 },
     .attributes[2] = { 0, 12, offsetof(ModelVertex, uv), GPU_TYPE_F32x2 },
     .attributes[3] = { 0, 13, offsetof(ModelVertex, color), GPU_TYPE_UN8x4 },
-    .attributes[4] = { 0, 14, offsetof(ModelVertex, tangent), GPU_TYPE_F32x3 }
+    .attributes[4] = { 0, 14, offsetof(ModelVertex, tangent), GPU_TYPE_F32x4 }
   };
 
   state.vertexFormats[VERTEX_EMPTY] = (gpu_vertex_format) {
@@ -1671,26 +1671,29 @@ void lovrGraphicsSubmit(Pass** passes, uint32_t count) {
     Canvas* canvas = &passes[i]->canvas;
 
     for (uint32_t t = 0; t < canvas->count; t++) {
-      canvas->color[t].texture->sync.barrier = &state.postBarrier;
+      Texture* texture = canvas->color[t].texture;
+      texture->sync.barrier = &state.postBarrier;
+      if (texture->info.xr && texture->xrTick != state.tick) {
+        gpu_xr_acquire(streams[0], texture->gpu);
+        gpu_xr_release(streams[streamCount - 1], texture->gpu);
+        texture->xrTick = state.tick;
+      }
     }
 
     if (canvas->depth.texture) {
-      canvas->depth.texture->sync.barrier = &state.postBarrier;
+      Texture* texture = canvas->depth.texture;
+      texture->sync.barrier = &state.postBarrier;
+      if (texture->info.xr && texture->xrTick != state.tick) {
+        gpu_xr_acquire(streams[0], texture->gpu);
+        gpu_xr_release(streams[streamCount - 1], texture->gpu);
+        texture->xrTick = state.tick;
+      }
     }
 
     for (uint32_t j = 0; j < COUNTOF(passes[i]->access); j++) {
       for (AccessBlock* block = passes[i]->access[j]; block != NULL; block = block->next) {
         for (uint32_t k = 0; k < block->count; k++) {
           block->list[k].sync->barrier = &state.postBarrier;
-
-          if (block->textureMask & (1ull << k)) {
-            Texture* texture = (Texture*) ((char*) block->list[k].sync - offsetof(Texture, sync));
-            if (texture && texture->info.xr && texture->xrTick != state.tick) {
-              gpu_xr_acquire(streams[0], texture->gpu);
-              gpu_xr_release(streams[streamCount - 1], texture->gpu);
-              texture->xrTick = state.tick;
-            }
-          }
         }
       }
     }
@@ -3668,9 +3671,12 @@ void lovrFontGetVertices(Font* font, ColoredString* strings, uint32_t count, flo
     uint32_t previous = '\0';
     const char* str = strings[i].string;
     const char* end = strings[i].string + strings[i].length;
-    uint8_t r = (uint8_t) (CLAMP(lovrMathGammaToLinear(strings[i].color[0]), 0.f, 1.f) * 255.f);
-    uint8_t g = (uint8_t) (CLAMP(lovrMathGammaToLinear(strings[i].color[1]), 0.f, 1.f) * 255.f);
-    uint8_t b = (uint8_t) (CLAMP(lovrMathGammaToLinear(strings[i].color[2]), 0.f, 1.f) * 255.f);
+    float rf = lovrMathGammaToLinear(strings[i].color[0]);
+    float gf = lovrMathGammaToLinear(strings[i].color[1]);
+    float bf = lovrMathGammaToLinear(strings[i].color[2]);
+    uint8_t r = (uint8_t) (CLAMP(rf, 0.f, 1.f) * 255.f);
+    uint8_t g = (uint8_t) (CLAMP(gf, 0.f, 1.f) * 255.f);
+    uint8_t b = (uint8_t) (CLAMP(bf, 0.f, 1.f) * 255.f);
     uint8_t a = (uint8_t) (CLAMP(strings[i].color[3], 0.f, 1.f) * 255.f);
 
     while ((bytes = utf8_decode(str, end, &codepoint)) > 0) {
@@ -4164,7 +4170,7 @@ Model* lovrModelCreate(const ModelInfo* info) {
       { .type = TYPE_F32x3, .offset = offsetof(ModelVertex, normal), .hash = LOCATION_NORMAL },
       { .type = TYPE_F32x2, .offset = offsetof(ModelVertex, uv), .hash = LOCATION_UV },
       { .type = TYPE_UN8x4, .offset = offsetof(ModelVertex, color), .hash = LOCATION_COLOR },
-      { .type = TYPE_F32x3, .offset = offsetof(ModelVertex, tangent), .hash = LOCATION_TANGENT }
+      { .type = TYPE_F32x4, .offset = offsetof(ModelVertex, tangent), .hash = LOCATION_TANGENT }
     }
   };
 
@@ -4297,7 +4303,7 @@ Model* lovrModelCreate(const ModelInfo* info) {
     lovrModelDataCopyAttribute(data, attributes[ATTR_NORMAL], vertexData + 12, F32, 3, false, count, stride, 0);
     lovrModelDataCopyAttribute(data, attributes[ATTR_UV], vertexData + 24, F32, 2, false, count, stride, 0);
     lovrModelDataCopyAttribute(data, attributes[ATTR_COLOR], vertexData + 32, U8, 4, true, count, stride, 255);
-    lovrModelDataCopyAttribute(data, attributes[ATTR_TANGENT], vertexData + 36, F32, 3, false, count, stride, 0);
+    lovrModelDataCopyAttribute(data, attributes[ATTR_TANGENT], vertexData + 36, F32, 4, false, count, stride, 0);
     vertexData += count * stride;
 
     if (data->skinnedVertexCount > 0 && primitive->skin != ~0u) {
