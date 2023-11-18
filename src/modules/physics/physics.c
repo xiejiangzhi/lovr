@@ -758,6 +758,7 @@ void lovrColliderGetLinearVelocity(Collider* collider, float* x, float* y, float
 }
 
 void lovrColliderSetLinearVelocity(Collider* collider, float x, float y, float z) {
+  dBodyEnable(collider->body);
   dBodySetLinearVel(collider->body, x, y, z);
 }
 
@@ -769,6 +770,7 @@ void lovrColliderGetAngularVelocity(Collider* collider, float* x, float* y, floa
 }
 
 void lovrColliderSetAngularVelocity(Collider* collider, float x, float y, float z) {
+  dBodyEnable(collider->body);
   dBodySetAngularVel(collider->body, x, y, z);
 }
 
@@ -793,14 +795,17 @@ void lovrColliderSetAngularDamping(Collider* collider, float damping, float thre
 }
 
 void lovrColliderApplyForce(Collider* collider, float x, float y, float z) {
+  dBodyEnable(collider->body);
   dBodyAddForce(collider->body, x, y, z);
 }
 
 void lovrColliderApplyForceAtPosition(Collider* collider, float x, float y, float z, float cx, float cy, float cz) {
+  dBodyEnable(collider->body);
   dBodyAddForceAtPos(collider->body, x, y, z, cx, cy, cz);
 }
 
 void lovrColliderApplyTorque(Collider* collider, float x, float y, float z) {
+  dBodyEnable(collider->body);
   dBodyAddTorque(collider->body, x, y, z);
 }
 
