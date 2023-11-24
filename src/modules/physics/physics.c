@@ -50,10 +50,19 @@ static void defaultNearCallback(void* data, dGeomID a, dGeomID b) {
   lovrWorldCollide((World*) data, dGeomGetData(a), dGeomGetData(b), -1, -1);
 }
 
-static void customNearCallback(void* data, dGeomID shapeA, dGeomID shapeB) {
+static void customNearCallback(void* data, dGeomID a, dGeomID b) {
   World* world = data;
-  arr_push(&world->overlaps, dGeomGetData(shapeA));
-  arr_push(&world->overlaps, dGeomGetData(shapeB));
+  Shape* shapeA = dGeomGetData(a);
+  Shape* shapeB = dGeomGetData(b);
+  Collider* colliderA = shapeA->collider;
+  Collider* colliderB = shapeB->collider;
+  uint32_t i = colliderA->tag;
+  uint32_t j = colliderB->tag;
+  if (i != NO_TAG && j != NO_TAG && !((world->masks[i] & (1 << j)) && (world->masks[j] & (1 << i)))) {
+    return;
+  }
+  arr_push(&world->overlaps, shapeA);
+  arr_push(&world->overlaps, shapeB);
 }
 
 typedef struct {
