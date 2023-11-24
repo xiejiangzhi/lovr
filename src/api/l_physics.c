@@ -25,10 +25,13 @@ static int l_lovrPhysicsNewWorld(lua_State* L) {
   float yg = luax_optfloat(L, 2, -9.81f);
   float zg = luax_optfloat(L, 3, 0.f);
   bool allowSleep = lua_gettop(L) < 4 || lua_toboolean(L, 4);
-  const char* tags[16];
+  const char* tags[MAX_TAGS];
   int tagCount;
   if (lua_type(L, 5) == LUA_TTABLE) {
     tagCount = luax_len(L, 5);
+    if (tagCount > MAX_TAGS) {
+      return luaL_error(L, "World max number of tags is 32");
+    }
     for (int i = 0; i < tagCount; i++) {
       lua_rawgeti(L, -1, i + 1);
       if (lua_isstring(L, -1)) {

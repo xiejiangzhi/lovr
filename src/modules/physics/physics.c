@@ -10,7 +10,7 @@ struct World {
   dJointGroupID contactGroup;
   arr_t(Shape*) overlaps;
   char* tags[MAX_TAGS];
-  uint16_t masks[MAX_TAGS];
+  uint32_t masks[MAX_TAGS];
   Collider* head;
 };
 
@@ -197,7 +197,7 @@ World* lovrWorldCreate(float xg, float yg, float zg, bool allowSleep, const char
     world->tags[i] = malloc(size);
     memcpy(world->tags[i], tags[i], size);
   }
-  memset(world->masks, 0xff, sizeof(world->masks));
+  memset(world->masks, 0xffff, sizeof(world->masks));
   return world;
 }
 
