@@ -69,6 +69,7 @@ typedef struct {
   RaycastCallback callback;
   void* userdata;
   bool shouldStop;
+  uint32_t tag;
 } RaycastData;
 
 static void raycastCallback(void* d, dGeomID a, dGeomID b) {
@@ -80,6 +81,16 @@ static void raycastCallback(void* d, dGeomID a, dGeomID b) {
 
   if (!shape) {
     return;
+  }
+  if (data->tag != NO_TAG) {
+    Collider* collider = shape->collider;
+    uint32_t i = data->tag;
+    uint32_t j = collider->tag;
+    World* world = collider->world;
+
+    if (j != NO_TAG && !((world->masks[i] & (1 << j)) && (world->masks[j] & (1 << i)))) {
+      return;
+    }
   }
 
   dContact contact[MAX_CONTACTS];
@@ -97,7 +108,7 @@ typedef struct {
   void* userdata;
   bool called;
   bool shouldStop;
-  bool tagFilter;
+  uint32_t tag;
 } QueryData;
 
 static void queryCallback(void* d, dGeomID a, dGeomID b) {
@@ -108,19 +119,13 @@ static void queryCallback(void* d, dGeomID a, dGeomID b) {
   if (!shape) {
     return;
   }
-  if (data->tagFilter) {
-    Shape* qshape = dGeomGetData(a);
-    if (!qshape || !shape->collider || !qshape->collider) {
-      return;
-    }
+  if (data->tag != NO_TAG) {
+    Collider* collider = shape->collider;
+    uint32_t i = data->tag;
+    uint32_t j = collider->tag;
+    World* world = collider->world;
 
-    Collider* colliderA = qshape->collider;
-    Collider* colliderB = shape->collider;
-    uint32_t i = colliderA->tag;
-    uint32_t j = colliderB->tag;
-    World* world = colliderA->world;
-
-    if (i != NO_TAG && j != NO_TAG && !((world->masks[i] & (1 << j)) && (world->masks[j] & (1 << i)))) {
+    if (j != NO_TAG && !((world->masks[i] & (1 << j)) && (world->masks[j] & (1 << i)))) {
       return;
     }
   }
@@ -138,6 +143,7 @@ static void queryCallback(void* d, dGeomID a, dGeomID b) {
 
 // XXX slow, but probably fine (tag names are not on any critical path), could switch to hashing if needed
 static uint32_t findTag(World* world, const char* name) {
+  if (name == NULL) { return NO_TAG; }
   for (uint32_t i = 0; i < MAX_TAGS && world->tags[i]; i++) {
     if (!strcmp(world->tags[i], name)) {
       return i;
@@ -333,21 +339,21 @@ void lovrWorldGetContacts(World* world, Shape* a, Shape* b, Contact contacts[MAX
   }
 }
 
-void lovrWorldRaycast(World* world, float x1, float y1, float z1, float x2, float y2, float z2, RaycastCallback callback, void* userdata) {
-  RaycastData data = { .callback = callback, .userdata = userdata, .shouldStop = false };
-  float dx = x2 - x1;
-  float dy = y2 - y1;
-  float dz = z2 - z1;
+void lovrWorldRaycast(World* world, float start[3], float end[3], const char* tag, RaycastCallback callback, void* userdata) {
+  RaycastData data = { .callback = callback, .userdata = userdata, .shouldStop = false, .tag = findTag(world, tag) };
+  float dx = end[0] - start[0];
+  float dy = end[1] - start[1];
+  float dz = end[2] - start[2];
   float length = sqrtf(dx * dx + dy * dy + dz * dz);
   dGeomID ray = dCreateRay(world->space, length);
-  dGeomRaySet(ray, x1, y1, z1, dx, dy, dz);
+  dGeomRaySet(ray, start[0], start[1], start[2], dx, dy, dz);
   dSpaceCollide2(ray, (dGeomID) world->space, &data, raycastCallback);
   dGeomDestroy(ray);
 }
 
-bool lovrWorldQueryBox(World* world, float position[3], float size[3], QueryCallback callback, void* userdata) {
+bool lovrWorldQueryBox(World* world, float position[3], float size[3], const char* tag, QueryCallback callback, void* userdata) {
   QueryData data = {
-    .callback = callback, .userdata = userdata, .called = false,.shouldStop = false, .tagFilter = false
+    .callback = callback, .userdata = userdata, .called = false,.shouldStop = false, .tag = findTag(world, tag)
   };
   dGeomID box = dCreateBox(world->space, fabsf(size[0]), fabsf(size[1]), fabsf(size[2]));
   dGeomSetPosition(box, position[0], position[1], position[2]);
@@ -356,9 +362,9 @@ bool lovrWorldQueryBox(World* world, float position[3], float size[3], QueryCall
   return data.called;
 }
 
-bool lovrWorldQuerySphere(World* world, float position[3], float radius, QueryCallback callback, void* userdata) {
+bool lovrWorldQuerySphere(World* world, float position[3], float radius, const char* tag, QueryCallback callback, void* userdata) {
   QueryData data = {
-    .callback = callback, .userdata = userdata, .called = false, .shouldStop = false, .tagFilter = false
+    .callback = callback, .userdata = userdata, .called = false, .shouldStop = false, .tag = findTag(world, tag)
   };
   dGeomID sphere = dCreateSphere(world->space, fabsf(radius));
   dGeomSetPosition(sphere, position[0], position[1], position[2]);
@@ -367,9 +373,9 @@ bool lovrWorldQuerySphere(World* world, float position[3], float radius, QueryCa
   return data.called;
 }
 
-bool lovrWorldQueryTriangle(World* world, float vertices[9], QueryCallback callback, void* userdata) {
+bool lovrWorldQueryTriangle(World* world, float vertices[9], const char* tag, QueryCallback callback, void* userdata) {
   QueryData data = {
-    .callback = callback, .userdata = userdata, .called = false, .shouldStop = false, .tagFilter = false
+    .callback = callback, .userdata = userdata, .called = false, .shouldStop = false, .tag = findTag(world, tag)
   };
 
   dTriIndex indices[3] = { 0, 1, 2 };
@@ -1048,7 +1054,8 @@ void lovrShapeGetAABB(Shape* shape, float aabb[6]) {
 
 bool lovrShapeQueryOverlapping(Shape* shape, QueryCallback callback, void* userdata) {
   QueryData data = {
-    .callback = callback, .userdata = userdata, .called = false, .shouldStop = false, .tagFilter = true
+    .callback = callback, .userdata = userdata, .called = false, .shouldStop = false,
+    .tag = shape->collider ? shape->collider->tag : NO_TAG
   };
   dSpaceCollide2(shape->id, (dGeomID) shape->collider->world->space, &data, queryCallback);
   return data.called;

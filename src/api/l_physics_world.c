@@ -248,9 +248,13 @@ static int l_lovrWorldRaycast(lua_State* L) {
   int index = 2;
   index = luax_readvec3(L, index, start, NULL);
   index = luax_readvec3(L, index, end, NULL);
+  const char* tag = NULL;
+  if ((lua_gettop(L) - index) > 0) {
+    tag = lua_tostring(L, index++);
+  }
   luaL_checktype(L, index, LUA_TFUNCTION);
   lua_settop(L, index);
-  lovrWorldRaycast(world, start[0], start[1], start[2], end[0], end[1], end[2], raycastCallback, L);
+  lovrWorldRaycast(world, start, end, tag, raycastCallback, L);
   return 0;
 }
 
@@ -260,9 +264,13 @@ static int l_lovrWorldQueryBox(lua_State* L) {
   int index = 2;
   index = luax_readvec3(L, index, position, NULL);
   index = luax_readvec3(L, index, size, NULL);
+  const char* tag = NULL;
+  if ((lua_gettop(L) - index) > 0) {
+    tag = lua_tostring(L, index++);
+  }
   bool function = lua_type(L, index) == LUA_TFUNCTION;
   lua_settop(L, index);
-  bool any = lovrWorldQueryBox(world, position, size, function ? queryCallback : NULL, L);
+  bool any = lovrWorldQueryBox(world, position, size, tag, function ? queryCallback : NULL, L);
   lua_pushboolean(L, any);
   return 1;
 }
@@ -272,9 +280,13 @@ static int l_lovrWorldQuerySphere(lua_State* L) {
   float position[3];
   int index = luax_readvec3(L, 2, position, NULL);
   float radius = luax_checkfloat(L, index++);
+  const char* tag = NULL;
+  if ((lua_gettop(L) - index) > 0) {
+    tag = lua_tostring(L, index++);
+  }
   bool function = lua_type(L, index) == LUA_TFUNCTION;
   lua_settop(L, index);
-  bool any = lovrWorldQuerySphere(world, position, radius, function ? queryCallback : NULL, L);
+  bool any = lovrWorldQuerySphere(world, position, radius, tag, function ? queryCallback : NULL, L);
   lua_pushboolean(L, any);
   return 1;
 }
@@ -285,9 +297,13 @@ static int l_lovrWorldQueryTriangle(lua_State* L) {
   int index = luax_readvec3(L, 2, vertices, NULL);
   index = luax_readvec3(L, index, vertices + 3, NULL);
   index = luax_readvec3(L, index, vertices + 6, NULL);
+  const char* tag = NULL;
+  if ((lua_gettop(L) - index) > 0) {
+    tag = lua_tostring(L, index++);
+  }
   bool function = lua_type(L, index) == LUA_TFUNCTION;
   lua_settop(L, index);
-  bool any = lovrWorldQueryTriangle(world, vertices, function ? queryCallback : NULL, L);
+  bool any = lovrWorldQueryTriangle(world, vertices, tag, function ? queryCallback : NULL, L);
   lua_pushboolean(L, any);
   return 1;
 }
