@@ -119,7 +119,7 @@ static void queryCallback(void* d, dGeomID a, dGeomID b) {
   if (!shape) {
     return;
   }
-  if (data->tag != NO_TAG) {
+  if (shape->collider && data->tag != NO_TAG) {
     Collider* collider = shape->collider;
     uint32_t i = data->tag;
     uint32_t j = collider->tag;
@@ -389,6 +389,23 @@ bool lovrWorldQueryTriangle(World* world, float vertices[9], const char* tag, Qu
   dGeomDestroy(mesh);
   return data.called;
 }
+
+bool lovrWorldQueryShape(
+  World* world, Shape* shape, float position[3], float orientation[4],
+  const char* tag, QueryCallback callback, void* userdata
+) {
+  QueryData data = {
+    .callback = callback, .userdata = userdata, .called = false, .shouldStop = false, .tag = findTag(world, tag)
+  };
+  dSpaceAdd(world->space, shape->id);
+  dGeomSetPosition(shape->id, position[0], position[1], position[2]);
+  dReal q[4] = { orientation[3], orientation[0], orientation[1], orientation[2] };
+  dGeomSetQuaternion(shape->id, q);
+  dSpaceCollide2(shape->id, (dGeomID)world->space, &data, queryCallback);
+  dSpaceRemove(world->space, shape->id);
+  return data.called;
+}
+
 
 Collider* lovrWorldGetFirstCollider(World* world) {
   return world->head;
@@ -1057,7 +1074,7 @@ bool lovrShapeQueryOverlapping(Shape* shape, QueryCallback callback, void* userd
     .callback = callback, .userdata = userdata, .called = false, .shouldStop = false,
     .tag = shape->collider ? shape->collider->tag : NO_TAG
   };
-  dSpaceCollide2(shape->id, (dGeomID) shape->collider->world->space, &data, queryCallback);
+  dSpaceCollide2(shape->id, (dGeomID)shape->collider->world->space, &data, queryCallback);
   return data.called;
 }
 
