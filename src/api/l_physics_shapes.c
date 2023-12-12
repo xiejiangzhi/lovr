@@ -314,15 +314,9 @@ static bool queryCallback(Shape* shape, void* userdata) {
 
 static int l_lovrShapeQueryOverlapping(lua_State* L) {
   Shape* shape = luax_checkshape(L, 1);
-  Collider* collider = lovrShapeGetCollider(shape);
-  lovrAssert(collider != NULL, "Shape must be attached to collider");
-  int index = 2;
-  const char* tag = NULL;
-  if ((lua_gettop(L) - index) > 0) {
-    tag = lua_tostring(L, index++);
-  }
-  bool function = lua_type(L, index) == LUA_TFUNCTION;
-  bool any = lovrShapeQueryOverlapping(lovrColliderGetWorld(collider), shape, tag, function ? queryCallback : NULL, L);
+  lovrAssert(lovrShapeGetCollider(shape) != NULL, "Shape must be attached to collider");
+  bool function = lua_type(L, 2) == LUA_TFUNCTION;
+  bool any = lovrShapeQueryOverlapping(shape, function ? queryCallback : NULL, L);
   lua_pushboolean(L, any);
   return 1;
 }
