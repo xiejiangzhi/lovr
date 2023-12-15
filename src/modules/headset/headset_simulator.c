@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#define SLOW_MOVESPEED 0.5f
 #define MOVESPEED 3.f
 #define SPRINTSPEED 15.f
 #define MOVESMOOTH 30.f
@@ -346,6 +347,7 @@ static double simulator_update(void) {
   quat_slerp(state.headOrientation, target, 1.f - expf(-TURNSMOOTH * state.dt));
 
   bool sprint = os_is_key_down(KEY_LEFT_SHIFT) || os_is_key_down(KEY_RIGHT_SHIFT);
+  bool slow = os_is_key_down(KEY_LEFT_CONTROL) || os_is_key_down(KEY_RIGHT_CONTROL);
   bool front = os_is_key_down(KEY_W) || os_is_key_down(KEY_UP);
   bool back = os_is_key_down(KEY_S) || os_is_key_down(KEY_DOWN);
   bool left = os_is_key_down(KEY_A) || os_is_key_down(KEY_LEFT);
@@ -357,7 +359,7 @@ static double simulator_update(void) {
   velocity[0] = (left ? -1.f : right ? 1.f : 0.f);
   velocity[1] = (down ? -1.f : up ? 1.f : 0.f);
   velocity[2] = (front ? -1.f : back ? 1.f : 0.f);
-  vec3_scale(velocity, sprint ? SPRINTSPEED : MOVESPEED);
+  vec3_scale(velocity, sprint ? SPRINTSPEED : (slow ? SLOW_MOVESPEED : MOVESPEED));
   vec3_lerp(state.velocity, velocity, 1.f - expf(-MOVESMOOTH * state.dt));
 
   vec3_scale(vec3_init(velocity, state.velocity), state.dt);
