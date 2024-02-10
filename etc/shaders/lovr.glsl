@@ -196,6 +196,7 @@ vec4 getPixel(texture2D t, vec2 uv) { return texture(sampler2D(t, Sampler), uv);
 vec4 getPixel(texture3D t, vec3 uvw) { return texture(sampler3D(t, Sampler), uvw); }
 vec4 getPixel(textureCube t, vec3 dir) { return texture(samplerCube(t, Sampler), dir); }
 vec4 getPixel(texture2DArray t, vec2 uv, float layer) { return texture(sampler2DArray(t, Sampler), vec3(uv, layer)); }
+vec4 getPixel(textureCubeArray t, vec4 coord) { return texture(samplerCubeArray(t, Sampler), coord); }
 #endif
 
 #ifdef GL_FRAGMENT_SHADER
@@ -441,6 +442,24 @@ vec3 gammaToLinear(vec3 color) {
 
 vec3 linearToGamma(vec3 color) {
   return mix(1.055 * pow(color, vec3(1. / 2.4)) - .055, color * 12.92, lessThanEqual(color, vec3(.0031308)));
+}
+
+uint packSnorm10x3(vec4 v) {
+  return
+    ((int(v.x * 511.) & 0x3ff) <<  0) |
+    ((int(v.y * 511.) & 0x3ff) << 10) |
+    ((int(v.z * 511.) & 0x3ff) << 20) |
+    ((int(v.w * 2.) & 0x3) << 30);
+}
+
+// The weird 22 bit shift basically does sign-extension of a 10-bit value stored in a 32-bit int
+vec4 unpackSnorm10x3(uint n) {
+  return vec4(
+    max((int((n >> 0)  & 0x3ff) << 22 >> 22) / 511., -1.),
+    max((int((n >> 10) & 0x3ff) << 22 >> 22) / 511., -1.),
+    max((int((n >> 20) & 0x3ff) << 22 >> 22) / 511., -1.),
+    max(float((n >> 30) & 0x3), -1.)
+  );
 }
 
 // Entrypoints

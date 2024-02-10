@@ -1,6 +1,7 @@
 #include "physics.h"
 #include "util.h"
 #include <ode/ode.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 
 struct World {
@@ -143,10 +144,11 @@ static void queryCallback(void* d, dGeomID a, dGeomID b) {
 
 // XXX slow, but probably fine (tag names are not on any critical path), could switch to hashing if needed
 static uint32_t findTag(World* world, const char* name) {
-  if (name == NULL) { return NO_TAG; }
-  for (uint32_t i = 0; i < MAX_TAGS && world->tags[i]; i++) {
-    if (!strcmp(world->tags[i], name)) {
-      return i;
+  if (name) {
+    for (uint32_t i = 0; i < MAX_TAGS && world->tags[i]; i++) {
+      if (!strcmp(world->tags[i], name)) {
+        return i;
+      }
     }
   }
   return NO_TAG;
@@ -170,21 +172,20 @@ static void onInfoMessage(int num, const char* format, va_list args) {
   lovrLog(LOG_INFO, "PHY", message);
 }
 
-static bool initialized = false;
+static uint32_t ref;
 
 bool lovrPhysicsInit(void) {
-  if (initialized) return false;
+  if (atomic_fetch_add(&ref, 1)) return false;
   dInitODE();
   dSetErrorHandler(onErrorMessage);
   dSetDebugHandler(onDebugMessage);
   dSetMessageHandler(onInfoMessage);
-  return initialized = true;
+  return true;
 }
 
 void lovrPhysicsDestroy(void) {
-  if (!initialized) return;
+  if (atomic_fetch_sub(&ref, 1) != 1) return;
   dCloseODE();
-  initialized = false;
 }
 
 World* lovrWorldCreate(float xg, float yg, float zg, bool allowSleep, const char** tags, uint32_t tagCount) {

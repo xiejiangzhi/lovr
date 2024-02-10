@@ -14,6 +14,7 @@
 #include "monkey.h"
 #include "shaders.h"
 #include <math.h>
+#include <stdatomic.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,14 +24,38 @@
 #include "resource_limits_c.h"
 #endif
 
+#define MAX_PIPELINES 65536
 #define MAX_TALLIES 256
-#define MAX_TRANSFORMS 16
-#define MAX_PIPELINES 4
+#define TRANSFORM_STACK_SIZE 16
+#define PIPELINE_STACK_SIZE 4
 #define MAX_SHADER_RESOURCES 32
 #define MAX_CUSTOM_ATTRIBUTES 10
 #define LAYOUT_BUILTIN 0
 #define LAYOUT_MATERIAL 1
 #define FLOAT_BITS(f) ((union { float f; uint32_t u; }) { f }).u
+
+typedef struct {
+  void* next;
+  void* pointer;
+  gpu_buffer* handle;
+  uint32_t tick;
+  uint32_t size;
+  uint32_t ref;
+} BufferBlock;
+
+typedef struct {
+  BufferBlock* freelist;
+  BufferBlock* current;
+  uint32_t cursor;
+} BufferAllocator;
+
+typedef struct {
+  BufferBlock* block;
+  gpu_buffer* buffer;
+  uint32_t offset;
+  uint32_t extent;
+  void* pointer;
+} BufferView;
 
 typedef struct {
   gpu_phase readPhase;
@@ -44,36 +69,12 @@ typedef struct {
 
 struct Buffer {
   uint32_t ref;
+  uint32_t base;
   Sync sync;
   gpu_buffer* gpu;
+  BufferBlock* block;
   BufferInfo info;
-  // Deprecated:
-  uint32_t offset;
-  uint32_t tick;
-  char* pointer;
 };
-
-typedef struct {
-  gpu_buffer* buffer;
-  uint32_t offset;
-  uint32_t extent;
-  void* pointer;
-} MappedBuffer;
-
-typedef struct {
-  void* next;
-  void* pointer;
-  gpu_buffer* gpu;
-  uint32_t size;
-  uint32_t tick;
-} ScratchBuffer;
-
-typedef struct {
-  ScratchBuffer* oldest;
-  ScratchBuffer* newest;
-  gpu_buffer_type type;
-  uint32_t cursor;
-} BufferPool;
 
 struct Texture {
   uint32_t ref;
@@ -81,6 +82,7 @@ struct Texture {
   Sync sync;
   gpu_texture* gpu;
   gpu_texture* renderView;
+  gpu_texture* storageView;
   Material* material;
   TextureInfo info;
 };
@@ -89,6 +91,12 @@ struct Sampler {
   uint32_t ref;
   gpu_sampler* gpu;
   SamplerInfo info;
+};
+
+enum {
+  VERTEX = (1 << STAGE_VERTEX),
+  FRAGMENT = (1 << STAGE_FRAGMENT),
+  COMPUTE = (1 << STAGE_COMPUTE)
 };
 
 typedef struct {
@@ -123,6 +131,7 @@ struct Shader {
   uint32_t storageMask;
   uint32_t constantSize;
   uint32_t constantCount;
+  uint32_t stageMask;
   ShaderAttribute* attributes;
   ShaderResource* resources;
   DataField* constants;
@@ -201,7 +210,7 @@ typedef enum {
   VERTEX_GLYPH,
   VERTEX_MODEL,
   VERTEX_EMPTY,
-  VERTEX_FORMAX
+  VERTEX_FORMAT_COUNT
 } VertexFormat;
 
 typedef struct {
@@ -225,11 +234,13 @@ typedef struct {
   uint32_t start;
   uint32_t count;
   uint32_t instances;
-  uint32_t base;
+  uint32_t baseVertex;
 } DrawInfo;
 
 typedef struct {
-  float properties[3][4];
+  float position[3];
+  float rotation[4];
+  float scale[3];
 } NodeTransform;
 
 typedef struct {
@@ -272,13 +283,13 @@ typedef enum {
 typedef struct {
   Pass* pass;
   double cpuTime;
-} PassTime;
+} TimingInfo;
 
 struct Readback {
   uint32_t ref;
   uint32_t tick;
   Readback* next;
-  MappedBuffer mapped;
+  BufferView view;
   ReadbackType type;
   union {
     struct {
@@ -290,7 +301,7 @@ struct Readback {
       Image* image;
     };
     struct {
-      PassTime* times;
+      TimingInfo* times;
       uint32_t count;
     };
   };
@@ -316,10 +327,10 @@ typedef struct {
 
 typedef struct {
   struct { float x, y, z; } position;
-  struct { float x, y, z; } normal;
+  uint32_t normal;
   struct { float u, v; } uv;
   struct { uint8_t r, g, b, a; } color;
-  struct { float x, y, z, w; } tangent;
+  uint32_t tangent;
 } ModelVertex;
 
 typedef struct {
@@ -360,7 +371,7 @@ typedef struct {
   uint32_t baseVertex;
   gpu_buffer* vertexBuffer;
   gpu_buffer* indexBuffer;
-} Shape;
+} CachedShape;
 
 enum {
   ACCESS_COMPUTE,
@@ -369,6 +380,7 @@ enum {
 
 typedef struct {
   Sync* sync;
+  void* object;
   gpu_phase phase;
   gpu_cache cache;
 } Access;
@@ -378,7 +390,8 @@ typedef struct {
   void* next;
   uint64_t count;
   uint64_t textureMask;
-  Access list[62];
+  uint64_t padding;
+  Access list[41];
 } AccessBlock;
 
 typedef struct {
@@ -445,8 +458,7 @@ typedef struct {
 enum {
   DRAW_INDIRECT = (1 << 0),
   DRAW_INDEX32 = (1 << 1),
-  DRAW_INLINE_MESH = (1 << 2),
-  DRAW_HAS_BOUNDS = (1 << 3)
+  DRAW_HAS_BOUNDS = (1 << 2)
 };
 
 typedef struct {
@@ -483,7 +495,7 @@ typedef struct {
 
 typedef struct {
   gpu_tally* gpu;
-  gpu_buffer* secretBuffer;
+  Buffer* tempBuffer;
   bool active;
   uint32_t count;
   uint32_t bufferOffset;
@@ -493,11 +505,10 @@ typedef struct {
 struct Pass {
   uint32_t ref;
   uint32_t flags;
+  gpu_pass* gpu;
   Allocator allocator;
-  BufferPool buffers;
-  uint32_t firstScratchOffset;
-  ScratchBuffer* firstScratchBuffer;
-  Shape geocache[16];
+  BufferAllocator buffers;
+  CachedShape geocache[16];
   AccessBlock* access[2];
   Tally tally;
   Canvas canvas;
@@ -510,21 +521,20 @@ struct Pass {
   Pipeline* pipeline;
   uint32_t transformIndex;
   uint32_t pipelineIndex;
+  char* constants;
   gpu_binding* bindings;
   uint32_t bindingMask;
-  char* constants;
   uint32_t computeCount;
-  uint32_t drawCount;
   Compute* computes;
-  Draw** draws;
-  Draw* lastDraw;
+  uint32_t drawCount;
+  uint32_t drawCapacity;
+  Draw* draws;
   PassStats stats;
 };
 
 typedef struct {
   Material* list;
-  gpu_buffer* buffer;
-  void* pointer;
+  BufferView view;
   gpu_bundle_pool* bundlePool;
   gpu_bundle* bundles;
   uint32_t head;
@@ -553,7 +563,7 @@ typedef struct {
 } ScratchTexture;
 
 static struct {
-  bool initialized;
+  uint32_t ref;
   bool active;
   bool presentable;
   bool timingEnabled;
@@ -571,25 +581,23 @@ static struct {
   TextureFormat depthFormat;
   Texture* window;
   Pass* windowPass;
-  arr_t(Pass*) passes;
-  uint32_t passCount;
   Font* defaultFont;
   Buffer* defaultBuffer;
   Texture* defaultTexture;
   Sampler* defaultSamplers[2];
   Shader* defaultShaders[DEFAULT_SHADER_COUNT];
-  gpu_vertex_format vertexFormats[VERTEX_FORMAX];
+  gpu_vertex_format vertexFormats[VERTEX_FORMAT_COUNT];
   Readback* oldestReadback;
   Readback* newestReadback;
   Material* defaultMaterial;
   size_t materialBlock;
   arr_t(MaterialBlock) materialBlocks;
-  BufferPool streamBuffers;
-  BufferPool uploadBuffers;
-  BufferPool downloadBuffers;
+  BufferAllocator bufferAllocators[4];
   arr_t(ScratchTexture) scratchTextures;
+  map_t passLookup;
   map_t pipelineLookup;
-  arr_t(gpu_pipeline*) pipelines;
+  gpu_pipeline* pipelines;
+  uint32_t pipelineCount;
   arr_t(Layout) layouts;
   Allocator allocator;
 } state;
@@ -599,15 +607,22 @@ static struct {
 static void* tempAlloc(Allocator* allocator, size_t size);
 static size_t tempPush(Allocator* allocator);
 static void tempPop(Allocator* allocator, size_t stack);
-static MappedBuffer mapBuffer(BufferPool* pool, uint32_t size, size_t align);
+static gpu_pipeline* getPipeline(uint32_t index);
+static BufferBlock* getBlock(gpu_buffer_type type, uint32_t size);
+static void freeBlock(BufferAllocator* allocator, BufferBlock* block);
+static BufferView allocateBuffer(BufferAllocator* allocator, gpu_buffer_type type, uint32_t size, size_t align);
+static BufferView getBuffer(gpu_buffer_type type, uint32_t size, size_t align);
 static int u64cmp(const void* a, const void* b);
 static uint32_t lcm(uint32_t a, uint32_t b);
 static void beginFrame(void);
+static void flushTransfers();
 static void processReadbacks(void);
+static gpu_pass* getPass(Canvas* canvas);
 static size_t getLayout(gpu_slot* slots, uint32_t count);
 static gpu_bundle* getBundle(size_t layout, gpu_binding* bindings, uint32_t count);
 static gpu_texture* getScratchTexture(Canvas* canvas, TextureFormat format, bool srgb);
 static bool isDepthFormat(TextureFormat format);
+static bool supportsSRGB(TextureFormat format);
 static uint32_t measureTexture(TextureFormat format, uint32_t w, uint32_t h, uint32_t d);
 static void checkTextureBounds(const TextureInfo* info, uint32_t offset[4], uint32_t extent[3]);
 static void mipmapTexture(gpu_stream* stream, Texture* texture, uint32_t base, uint32_t count);
@@ -617,7 +632,7 @@ static void trackBuffer(Pass* pass, Buffer* buffer, gpu_phase phase, gpu_cache c
 static void trackTexture(Pass* pass, Texture* texture, gpu_phase phase, gpu_cache cache);
 static void trackMaterial(Pass* pass, Material* material);
 static bool syncResource(Access* access, gpu_barrier* barrier);
-static gpu_barrier syncTransfer(Sync* sync, gpu_cache cache);
+static gpu_barrier syncTransfer(Sync* sync, gpu_phase phase, gpu_cache cache);
 static void updateModelTransforms(Model* model, uint32_t nodeIndex, float* parent);
 static void checkShaderFeatures(uint32_t* features, uint32_t count);
 static void onResize(uint32_t width, uint32_t height);
@@ -626,36 +641,34 @@ static void onMessage(void* context, const char* message, bool severe);
 // Entry
 
 bool lovrGraphicsInit(GraphicsConfig* config) {
-  if (state.initialized) return false;
-
-  state.config = *config;
+  if (atomic_fetch_add(&state.ref, 1)) return false;
 
   gpu_config gpu = {
     .debug = config->debug,
-    .callback = onMessage,
+    .fnLog = onMessage,
+    .fnAlloc = malloc,
+    .fnFree = free,
     .engineName = "LOVR",
     .engineVersion = { LOVR_VERSION_MAJOR, LOVR_VERSION_MINOR, LOVR_VERSION_PATCH },
     .device = &state.device,
     .features = &state.features,
-    .limits = &state.limits
-  };
-
+    .limits = &state.limits,
 #ifdef LOVR_VK
-  gpu.vk.cacheData = config->cacheData;
-  gpu.vk.cacheSize = config->cacheSize;
-#ifndef LOVR_DISABLE_HEADSET
-  if (lovrHeadsetInterface) {
-    gpu.vk.getPhysicalDevice = lovrHeadsetInterface->getVulkanPhysicalDevice;
-    gpu.vk.createInstance = lovrHeadsetInterface->createVulkanInstance;
-    gpu.vk.createDevice = lovrHeadsetInterface->createVulkanDevice;
-  }
+    .vk.cacheData = config->cacheData,
+    .vk.cacheSize = config->cacheSize,
 #endif
+#if defined(LOVR_VK) && !defined(LOVR_DISABLE_HEADSET)
+    .vk.getPhysicalDevice = lovrHeadsetInterface ? lovrHeadsetInterface->getVulkanPhysicalDevice : NULL,
+    .vk.createInstance = lovrHeadsetInterface ? lovrHeadsetInterface->createVulkanInstance : NULL,
+    .vk.createDevice = lovrHeadsetInterface ? lovrHeadsetInterface->createVulkanDevice : NULL,
 #endif
+  };
 
   if (!gpu_init(&gpu)) {
     lovrThrow("Failed to initialize GPU");
   }
 
+  state.config = *config;
   state.timingEnabled = config->debug;
 
   // Temporary frame memory uses a large 1GB virtual memory allocation, committing pages as needed
@@ -664,12 +677,11 @@ bool lovrGraphicsInit(GraphicsConfig* config) {
   state.allocator.memory = os_vm_init(state.allocator.limit);
   os_vm_commit(state.allocator.memory, state.allocator.length);
 
-  state.streamBuffers.type = GPU_BUFFER_STREAM;
-  state.uploadBuffers.type = GPU_BUFFER_UPLOAD;
-  state.downloadBuffers.type = GPU_BUFFER_DOWNLOAD;
+  state.pipelines = os_vm_init(MAX_PIPELINES * gpu_sizeof_pipeline());
+  lovrAssert(state.pipelines, "Out of memory");
 
+  map_init(&state.passLookup, 4);
   map_init(&state.pipelineLookup, 64);
-  arr_init(&state.pipelines, realloc);
   arr_init(&state.layouts, realloc);
   arr_init(&state.materialBlocks, realloc);
   arr_init(&state.scratchTextures, realloc);
@@ -706,11 +718,11 @@ bool lovrGraphicsInit(GraphicsConfig* config) {
   }, NULL);
 
   beginFrame();
-  MappedBuffer mapped = mapBuffer(&state.uploadBuffers, sizeof(data), 4);
-  memcpy(mapped.pointer, data, sizeof(data));
-  gpu_copy_buffers(state.stream, mapped.buffer, state.defaultBuffer->gpu, mapped.offset, 0, sizeof(data));
+  BufferView view = getBuffer(GPU_BUFFER_UPLOAD, sizeof(data), 4);
+  memcpy(view.pointer, data, sizeof(data));
+  gpu_copy_buffers(state.stream, view.buffer, state.defaultBuffer->gpu, view.offset, state.defaultBuffer->base, sizeof(data));
 
-  Image* image = lovrImageCreateRaw(4, 4, FORMAT_RGBA8);
+  Image* image = lovrImageCreateRaw(4, 4, FORMAT_RGBA8, false);
 
   float white[4] = { 1.f, 1.f, 1.f, 1.f };
   for (uint32_t y = 0; y < 4; y++) {
@@ -728,7 +740,7 @@ bool lovrGraphicsInit(GraphicsConfig* config) {
     .layers = 1,
     .mipmaps = 1,
     .samples = 1,
-    .srgb = true,
+    .srgb = false,
     .imageCount = 1,
     .images = &image,
     .label = "Default Texture"
@@ -784,10 +796,10 @@ bool lovrGraphicsInit(GraphicsConfig* config) {
     .attributeCount = 5,
     .bufferStrides[0] = sizeof(ModelVertex),
     .attributes[0] = { 0, 10, offsetof(ModelVertex, position), GPU_TYPE_F32x3 },
-    .attributes[1] = { 0, 11, offsetof(ModelVertex, normal), GPU_TYPE_F32x3 },
+    .attributes[1] = { 0, 11, offsetof(ModelVertex, normal), GPU_TYPE_SN10x3 },
     .attributes[2] = { 0, 12, offsetof(ModelVertex, uv), GPU_TYPE_F32x2 },
     .attributes[3] = { 0, 13, offsetof(ModelVertex, color), GPU_TYPE_UN8x4 },
-    .attributes[4] = { 0, 14, offsetof(ModelVertex, tangent), GPU_TYPE_F32x4 }
+    .attributes[4] = { 0, 14, offsetof(ModelVertex, tangent), GPU_TYPE_SN10x3 }
   };
 
   state.vertexFormats[VERTEX_EMPTY] = (gpu_vertex_format) {
@@ -809,18 +821,15 @@ bool lovrGraphicsInit(GraphicsConfig* config) {
     .texture = state.defaultTexture
   });
 
-  arr_init(&state.passes, arr_alloc);
-
   float16Init();
 #ifdef LOVR_USE_GLSLANG
   glslang_initialize_process();
 #endif
-  state.initialized = true;
   return true;
 }
 
 void lovrGraphicsDestroy(void) {
-  if (!state.initialized) return;
+  if (atomic_fetch_sub(&state.ref, 1) != 1) return;
 #ifndef LOVR_DISABLE_HEADSET
   // If there's an active headset session it needs to be stopped so it can clean up its Pass and
   // swapchain textures before gpu_destroy is called.  This is really hacky and should be solved
@@ -829,9 +838,6 @@ void lovrGraphicsDestroy(void) {
     lovrHeadsetInterface->stop();
   }
 #endif
-  for (size_t i = 0; i < state.passes.length; i++) {
-    lovrRelease(state.passes.data[i], lovrPassDestroy);
-  }
   Readback* readback = state.oldestReadback;
   while (readback) {
     Readback* next = readback->next;
@@ -839,6 +845,7 @@ void lovrGraphicsDestroy(void) {
     readback = next;
   }
   if (state.timestamps) gpu_tally_destroy(state.timestamps);
+  free(state.timestamps);
   lovrRelease(state.window, lovrTextureDestroy);
   lovrRelease(state.windowPass, lovrPassDestroy);
   lovrRelease(state.defaultFont, lovrFontDestroy);
@@ -852,10 +859,12 @@ void lovrGraphicsDestroy(void) {
   lovrRelease(state.defaultMaterial, lovrMaterialDestroy);
   for (size_t i = 0; i < state.materialBlocks.length; i++) {
     MaterialBlock* block = &state.materialBlocks.data[i];
-    gpu_buffer_destroy(block->buffer);
+    BufferBlock* current = state.bufferAllocators[GPU_BUFFER_STATIC].current;
+    if (block->view.block != current && atomic_fetch_sub(&block->view.block->ref, 1) == 1) {
+      freeBlock(&state.bufferAllocators[GPU_BUFFER_STATIC], block->view.block);
+    }
     gpu_bundle_pool_destroy(block->bundlePool);
     free(block->list);
-    free(block->buffer);
     free(block->bundlePool);
     free(block->bundles);
   }
@@ -865,20 +874,33 @@ void lovrGraphicsDestroy(void) {
     free(state.scratchTextures.data[i].texture);
   }
   arr_free(&state.scratchTextures);
-  for (size_t i = 0; i < state.pipelines.length; i++) {
-    gpu_pipeline_destroy(state.pipelines.data[i]);
-    free(state.pipelines.data[i]);
+  for (size_t i = 0; i < state.pipelineCount; i++) {
+    gpu_pipeline_destroy(getPipeline(i));
   }
+  os_vm_free(state.pipelines, MAX_PIPELINES * gpu_sizeof_pipeline());
   map_free(&state.pipelineLookup);
-  arr_free(&state.pipelines);
-  BufferPool* pools[] = { &state.streamBuffers, &state.uploadBuffers, &state.downloadBuffers };
-  for (size_t i = 0; i < COUNTOF(pools); i++) {
-    ScratchBuffer* buffer = pools[i]->oldest;
-    while (buffer) {
-      ScratchBuffer* next = buffer->next;
-      gpu_buffer_destroy(buffer->gpu);
-      free(buffer);
-      buffer = next;
+  for (size_t i = 0; i < state.passLookup.size; i++) {
+    if (state.passLookup.values[i] != MAP_NIL) {
+      gpu_pass* pass = (gpu_pass*) (uintptr_t) state.passLookup.values[i];
+      gpu_pass_destroy(pass);
+      free(pass);
+    }
+  }
+  map_free(&state.passLookup);
+  for (size_t i = 0; i < COUNTOF(state.bufferAllocators); i++) {
+    BufferBlock* block = state.bufferAllocators[i].freelist;
+    while (block) {
+      gpu_buffer_destroy(block->handle);
+      BufferBlock* next = block->next;
+      free(block);
+      block = next;
+    }
+
+    BufferBlock* current = state.bufferAllocators[i].current;
+
+    if (current) {
+      gpu_buffer_destroy(current->handle);
+      free(current);
     }
   }
   for (size_t i = 0; i < state.layouts.length; i++) {
@@ -904,7 +926,7 @@ void lovrGraphicsDestroy(void) {
 }
 
 bool lovrGraphicsIsInitialized(void) {
-  return state.initialized;
+  return state.ref;
 }
 
 void lovrGraphicsGetDevice(GraphicsDevice* device) {
@@ -970,13 +992,9 @@ uint32_t lovrGraphicsGetFormatSupport(uint32_t format, uint32_t features) {
     if (features) {
       support |=
         (((~features & TEXTURE_FEATURE_SAMPLE) || (supports & GPU_FEATURE_SAMPLE)) &&
-        ((~features & TEXTURE_FEATURE_FILTER) || (supports & GPU_FEATURE_FILTER)) &&
         ((~features & TEXTURE_FEATURE_RENDER) || (supports & GPU_FEATURE_RENDER)) &&
-        ((~features & TEXTURE_FEATURE_BLEND) || (supports & GPU_FEATURE_BLEND)) &&
         ((~features & TEXTURE_FEATURE_STORAGE) || (supports & GPU_FEATURE_STORAGE)) &&
-        ((~features & TEXTURE_FEATURE_ATOMIC) || (supports & GPU_FEATURE_ATOMIC)) &&
-        ((~features & TEXTURE_FEATURE_BLIT_SRC) || (supports & GPU_FEATURE_BLIT_SRC)) &&
-        ((~features & TEXTURE_FEATURE_BLIT_DST) || (supports & GPU_FEATURE_BLIT_DST))) << i;
+        ((~features & TEXTURE_FEATURE_BLIT) || (supports & GPU_FEATURE_BLIT))) << i;
     } else {
       support |= !!supports << i;
     }
@@ -1070,15 +1088,11 @@ static void recordRenderPass(Pass* pass, gpu_stream* stream) {
 
   gpu_canvas target = { 0 };
 
-  target.size[0] = canvas->width;
-  target.size[1] = canvas->height;
-
   Texture* texture = canvas->color[0].texture;
   for (uint32_t i = 0; i < canvas->count; i++, texture = canvas->color[i].texture) {
     target.color[i] = (gpu_color_attachment) {
       .texture = canvas->resolve ? getScratchTexture(canvas, texture->info.format, texture->info.srgb) : texture->renderView,
       .resolve = canvas->resolve ? texture->renderView : NULL,
-      .load = canvas->resolve ? GPU_LOAD_OP_CLEAR : (gpu_load_op) canvas->color[i].load,
       .clear[0] = canvas->color[i].clear[0],
       .clear[1] = canvas->color[i].clear[1],
       .clear[2] = canvas->color[i].clear[2],
@@ -1090,13 +1104,13 @@ static void recordRenderPass(Pass* pass, gpu_stream* stream) {
     target.depth = (gpu_depth_attachment) {
       .texture = canvas->resolve || !texture ? getScratchTexture(canvas, canvas->depth.format, false) : texture->renderView,
       .resolve = canvas->resolve && texture ? texture->renderView : NULL,
-      .load = canvas->resolve ? GPU_LOAD_OP_CLEAR : (gpu_load_op) canvas->depth.load,
-      .stencilLoad = canvas->resolve ? GPU_LOAD_OP_CLEAR : (gpu_load_op) canvas->depth.load,
-      .save = texture ? GPU_SAVE_OP_KEEP : GPU_SAVE_OP_DISCARD,
-      .stencilSave = texture ? GPU_SAVE_OP_KEEP : GPU_SAVE_OP_DISCARD,
-      .clear.depth = canvas->depth.clear
+      .clear = canvas->depth.clear
     };
   }
+
+  target.pass = pass->gpu;
+  target.width = canvas->width;
+  target.height = canvas->height;
 
   // Cameras
 
@@ -1134,7 +1148,7 @@ static void recordRenderPass(Pass* pass, gpu_stream* stream) {
       }
 
       while (drawIndex < pass->drawCount) {
-        Draw* draw = &pass->draws[drawIndex >> 8][drawIndex & 0xff];
+        Draw* draw = &pass->draws[drawIndex];
 
         if (draw->camera != c) {
           break;
@@ -1200,7 +1214,7 @@ static void recordRenderPass(Pass* pass, gpu_stream* stream) {
 
   if (activeDrawCount == 0) {
     gpu_render_begin(stream, &target);
-    gpu_render_end(stream);
+    gpu_render_end(stream, &target);
     return;
   }
 
@@ -1213,30 +1227,30 @@ static void recordRenderPass(Pass* pass, gpu_stream* stream) {
     { 3, GPU_SLOT_SAMPLER, .sampler = pass->sampler ? pass->sampler->gpu : state.defaultSamplers[FILTER_LINEAR]->gpu }
   };
 
-  MappedBuffer mapped;
+  BufferView view;
   size_t align = state.limits.uniformBufferAlign;
 
   // Globals
-  mapped = mapBuffer(&state.streamBuffers, sizeof(Globals), align);
-  builtins[0].buffer = (gpu_buffer_binding) { mapped.buffer, mapped.offset, mapped.extent };
-  Globals* global = mapped.pointer;
+  view = getBuffer(GPU_BUFFER_STREAM, sizeof(Globals), align);
+  builtins[0].buffer = (gpu_buffer_binding) { view.buffer, view.offset, view.extent };
+  Globals* global = view.pointer;
   global->resolution[0] = canvas->width;
   global->resolution[1] = canvas->height;
   global->time = lovrHeadsetInterface ? lovrHeadsetInterface->getDisplayTime() : os_get_time();
 
   // Cameras
-  mapped = mapBuffer(&state.streamBuffers, pass->cameraCount * canvas->views * sizeof(Camera), align);
-  builtins[1].buffer = (gpu_buffer_binding) { mapped.buffer, mapped.offset, mapped.extent };
-  memcpy(mapped.pointer, pass->cameras, pass->cameraCount * canvas->views * sizeof(Camera));
+  view = getBuffer(GPU_BUFFER_STREAM, pass->cameraCount * canvas->views * sizeof(Camera), align);
+  builtins[1].buffer = (gpu_buffer_binding) { view.buffer, view.offset, view.extent };
+  memcpy(view.pointer, pass->cameras, pass->cameraCount * canvas->views * sizeof(Camera));
 
   // DrawData
   uint32_t alignedDrawCount = activeDrawCount <= 256 ? activeDrawCount : ALIGN(activeDrawCount, 256);
-  mapped = mapBuffer(&state.streamBuffers, alignedDrawCount * sizeof(DrawData), align);
-  builtins[2].buffer = (gpu_buffer_binding) { mapped.buffer, mapped.offset, MIN(activeDrawCount, 256) * sizeof(DrawData) };
-  DrawData* data = mapped.pointer;
+  view = getBuffer(GPU_BUFFER_STREAM, alignedDrawCount * sizeof(DrawData), align);
+  builtins[2].buffer = (gpu_buffer_binding) { view.buffer, view.offset, MIN(activeDrawCount, 256) * sizeof(DrawData) };
+  DrawData* data = view.pointer;
 
   for (uint32_t i = 0; i < activeDrawCount; i++, data++) {
-    Draw* draw = &pass->draws[activeDraws[i] >> 8][activeDraws[i] & 0xff];
+    Draw* draw = &pass->draws[activeDraws[i]];
     // transform is provided as 4x3 row-major matrix for packing reasons, need to transpose
     data->transform[0] = draw->transform[0];
     data->transform[1] = draw->transform[4];
@@ -1260,20 +1274,19 @@ static void recordRenderPass(Pass* pass, gpu_stream* stream) {
 
   // Pipelines
 
-  if (!pass->lastDraw->pipeline) {
-    uint32_t i = 0;
-    Draw* prev = NULL;
+  if (!pass->draws[pass->drawCount - 1].pipeline) {
+    uint32_t first = 0;
 
-    while (i < pass->drawCount && pass->draws[i >> 8][i & 0xff].pipeline) {
-      i++;
+    while (pass->draws[first].pipeline) {
+      first++; // TODO could binary search or cache
     }
 
-    while (i < pass->drawCount) {
-      Draw* draw = &pass->draws[i >> 8][i & 0xff];
+    for (uint32_t i = first; i < pass->drawCount; i++) {
+      Draw* prev = &pass->draws[i - 1];
+      Draw* draw = &pass->draws[i];
 
-      if (prev && draw->pipelineInfo == prev->pipelineInfo) {
+      if (i > 0 && draw->pipelineInfo == prev->pipelineInfo) {
         draw->pipeline = prev->pipeline;
-        i++;
         continue;
       }
 
@@ -1281,17 +1294,14 @@ static void recordRenderPass(Pass* pass, gpu_stream* stream) {
       uint64_t index = map_get(&state.pipelineLookup, hash);
 
       if (index == MAP_NIL) {
-        gpu_pipeline* gpu = malloc(gpu_sizeof_pipeline());
-        lovrAssert(gpu, "Out of memory");
-        gpu_pipeline_init_graphics(gpu, draw->pipelineInfo);
-        index = state.pipelines.length;
-        arr_push(&state.pipelines, gpu);
+        lovrAssert(state.pipelineCount < MAX_PIPELINES, "Too many pipelines!");
+        index = state.pipelineCount++;
+        os_vm_commit(state.pipelines, state.pipelineCount * gpu_sizeof_pipeline());
+        gpu_pipeline_init_graphics(getPipeline(index), draw->pipelineInfo);
         map_set(&state.pipelineLookup, hash, index);
       }
 
-      draw->pipeline = state.pipelines.data[index];
-      prev = draw;
-      i++;
+      draw->pipeline = getPipeline(index);
     }
   }
 
@@ -1299,7 +1309,7 @@ static void recordRenderPass(Pass* pass, gpu_stream* stream) {
 
   Draw* prev = NULL;
   for (uint32_t i = 0; i < activeDrawCount; i++) {
-    Draw* draw = &pass->draws[activeDraws[i] >> 8][activeDraws[i] & 0xff];
+    Draw* draw = &pass->draws[activeDraws[i]];
 
     if (i > 0 && draw->bundleInfo == prev->bundleInfo) {
       draw->bundle = prev->bundle;
@@ -1330,10 +1340,8 @@ static void recordRenderPass(Pass* pass, gpu_stream* stream) {
         .count = MAX_TALLIES * state.limits.renderSize[2]
       });
 
-      pass->tally.secretBuffer = malloc(gpu_sizeof_buffer());
-      gpu_buffer_init(pass->tally.secretBuffer, &(gpu_buffer_info) {
-        .size = MAX_TALLIES * state.limits.renderSize[2] * sizeof(uint32_t)
-      });
+      BufferInfo info = { .size = MAX_TALLIES * state.limits.renderSize[2] * sizeof(uint32_t) };
+      pass->tally.tempBuffer = lovrBufferCreate(&info, NULL);
     }
 
     gpu_clear_tally(stream, pass->tally.gpu, 0, pass->tally.count * canvas->views);
@@ -1360,10 +1368,10 @@ static void recordRenderPass(Pass* pass, gpu_stream* stream) {
   gpu_buffer* indexBuffer = NULL;
   void* constants = NULL;
 
-  gpu_bind_vertex_buffers(stream, &state.defaultBuffer->gpu, NULL, 1, 1);
+  gpu_bind_vertex_buffers(stream, &state.defaultBuffer->gpu, &state.defaultBuffer->base, 1, 1);
 
   for (uint32_t i = 0; i < activeDrawCount; i++) {
-    Draw* draw = &pass->draws[activeDraws[i] >> 8][activeDraws[i] & 0xff];
+    Draw* draw = &pass->draws[activeDraws[i]];
     bool constantsDirty = draw->constants != constants;
 
     if (pass->tally.buffer && draw->tally != tally) {
@@ -1428,32 +1436,37 @@ static void recordRenderPass(Pass* pass, gpu_stream* stream) {
     gpu_tally_finish(stream, pass->tally.gpu, tally * canvas->views);
   }
 
-  gpu_render_end(stream);
+  gpu_render_end(stream, &target);
 
   // Automipmap
 
-  gpu_barrier barrier = {
-    .prev = GPU_PHASE_ALL, // Waits for the external subpass dependency layout transition
-    .next = GPU_PHASE_TRANSFER,
-    .flush = 0,
-    .clear = GPU_CACHE_TRANSFER_READ
-  };
+  bool synchronized = false;
+  for (uint32_t t = 0; t < canvas->count; t++) {
+    if (canvas->color[t].texture->info.mipmaps > 1) {
+      if (!synchronized) {
+        synchronized = true;
+        gpu_sync(stream, &(gpu_barrier) {
+          .prev = GPU_PHASE_COLOR,
+          .next = GPU_PHASE_BLIT,
+          .flush = GPU_CACHE_COLOR_WRITE,
+          .clear = GPU_CACHE_TRANSFER_READ
+        }, 1);
+      }
 
-  uint32_t barrierCount = 1;
-
-  texture = canvas->color[0].texture;
-  for (uint32_t t = 0; t < canvas->count; t++, texture = canvas->color[t].texture) {
-    if (texture->info.mipmaps > 1) {
-      gpu_sync(stream, &barrier, barrierCount);
-      mipmapTexture(stream, texture, 0, ~0u);
-      barrierCount = 0;
+      mipmapTexture(stream, canvas->color[t].texture, 0, ~0u);
     }
   }
 
   texture = canvas->depth.texture;
-  if (texture && texture->info.mipmaps > 1) {
-    gpu_sync(stream, &barrier, barrierCount);
-    mipmapTexture(stream, texture, 0, ~0u);
+  if (canvas->depth.texture && canvas->depth.texture->info.mipmaps > 1) {
+    gpu_sync(stream, &(gpu_barrier) {
+      .prev = GPU_PHASE_DEPTH_EARLY | GPU_PHASE_DEPTH_LATE,
+      .next = GPU_PHASE_BLIT,
+      .flush = GPU_CACHE_DEPTH_WRITE,
+      .clear = GPU_CACHE_TRANSFER_READ
+    }, 1);
+
+    mipmapTexture(stream, canvas->depth.texture, 0, ~0u);
   }
 
   // Tally copy
@@ -1461,11 +1474,12 @@ static void recordRenderPass(Pass* pass, gpu_stream* stream) {
   if (pass->tally.buffer && pass->tally.count > 0) {
     Tally* tally = &pass->tally;
     uint32_t count = MIN(tally->count, (tally->buffer->info.size - tally->bufferOffset) / 4);
+    Buffer* tempBuffer = pass->tally.tempBuffer;
 
-    gpu_copy_tally_buffer(stream, tally->gpu, tally->secretBuffer, 0, 0, count * canvas->views);
+    gpu_copy_tally_buffer(stream, tally->gpu, tempBuffer->gpu, 0, tempBuffer->base, count * canvas->views);
 
     gpu_barrier barrier = {
-      .prev = GPU_PHASE_TRANSFER,
+      .prev = GPU_PHASE_COPY,
       .next = GPU_PHASE_SHADER_COMPUTE,
       .flush = GPU_CACHE_TRANSFER_WRITE,
       .clear = GPU_CACHE_STORAGE_READ
@@ -1473,6 +1487,7 @@ static void recordRenderPass(Pass* pass, gpu_stream* stream) {
 
     Access access = {
       .sync = &tally->buffer->sync,
+      .object = tally->buffer,
       .phase = GPU_PHASE_SHADER_COMPUTE,
       .cache = GPU_CACHE_STORAGE_WRITE
     };
@@ -1481,8 +1496,8 @@ static void recordRenderPass(Pass* pass, gpu_stream* stream) {
     gpu_sync(stream, &barrier, 1);
 
     gpu_binding bindings[] = {
-      { 0, GPU_SLOT_STORAGE_BUFFER, .buffer = { tally->secretBuffer, 0, count * canvas->views * sizeof(uint32_t) } },
-      { 1, GPU_SLOT_STORAGE_BUFFER, .buffer = { tally->buffer->gpu, tally->bufferOffset, count * sizeof(uint32_t) } }
+      { 0, GPU_SLOT_STORAGE_BUFFER, .buffer = { tempBuffer->gpu, tempBuffer->base, count * canvas->views * sizeof(uint32_t) } },
+      { 1, GPU_SLOT_STORAGE_BUFFER, .buffer = { tally->buffer->gpu, tally->buffer->base + tally->bufferOffset, count * sizeof(uint32_t) } }
     };
 
     Shader* shader = lovrGraphicsGetDefaultShader(SHADER_TALLY_MERGE);
@@ -1498,7 +1513,7 @@ static void recordRenderPass(Pass* pass, gpu_stream* stream) {
   }
 }
 
-static Readback* lovrReadbackCreateTimestamp(PassTime* passes, uint32_t count, MappedBuffer mapped);
+static Readback* lovrReadbackCreateTimestamp(TimingInfo* passes, uint32_t count, BufferView view);
 
 void lovrGraphicsSubmit(Pass** passes, uint32_t count) {
   beginFrame();
@@ -1552,9 +1567,11 @@ void lovrGraphicsSubmit(Pass** passes, uint32_t count) {
     // Color attachments
     for (uint32_t t = 0; t < canvas->count; t++) {
       if (canvas->color[t].texture == state.window) continue;
+      Texture* texture = canvas->color[t].texture;
 
       Access access = {
-        .sync = &canvas->color[t].texture->sync,
+        .sync = texture->info.parent ? &texture->info.parent->sync : &texture->sync,
+        .object = texture,
         .phase = GPU_PHASE_COLOR,
         .cache = GPU_CACHE_COLOR_WRITE | ((!canvas->resolve && canvas->color[t].load == LOAD_KEEP) ? GPU_CACHE_COLOR_READ : 0)
       };
@@ -1562,15 +1579,20 @@ void lovrGraphicsSubmit(Pass** passes, uint32_t count) {
       syncResource(&access, access.sync->barrier);
       access.sync->barrier = &renderBarriers[i];
 
-      if (canvas->color[t].texture->info.mipmaps > 1) {
-        access.sync->writePhase = GPU_PHASE_TRANSFER;
+      if (texture->info.mipmaps > 1) {
+        access.sync->writePhase = GPU_PHASE_BLIT;
         access.sync->pendingWrite = GPU_CACHE_TRANSFER_WRITE;
       }
     }
 
     // Depth attachment
     if (canvas->depth.texture) {
-      Access access = { .sync = &canvas->depth.texture->sync };
+      Texture* texture = canvas->depth.texture;
+
+      Access access = {
+        .sync = texture->info.parent ? &texture->info.parent->sync : &texture->sync,
+        .object = texture
+      };
 
       if (canvas->resolve) {
         access.phase = GPU_PHASE_COLOR; // Depth resolve operations act like color resolves w.r.t. sync
@@ -1583,8 +1605,8 @@ void lovrGraphicsSubmit(Pass** passes, uint32_t count) {
       syncResource(&access, access.sync->barrier);
       access.sync->barrier = &renderBarriers[i];
 
-      if (canvas->depth.texture->info.mipmaps > 1) {
-        access.sync->writePhase = GPU_PHASE_TRANSFER;
+      if (texture->info.mipmaps > 1) {
+        access.sync->writePhase = GPU_PHASE_BLIT;
         access.sync->pendingWrite = GPU_CACHE_TRANSFER_WRITE;
       }
     }
@@ -1597,10 +1619,10 @@ void lovrGraphicsSubmit(Pass** passes, uint32_t count) {
     }
   }
 
-  PassTime* times = NULL;
+  TimingInfo* times = NULL;
 
   if (state.timingEnabled && count > 0) {
-    times = malloc(count * sizeof(PassTime));
+    times = malloc(count * sizeof(TimingInfo));
     lovrAssert(times, "Out of memory");
 
     for (uint32_t i = 0; i < count; i++) {
@@ -1655,9 +1677,9 @@ void lovrGraphicsSubmit(Pass** passes, uint32_t count) {
   }
 
   if (state.timingEnabled && count > 0) {
-    MappedBuffer mapped = mapBuffer(&state.downloadBuffers, 2 * count * sizeof(uint32_t), 4);
-    gpu_copy_tally_buffer(streams[streamCount - 1], state.timestamps, mapped.buffer, 0, mapped.offset, 2 * count);
-    Readback* readback = lovrReadbackCreateTimestamp(times, count, mapped);
+    BufferView view = getBuffer(GPU_BUFFER_DOWNLOAD, 2 * count * sizeof(uint32_t), 4);
+    gpu_copy_tally_buffer(streams[streamCount - 1], state.timestamps, view.buffer, 0, view.offset, 2 * count);
+    Readback* readback = lovrReadbackCreateTimestamp(times, count, view);
     lovrRelease(readback, lovrReadbackDestroy); // It gets freed when it completes
   }
 
@@ -1666,7 +1688,9 @@ void lovrGraphicsSubmit(Pass** passes, uint32_t count) {
     streams++;
   }
 
-  // Reset all resource barriers to the default one (and sneak in OpenXR layout transitions >__>)
+  // - Reset all resource barriers to the default one
+  // - Sneak in OpenXR layout transitions >__>
+  // - Set tick of any full buffers to current tick
   for (uint32_t i = 0; i < count; i++) {
     Canvas* canvas = &passes[i]->canvas;
 
@@ -1697,6 +1721,10 @@ void lovrGraphicsSubmit(Pass** passes, uint32_t count) {
         }
       }
     }
+
+    for (BufferBlock* block = passes[i]->buffers.freelist; block; block = block->next) {
+      block->tick = state.tick;
+    }
   }
 
   for (uint32_t i = 0; i < streamCount; i++) {
@@ -1726,7 +1754,6 @@ void lovrGraphicsWait(void) {
   }
 
   gpu_wait_idle();
-  gpu_wait_tick(state.tick);
   processReadbacks();
 }
 
@@ -1738,6 +1765,7 @@ uint32_t lovrGraphicsAlignFields(DataField* parent, DataLayout layout) {
     [TYPE_U8x4] = { 4, 1, 4 },
     [TYPE_SN8x4] = { 4, 1, 4 },
     [TYPE_UN8x4] = { 4, 1, 4 },
+    [TYPE_SN10x3] = { 4, 4, 4 },
     [TYPE_UN10x3] = { 4, 4, 4 },
     [TYPE_I16] = { 2, 2, 2 },
     [TYPE_I16x2] = { 4, 2, 4 },
@@ -1807,7 +1835,7 @@ uint32_t lovrGraphicsAlignFields(DataField* parent, DataLayout layout) {
   return align;
 }
 
-static Buffer* lovrBufferInit(const BufferInfo* info, bool temporary) {
+Buffer* lovrBufferCreate(const BufferInfo* info, void** data) {
   uint32_t fieldCount = info->format ? MAX(info->fieldCount, info->format->fieldCount + 1) : 0;
 
   size_t charCount = 0;
@@ -1816,26 +1844,18 @@ static Buffer* lovrBufferInit(const BufferInfo* info, bool temporary) {
     charCount += strlen(info->format[i].name) + 1;
   }
 
-  Buffer* buffer;
-  size_t memSize = sizeof(Buffer) + gpu_sizeof_buffer() + charCount + fieldCount * sizeof(DataField);
+  charCount = ALIGN(charCount, 8);
 
-  if (temporary) {
-    beginFrame();
-    buffer = tempAlloc(&state.allocator, memSize);
-    memset(buffer, 0, memSize);
-  } else {
-    buffer = calloc(1, memSize);
-    lovrAssert(buffer, "Out of memory");
-  }
+  Buffer* buffer = calloc(1, sizeof(Buffer) + charCount + fieldCount * sizeof(DataField));
+  lovrAssert(buffer, "Out of memory");
 
   buffer->ref = 1;
   buffer->info = *info;
   buffer->info.fieldCount = fieldCount;
-  buffer->gpu = (gpu_buffer*) ((char*) buffer + sizeof(Buffer));
 
   if (info->format) {
     lovrCheck(info->format->length > 0, "Buffer length can not be zero");
-    char* names = (char*) buffer + sizeof(Buffer) + gpu_sizeof_buffer();
+    char* names = (char*) buffer + sizeof(Buffer);
     DataField* format = buffer->info.format = (DataField*) (names + charCount);
     memcpy(format, info->format, fieldCount * sizeof(DataField));
 
@@ -1876,44 +1896,27 @@ static Buffer* lovrBufferInit(const BufferInfo* info, bool temporary) {
 
   lovrCheck(buffer->info.size > 0, "Buffer size can not be zero");
   lovrCheck(buffer->info.size <= 1 << 30, "Max buffer size is 1GB");
-  return buffer;
-}
 
-// Deprecated
-Buffer* lovrGraphicsGetBuffer(const BufferInfo* info, void** data) {
-  Buffer* buffer = lovrBufferInit(info, true);
-
-  size_t align = lcm(state.limits.uniformBufferAlign, buffer->info.format ? buffer->info.format->stride : 1);
-  MappedBuffer mapped = mapBuffer(&state.streamBuffers, buffer->info.size, align);
-  buffer->gpu = mapped.buffer;
-  buffer->offset = mapped.offset;
-  buffer->pointer = mapped.pointer;
-  buffer->tick = state.tick;
+  size_t stride = buffer->info.format ? buffer->info.format->stride : 4;
+  size_t align = lcm(stride, MAX(state.limits.storageBufferAlign, state.limits.uniformBufferAlign));
+  BufferView view = getBuffer(GPU_BUFFER_STATIC, buffer->info.size, align);
+  buffer->gpu = view.buffer;
+  buffer->base = view.offset;
+  buffer->block = view.block;
+  atomic_fetch_add(&buffer->block->ref, 1);
 
   if (data) {
-    *data = buffer->pointer;
-  }
-
-  return buffer;
-}
-
-Buffer* lovrBufferCreate(const BufferInfo* info, void** data) {
-  Buffer* buffer = lovrBufferInit(info, false);
-
-  gpu_buffer_init(buffer->gpu, &(gpu_buffer_info) {
-    .size = buffer->info.size,
-    .label = info->label,
-    .pointer = data
-  });
-
-  if (data && *data == NULL) {
-    beginFrame();
-    MappedBuffer mapped = mapBuffer(&state.uploadBuffers, buffer->info.size, 4);
-    gpu_copy_buffers(state.stream, mapped.buffer, buffer->gpu, mapped.offset, 0, buffer->info.size);
-    buffer->sync.writePhase = GPU_PHASE_TRANSFER;
-    buffer->sync.pendingWrite = GPU_CACHE_TRANSFER_WRITE;
-    buffer->sync.lastTransferWrite = state.tick;
-    *data = mapped.pointer;
+    if (view.pointer) {
+      *data = view.pointer;
+    } else {
+      beginFrame();
+      BufferView staging = getBuffer(GPU_BUFFER_UPLOAD, buffer->info.size, 4);
+      gpu_copy_buffers(state.stream, staging.buffer, buffer->gpu, staging.offset, buffer->base, buffer->info.size);
+      buffer->sync.writePhase = GPU_PHASE_COPY;
+      buffer->sync.pendingWrite = GPU_CACHE_TRANSFER_WRITE;
+      buffer->sync.lastTransferWrite = state.tick;
+      *data = staging.pointer;
+    }
   }
 
   buffer->sync.barrier = &state.postBarrier;
@@ -1923,8 +1926,10 @@ Buffer* lovrBufferCreate(const BufferInfo* info, void** data) {
 
 void lovrBufferDestroy(void* ref) {
   Buffer* buffer = ref;
-  if (lovrBufferIsTemporary(buffer)) return;
-  gpu_buffer_destroy(buffer->gpu);
+  BufferAllocator* allocator = &state.bufferAllocators[GPU_BUFFER_STATIC];
+  if (buffer->block != allocator->current && atomic_fetch_sub(&buffer->block->ref, 1) == 1) {
+    freeBlock(allocator, buffer->block);
+  }
   free(buffer);
 }
 
@@ -1932,92 +1937,59 @@ const BufferInfo* lovrBufferGetInfo(Buffer* buffer) {
   return &buffer->info;
 }
 
-bool lovrBufferIsTemporary(Buffer* buffer) {
-  return buffer->pointer != NULL;
-}
-
-bool lovrBufferIsValid(Buffer* buffer) {
-  return !lovrBufferIsTemporary(buffer) || buffer->tick == state.tick;
-}
-
 void* lovrBufferGetData(Buffer* buffer, uint32_t offset, uint32_t extent) {
   beginFrame();
   if (extent == ~0u) extent = buffer->info.size - offset;
-  lovrCheck(!lovrBufferIsTemporary(buffer), "Can not read from temporary buffer");
   lovrCheck(offset + extent <= buffer->info.size, "Buffer read range goes past the end of the Buffer");
 
-  gpu_barrier barrier = syncTransfer(&buffer->sync, GPU_CACHE_TRANSFER_READ);
+  gpu_barrier barrier = syncTransfer(&buffer->sync, GPU_PHASE_COPY, GPU_CACHE_TRANSFER_READ);
   gpu_sync(state.stream, &barrier, 1);
 
-  MappedBuffer mapped = mapBuffer(&state.downloadBuffers, extent, 4);
-  gpu_copy_buffers(state.stream, buffer->gpu, mapped.buffer, offset, mapped.offset, extent);
+  BufferView view = getBuffer(GPU_BUFFER_DOWNLOAD, extent, 4);
+  gpu_copy_buffers(state.stream, buffer->gpu, view.buffer, buffer->base + offset, view.offset, extent);
 
   lovrGraphicsSubmit(NULL, 0);
   lovrGraphicsWait();
 
-  return mapped.pointer;
+  return view.pointer;
 }
 
 void* lovrBufferSetData(Buffer* buffer, uint32_t offset, uint32_t extent) {
-  if (lovrBufferIsTemporary(buffer)) {
-    return buffer->pointer + offset;
-  } else {
-    beginFrame();
-    if (extent == ~0u) extent = buffer->info.size - offset;
-    lovrCheck(offset + extent <= buffer->info.size, "Attempt to write past the end of the Buffer");
-    MappedBuffer mapped = mapBuffer(&state.uploadBuffers, extent, 4);
-    gpu_barrier barrier = syncTransfer(&buffer->sync, GPU_CACHE_TRANSFER_WRITE);
-    gpu_sync(state.stream, &barrier, 1);
-    gpu_copy_buffers(state.stream, mapped.buffer, buffer->gpu, mapped.offset, offset, extent);
-    return mapped.pointer;
-  }
+  beginFrame();
+  if (extent == ~0u) extent = buffer->info.size - offset;
+  lovrCheck(offset + extent <= buffer->info.size, "Attempt to write past the end of the Buffer");
+  BufferView view = getBuffer(GPU_BUFFER_UPLOAD, extent, 4);
+  gpu_barrier barrier = syncTransfer(&buffer->sync, GPU_PHASE_COPY, GPU_CACHE_TRANSFER_WRITE);
+  gpu_sync(state.stream, &barrier, 1);
+  gpu_copy_buffers(state.stream, view.buffer, buffer->gpu, view.offset, buffer->base + offset, extent);
+  return view.pointer;
 }
 
 void lovrBufferCopy(Buffer* src, Buffer* dst, uint32_t srcOffset, uint32_t dstOffset, uint32_t extent) {
   beginFrame();
-  lovrCheck(!lovrBufferIsTemporary(dst), "Temporary buffers can not have another Buffer copied to them");
   lovrCheck(srcOffset + extent <= src->info.size, "Buffer copy range goes past the end of the source Buffer");
   lovrCheck(dstOffset + extent <= dst->info.size, "Buffer copy range goes past the end of the destination Buffer");
+  lovrCheck(src != dst || (srcOffset >= dstOffset + extent || dstOffset >= srcOffset + extent), "Copying part of a Buffer to itself requires non-overlapping copy regions");
   gpu_barrier barriers[2];
-  barriers[0] = syncTransfer(&src->sync, GPU_CACHE_TRANSFER_READ);
-  barriers[1] = syncTransfer(&dst->sync, GPU_CACHE_TRANSFER_WRITE);
+  barriers[0] = syncTransfer(&src->sync, GPU_PHASE_COPY, GPU_CACHE_TRANSFER_READ);
+  barriers[1] = syncTransfer(&dst->sync, GPU_PHASE_COPY, GPU_CACHE_TRANSFER_WRITE);
   gpu_sync(state.stream, barriers, 2);
-  gpu_copy_buffers(state.stream, src->gpu, dst->gpu, srcOffset, dstOffset, extent);
+  gpu_copy_buffers(state.stream, src->gpu, dst->gpu, src->base + srcOffset, dst->base + dstOffset, extent);
 }
 
 void lovrBufferClear(Buffer* buffer, uint32_t offset, uint32_t extent, uint32_t value) {
+  if (extent == 0) return;
   if (extent == ~0u) extent = buffer->info.size - offset;
   lovrCheck(offset % 4 == 0, "Buffer clear offset must be a multiple of 4");
   lovrCheck(extent % 4 == 0, "Buffer clear extent must be a multiple of 4");
   lovrCheck(offset + extent <= buffer->info.size, "Buffer clear range goes past the end of the Buffer");
-  if (lovrBufferIsTemporary(buffer)) {
-    memset(buffer->pointer + offset, 0, extent); // Deprecated (value ignored)
-  } else if (extent > 0) {
-    beginFrame();
-    gpu_barrier barrier = syncTransfer(&buffer->sync, GPU_CACHE_TRANSFER_WRITE);
-    gpu_sync(state.stream, &barrier, 1);
-    gpu_clear_buffer(state.stream, buffer->gpu, offset, extent, value);
-  }
+  beginFrame();
+  gpu_barrier barrier = syncTransfer(&buffer->sync, GPU_PHASE_CLEAR, GPU_CACHE_TRANSFER_WRITE);
+  gpu_sync(state.stream, &barrier, 1);
+  gpu_clear_buffer(state.stream, buffer->gpu, buffer->base + offset, extent, value);
 }
 
 // Texture
-
-static Material* lovrTextureGetMaterial(Texture* texture) {
-  if (!texture->material) {
-    texture->material = lovrMaterialCreate(&(MaterialInfo) {
-      .data.color = { 1.f, 1.f, 1.f, 1.f },
-      .data.uvScale = { 1.f, 1.f },
-      .texture = texture
-    });
-
-    // Since the Material refcounts the Texture, this creates a cycle.  Release the texture to make
-    // sure this is a weak relationship (the automaterial does not keep the texture refcounted).
-    lovrRelease(texture, lovrTextureDestroy);
-    texture->material->info.texture = NULL;
-  }
-
-  return texture->material;
-}
 
 Texture* lovrGraphicsGetWindowTexture(void) {
   if (!state.window && os_window_is_open()) {
@@ -2103,7 +2075,9 @@ Texture* lovrTextureCreate(const TextureInfo* info) {
   uint32_t limit = limits[info->type];
   uint32_t mipmapCap = log2(MAX(MAX(info->width, info->height), (info->type == TEXTURE_3D ? info->layers : 1))) + 1;
   uint32_t mipmaps = CLAMP(info->mipmaps, 1, mipmapCap);
-  uint8_t supports = state.features.formats[info->format][info->srgb];
+  bool srgb = supportsSRGB(info->format) && info->srgb;
+  uint8_t supports = state.features.formats[info->format][srgb];
+  uint8_t linearSupports = state.features.formats[info->format][false];
 
   lovrCheck(info->width > 0, "Texture width must be greater than zero");
   lovrCheck(info->height > 0, "Texture height must be greater than zero");
@@ -2111,9 +2085,9 @@ Texture* lovrTextureCreate(const TextureInfo* info) {
   lovrCheck(info->width <= limit, "Texture %s exceeds the limit for this texture type (%d)", "width", limit);
   lovrCheck(info->height <= limit, "Texture %s exceeds the limit for this texture type (%d)", "height", limit);
   lovrCheck(info->layers <= limit || info->type != TEXTURE_3D, "Texture %s exceeds the limit for this texture type (%d)", "layer count", limit);
-  lovrCheck(info->layers <= state.limits.textureLayers || info->type != TEXTURE_ARRAY, "Texture %s exceeds the limit for this texture type (%d)", "layer count", limit);
+  lovrCheck(info->layers <= state.limits.textureLayers || info->type == TEXTURE_3D, "Texture %s exceeds the limit for this texture type (%d)", "layer count", limit);
   lovrCheck(info->layers == 1 || info->type != TEXTURE_2D, "2D textures must have a layer count of 1");
-  lovrCheck(info->layers == 6 || info->type != TEXTURE_CUBE, "Cubemaps must have a layer count of 6");
+  lovrCheck(info->layers % 6 == 0 || info->type != TEXTURE_CUBE, "Cubemap layer count must be a multiple of 6");
   lovrCheck(info->width == info->height || info->type != TEXTURE_CUBE, "Cubemaps must be square");
   lovrCheck(measureTexture(info->format, info->width, info->height, info->layers) < 1 << 30, "Memory for a Texture can not exceed 1GB"); // TODO mip?
   lovrCheck(info->samples == 1 || info->samples == 4, "Texture multisample count must be 1 or 4...for now");
@@ -2123,7 +2097,7 @@ Texture* lovrTextureCreate(const TextureInfo* info) {
   lovrCheck(info->samples == 1 || mipmaps == 1, "Multisampled textures can only have 1 mipmap");
   lovrCheck(~info->usage & TEXTURE_SAMPLE || (supports & GPU_FEATURE_SAMPLE), "GPU does not support the 'sample' flag for this texture format/encoding");
   lovrCheck(~info->usage & TEXTURE_RENDER || (supports & GPU_FEATURE_RENDER), "GPU does not support the 'render' flag for this texture format/encoding");
-  lovrCheck(~info->usage & TEXTURE_STORAGE || (supports & GPU_FEATURE_STORAGE), "GPU does not support the 'storage' flag for this texture format/encoding");
+  lovrCheck(~info->usage & TEXTURE_STORAGE || (linearSupports & GPU_FEATURE_STORAGE), "GPU does not support the 'storage' flag for this texture format");
   lovrCheck(~info->usage & TEXTURE_RENDER || info->width <= state.limits.renderSize[0], "Texture has 'render' flag but its size exceeds the renderSize limit");
   lovrCheck(~info->usage & TEXTURE_RENDER || info->height <= state.limits.renderSize[1], "Texture has 'render' flag but its size exceeds the renderSize limit");
   lovrCheck(~info->usage & TEXTURE_RENDER || info->type != TEXTURE_3D || !isDepthFormat(info->format), "3D depth textures can not have the 'render' flag");
@@ -2136,11 +2110,12 @@ Texture* lovrTextureCreate(const TextureInfo* info) {
   texture->gpu = (gpu_texture*) (texture + 1);
   texture->info = *info;
   texture->info.mipmaps = mipmaps;
+  texture->info.srgb = srgb;
 
   uint32_t levelCount = 0;
   uint32_t levelOffsets[16];
   uint32_t levelSizes[16];
-  MappedBuffer mapped = { 0 };
+  BufferView view = { 0 };
 
   beginFrame();
 
@@ -2157,8 +2132,8 @@ Texture* lovrTextureCreate(const TextureInfo* info) {
       total += levelSizes[level];
     }
 
-    mapped = mapBuffer(&state.uploadBuffers, total, 64);
-    char* data = mapped.pointer;
+    view = getBuffer(GPU_BUFFER_UPLOAD, total, 64);
+    char* data = view.pointer;
 
     for (uint32_t level = 0; level < levelCount; level++) {
       for (uint32_t layer = 0; layer < info->layers; layer++) {
@@ -2170,7 +2145,7 @@ Texture* lovrTextureCreate(const TextureInfo* info) {
         memcpy(data, pixels, size);
         data += size;
       }
-      levelOffsets[level] += mapped.offset;
+      levelOffsets[level] += view.offset;
     }
   }
 
@@ -2187,14 +2162,13 @@ Texture* lovrTextureCreate(const TextureInfo* info) {
       ((info->usage & TEXTURE_SAMPLE) ? GPU_TEXTURE_SAMPLE : 0) |
       ((info->usage & TEXTURE_RENDER) ? GPU_TEXTURE_RENDER : 0) |
       ((info->usage & TEXTURE_STORAGE) ? GPU_TEXTURE_STORAGE : 0) |
-      (transfer ? GPU_TEXTURE_COPY_SRC | GPU_TEXTURE_COPY_DST : 0) |
-      ((info->usage == TEXTURE_RENDER) ? GPU_TEXTURE_TRANSIENT : 0),
-    .srgb = info->srgb,
+      (transfer ? GPU_TEXTURE_COPY_SRC | GPU_TEXTURE_COPY_DST : 0),
+    .srgb = srgb,
     .handle = info->handle,
     .label = info->label,
     .upload = {
       .stream = state.stream,
-      .buffer = mapped.buffer,
+      .buffer = view.buffer,
       .levelCount = levelCount,
       .levelOffsets = levelOffsets,
       .generateMipmaps = levelCount > 0 && levelCount < mipmaps
@@ -2209,6 +2183,8 @@ Texture* lovrTextureCreate(const TextureInfo* info) {
       gpu_texture_view_info view = {
         .source = texture->gpu,
         .type = GPU_TEXTURE_ARRAY,
+        .usage = GPU_TEXTURE_RENDER,
+        .srgb = srgb,
         .layerCount = info->layers,
         .levelCount = 1
       };
@@ -2219,15 +2195,31 @@ Texture* lovrTextureCreate(const TextureInfo* info) {
     }
   }
 
+  // Make a linear view of sRGB textures for storage bindings
+  if (srgb && (info->usage & TEXTURE_STORAGE)) {
+    gpu_texture_view_info view = {
+      .source = texture->gpu,
+      .type = (gpu_texture_type) info->type,
+      .usage = GPU_TEXTURE_STORAGE,
+      .srgb = false
+    };
+
+    texture->storageView = malloc(gpu_sizeof_texture());
+    lovrAssert(texture->storageView, "Out of memory");
+    lovrAssert(gpu_texture_init_view(texture->storageView, &view), "Failed to create texture view");
+  } else {
+    texture->storageView = texture->gpu;
+  }
+
   // Sample-only textures are exempt from sync tracking to reduce overhead.  Instead, they are
   // manually synchronized with a single barrier after the upload stream.
   if (info->usage == TEXTURE_SAMPLE) {
-    state.postBarrier.prev |= GPU_PHASE_TRANSFER;
+    state.postBarrier.prev |= GPU_PHASE_COPY | GPU_PHASE_BLIT;
     state.postBarrier.next |= GPU_PHASE_SHADER_VERTEX | GPU_PHASE_SHADER_FRAGMENT | GPU_PHASE_SHADER_COMPUTE;
     state.postBarrier.flush |= GPU_CACHE_TRANSFER_WRITE;
     state.postBarrier.clear |= GPU_CACHE_TEXTURE;
   } else if (levelCount > 0) {
-    texture->sync.writePhase = GPU_PHASE_TRANSFER;
+    texture->sync.writePhase = GPU_PHASE_COPY | GPU_PHASE_BLIT;
     texture->sync.pendingWrite = GPU_CACHE_TRANSFER_WRITE;
     texture->sync.lastTransferWrite = state.tick;
   }
@@ -2246,7 +2238,7 @@ Texture* lovrTextureCreateView(const TextureViewInfo* view) {
   lovrCheck(view->levelIndex + view->levelCount <= info->mipmaps, "Texture view mipmap range exceeds mipmap count of parent texture");
   lovrCheck(view->layerCount == 1 || view->type != TEXTURE_2D, "2D textures can only have a single layer");
   lovrCheck(view->levelCount == 1 || info->type != TEXTURE_3D, "Views of volume textures may only have a single mipmap level");
-  lovrCheck(view->layerCount == 6 || view->type != TEXTURE_CUBE, "Cubemaps can only have six layers");
+  lovrCheck(view->layerCount % 6 == 0 || view->type != TEXTURE_CUBE, "Cubemap layer count must be a multiple of 6");
 
   Texture* texture = calloc(1, sizeof(Texture) + gpu_sizeof_texture());
   lovrAssert(texture, "Out of memory");
@@ -2260,14 +2252,20 @@ Texture* lovrTextureCreateView(const TextureViewInfo* view) {
   texture->info.height = MAX(info->height >> view->levelIndex, 1);
   texture->info.layers = view->layerCount;
 
-  gpu_texture_init_view(texture->gpu, &(gpu_texture_view_info) {
-    .source = view->parent->gpu,
-    .type = (gpu_texture_type) view->type,
-    .layerIndex = view->layerIndex,
-    .layerCount = view->layerCount,
-    .levelIndex = view->levelIndex,
-    .levelCount = view->levelCount
-  });
+  if (info->usage & (TEXTURE_SAMPLE | TEXTURE_RENDER)) {
+    gpu_texture_init_view(texture->gpu, &(gpu_texture_view_info) {
+      .source = view->parent->gpu,
+      .type = (gpu_texture_type) view->type,
+      .usage = info->usage,
+      .srgb = info->srgb,
+      .layerIndex = view->layerIndex,
+      .layerCount = view->layerCount,
+      .levelIndex = view->levelIndex,
+      .levelCount = view->levelCount
+    });
+  } else {
+    texture->gpu = NULL;
+  }
 
   if ((info->usage & TEXTURE_RENDER) && view->layerCount <= state.limits.renderSize[2]) {
     if (view->levelCount == 1) {
@@ -2276,6 +2274,7 @@ Texture* lovrTextureCreateView(const TextureViewInfo* view) {
       gpu_texture_view_info subview = {
         .source = view->parent->gpu,
         .type = GPU_TEXTURE_ARRAY,
+        .usage = GPU_TEXTURE_RENDER,
         .layerIndex = view->layerIndex,
         .layerCount = view->layerCount,
         .levelIndex = view->levelIndex,
@@ -2288,6 +2287,25 @@ Texture* lovrTextureCreateView(const TextureViewInfo* view) {
     }
   }
 
+  if ((info->usage & TEXTURE_STORAGE) && info->srgb) {
+    gpu_texture_view_info subview = {
+      .source = view->parent->gpu,
+      .type = (gpu_texture_type) info->type,
+      .usage = GPU_TEXTURE_STORAGE,
+      .srgb = false,
+      .layerIndex = view->layerIndex,
+      .layerCount = view->layerCount,
+      .levelIndex = view->levelIndex,
+      .levelCount = view->levelCount
+    };
+
+    texture->storageView = malloc(gpu_sizeof_texture());
+    lovrAssert(texture->storageView, "Out of memory");
+    lovrAssert(gpu_texture_init_view(texture->storageView, &subview), "Failed to create texture view");
+  } else {
+    texture->storageView = texture->gpu;
+  }
+
   lovrRetain(view->parent);
   return texture;
 }
@@ -2295,9 +2313,11 @@ Texture* lovrTextureCreateView(const TextureViewInfo* view) {
 void lovrTextureDestroy(void* ref) {
   Texture* texture = ref;
   if (texture != state.window) {
+    flushTransfers();
     lovrRelease(texture->material, lovrMaterialDestroy);
     lovrRelease(texture->info.parent, lovrTextureDestroy);
     if (texture->renderView && texture->renderView != texture->gpu) gpu_texture_destroy(texture->renderView);
+    if (texture->storageView && texture->storageView != texture->gpu) gpu_texture_destroy(texture->storageView);
     if (texture->gpu) gpu_texture_destroy(texture->gpu);
   }
   free(texture);
@@ -2317,18 +2337,18 @@ Image* lovrTextureGetPixels(Texture* texture, uint32_t offset[4], uint32_t exten
   lovrCheck(texture->info.samples == 1, "Multisampled Textures can not be read");
   checkTextureBounds(&texture->info, offset, extent);
 
-  gpu_barrier barrier = syncTransfer(&texture->sync, GPU_CACHE_TRANSFER_READ);
+  gpu_barrier barrier = syncTransfer(&texture->sync, GPU_PHASE_COPY, GPU_CACHE_TRANSFER_READ);
   gpu_sync(state.stream, &barrier, 1);
 
-  MappedBuffer mapped = mapBuffer(&state.downloadBuffers, measureTexture(texture->info.format, extent[0], extent[1], 1), 64);
-  gpu_copy_texture_buffer(state.stream, texture->gpu, mapped.buffer, offset, mapped.offset, extent);
+  BufferView view = getBuffer(GPU_BUFFER_DOWNLOAD, measureTexture(texture->info.format, extent[0], extent[1], 1), 64);
+  gpu_copy_texture_buffer(state.stream, texture->gpu, view.buffer, offset, view.offset, extent);
 
   lovrGraphicsSubmit(NULL, 0);
   lovrGraphicsWait();
 
-  Image* image = lovrImageCreateRaw(extent[0], extent[1], texture->info.format);
+  Image* image = lovrImageCreateRaw(extent[0], extent[1], texture->info.format, texture->info.srgb);
   void* data = lovrImageGetLayerData(image, offset[3], offset[2]);
-  memcpy(data, mapped.pointer, mapped.extent);
+  memcpy(data, view.pointer, view.extent);
   return image;
 }
 
@@ -2351,8 +2371,8 @@ void lovrTextureSetPixels(Texture* texture, Image* image, uint32_t srcOffset[4],
   uint32_t layerOffset = measureTexture(texture->info.format, extent[0], srcOffset[1], 1);
   layerOffset += measureTexture(texture->info.format, srcOffset[0], 1, 1);
   uint32_t pitch = measureTexture(texture->info.format, lovrImageGetWidth(image, srcOffset[3]), 1, 1);
-  MappedBuffer mapped = mapBuffer(&state.uploadBuffers, totalSize, 64);
-  char* dst = mapped.pointer;
+  BufferView view = getBuffer(GPU_BUFFER_UPLOAD, totalSize, 64);
+  char* dst = view.pointer;
   for (uint32_t z = 0; z < extent[2]; z++) {
     const char* src = (char*) lovrImageGetLayerData(image, srcOffset[3], z) + layerOffset;
     for (uint32_t y = 0; y < extent[1]; y++) {
@@ -2361,9 +2381,9 @@ void lovrTextureSetPixels(Texture* texture, Image* image, uint32_t srcOffset[4],
       src += pitch;
     }
   }
-  gpu_barrier barrier = syncTransfer(&texture->sync, GPU_CACHE_TRANSFER_WRITE);
+  gpu_barrier barrier = syncTransfer(&texture->sync, GPU_PHASE_COPY, GPU_CACHE_TRANSFER_WRITE);
   gpu_sync(state.stream, &barrier, 1);
-  gpu_copy_buffer_texture(state.stream, mapped.buffer, texture->gpu, mapped.offset, dstOffset, extent);
+  gpu_copy_buffer_texture(state.stream, view.buffer, texture->gpu, view.offset, dstOffset, extent);
 }
 
 void lovrTextureCopy(Texture* src, Texture* dst, uint32_t srcOffset[4], uint32_t dstOffset[4], uint32_t extent[3]) {
@@ -2379,8 +2399,8 @@ void lovrTextureCopy(Texture* src, Texture* dst, uint32_t srcOffset[4], uint32_t
   checkTextureBounds(&src->info, srcOffset, extent);
   checkTextureBounds(&dst->info, dstOffset, extent);
   gpu_barrier barriers[2];
-  barriers[0] = syncTransfer(&src->sync, GPU_CACHE_TRANSFER_READ);
-  barriers[1] = syncTransfer(&dst->sync, GPU_CACHE_TRANSFER_WRITE);
+  barriers[0] = syncTransfer(&src->sync, GPU_PHASE_COPY, GPU_CACHE_TRANSFER_READ);
+  barriers[1] = syncTransfer(&dst->sync, GPU_PHASE_COPY, GPU_CACHE_TRANSFER_WRITE);
   gpu_sync(state.stream, barriers, 2);
   gpu_copy_textures(state.stream, src->gpu, dst->gpu, srcOffset, dstOffset, extent);
 }
@@ -2393,22 +2413,20 @@ void lovrTextureBlit(Texture* src, Texture* dst, uint32_t srcOffset[4], uint32_t
   if (dstExtent[0] == ~0u) dstExtent[0] = dst->info.width - dstOffset[0];
   if (dstExtent[1] == ~0u) dstExtent[1] = dst->info.height - dstOffset[1];
   if (dstExtent[2] == ~0u) dstExtent[2] = dst->info.layers - dstOffset[2];
-  uint32_t srcSupport = state.features.formats[src->info.format][src->info.srgb];
-  uint32_t dstSupport = state.features.formats[dst->info.format][dst->info.srgb];
+  uint32_t supports = state.features.formats[src->info.format][src->info.srgb];
   lovrCheck(!src->info.parent && !dst->info.parent, "Can not blit Texture views");
   lovrCheck(src->info.samples == 1 && dst->info.samples == 1, "Multisampled textures can not be used for blits");
   lovrCheck(src->info.usage & TEXTURE_TRANSFER, "Texture must be created with the 'transfer' usage to blit %s it", "from");
   lovrCheck(dst->info.usage & TEXTURE_TRANSFER, "Texture must be created with the 'transfer' usage to blit %s it", "to");
-  lovrCheck(srcSupport & GPU_FEATURE_BLIT_SRC, "This GPU does not support blitting from the source texture's format/encoding");
-  lovrCheck(dstSupport & GPU_FEATURE_BLIT_DST, "This GPU does not support blitting to the destination texture's format/encoding");
-  lovrCheck(src->info.format == dst->info.format, "Texture formats must match to blit between them");
+  lovrCheck(supports & GPU_FEATURE_BLIT, "This GPU does not support blitting this texture format/encoding");
+  lovrCheck(src->info.format == dst->info.format && src->info.srgb == dst->info.srgb, "Texture formats must match to blit between them");
   lovrCheck(((src->info.type == TEXTURE_3D) ^ (dst->info.type == TEXTURE_3D)) == false, "3D textures can only be blitted with other 3D textures");
   lovrCheck(src->info.type == TEXTURE_3D || srcExtent[2] == dstExtent[2], "When blitting between non-3D textures, blit layer counts must match");
   checkTextureBounds(&src->info, srcOffset, srcExtent);
   checkTextureBounds(&dst->info, dstOffset, dstExtent);
   gpu_barrier barriers[2];
-  barriers[0] = syncTransfer(&src->sync, GPU_CACHE_TRANSFER_READ);
-  barriers[1] = syncTransfer(&dst->sync, GPU_CACHE_TRANSFER_WRITE);
+  barriers[0] = syncTransfer(&src->sync, GPU_PHASE_BLIT, GPU_CACHE_TRANSFER_READ);
+  barriers[1] = syncTransfer(&dst->sync, GPU_PHASE_BLIT, GPU_CACHE_TRANSFER_WRITE);
   gpu_sync(state.stream, barriers, 2);
   gpu_blit(state.stream, src->gpu, dst->gpu, srcOffset, dstOffset, srcExtent, dstExtent, (gpu_filter) filter);
 }
@@ -2421,7 +2439,7 @@ void lovrTextureClear(Texture* texture, float value[4], uint32_t layer, uint32_t
   lovrCheck(texture->info.usage & TEXTURE_TRANSFER, "Texture must be created with 'transfer' usage to clear it");
   lovrCheck(texture->info.type == TEXTURE_3D || layer + layerCount <= texture->info.layers, "Texture clear range exceeds texture layer count");
   lovrCheck(level + levelCount <= texture->info.mipmaps, "Texture clear range exceeds texture mipmap count");
-  gpu_barrier barrier = syncTransfer(&texture->sync, GPU_CACHE_TRANSFER_WRITE);
+  gpu_barrier barrier = syncTransfer(&texture->sync, GPU_PHASE_CLEAR, GPU_CACHE_TRANSFER_WRITE);
   gpu_sync(state.stream, &barrier, 1);
   gpu_clear_texture(state.stream, texture->gpu, value, layer, layerCount, level, levelCount);
 }
@@ -2433,12 +2451,28 @@ void lovrTextureGenerateMipmaps(Texture* texture, uint32_t base, uint32_t count)
   lovrCheck(!texture->info.parent, "Can not mipmap a Texture view");
   lovrCheck(texture->info.samples == 1, "Can not mipmap a multisampled texture");
   lovrCheck(texture->info.usage & TEXTURE_TRANSFER, "Texture must be created with the 'transfer' usage to mipmap it");
-  lovrCheck(supports & GPU_FEATURE_BLIT_SRC, "This GPU does not support blitting %s the source texture's format/encoding, which is required for mipmapping", "from");
-  lovrCheck(supports & GPU_FEATURE_BLIT_DST, "This GPU does not support blitting %s the source texture's format/encoding, which is required for mipmapping", "to");
+  lovrCheck(supports & GPU_FEATURE_BLIT, "This GPU does not support mipmapping this texture format/encoding");
   lovrCheck(base + count < texture->info.mipmaps, "Trying to generate too many mipmaps");
-  gpu_barrier barrier = syncTransfer(&texture->sync, GPU_CACHE_TRANSFER_READ | GPU_CACHE_TRANSFER_WRITE);
+  gpu_barrier barrier = syncTransfer(&texture->sync, GPU_PHASE_BLIT, GPU_CACHE_TRANSFER_READ | GPU_CACHE_TRANSFER_WRITE);
   gpu_sync(state.stream, &barrier, 1);
   mipmapTexture(state.stream, texture, base, count);
+}
+
+Material* lovrTextureToMaterial(Texture* texture) {
+  if (!texture->material) {
+    texture->material = lovrMaterialCreate(&(MaterialInfo) {
+      .data.color = { 1.f, 1.f, 1.f, 1.f },
+      .data.uvScale = { 1.f, 1.f },
+      .texture = texture
+    });
+
+    // Since the Material refcounts the Texture, this creates a cycle.  Release the texture to make
+    // sure this is a weak relationship (the automaterial does not keep the texture refcounted).
+    lovrRelease(texture, lovrTextureDestroy);
+    texture->material->info.texture = NULL;
+  }
+
+  return texture->material;
 }
 
 // Sampler
@@ -2644,23 +2678,22 @@ static void lovrShaderInit(Shader* shader) {
     }
   }
 
-  if (shader->info.type == SHADER_COMPUTE) {
+  if (shader->stageMask & COMPUTE) {
     gpu_compute_pipeline_info pipelineInfo = {
       .shader = shader->gpu,
       .flags = shader->flags,
       .flagCount = shader->overrideCount
     };
 
-    gpu_pipeline* pipeline = malloc(gpu_sizeof_pipeline());
-    lovrAssert(pipeline, "Out of memory");
-    gpu_pipeline_init_compute(pipeline, &pipelineInfo);
-    arr_push(&state.pipelines, pipeline);
-    shader->computePipeline = pipeline;
+    lovrAssert(state.pipelineCount < MAX_PIPELINES, "Too many pipelines!");
+    shader->computePipeline = getPipeline(state.pipelineCount++);
+    os_vm_commit(state.pipelines, state.pipelineCount * gpu_sizeof_pipeline());
+    gpu_pipeline_init_compute(shader->computePipeline, &pipelineInfo);
   }
 }
 
 ShaderSource lovrGraphicsGetDefaultShaderSource(DefaultShader type, ShaderStage stage) {
-  const ShaderSource sources[][3] = {
+  const ShaderSource sources[][STAGE_COUNT] = {
     [SHADER_UNLIT] = {
       [STAGE_VERTEX] = { lovr_shader_unlit_vert, sizeof(lovr_shader_unlit_vert) },
       [STAGE_FRAGMENT] = { lovr_shader_unlit_frag, sizeof(lovr_shader_unlit_frag) }
@@ -2717,16 +2750,14 @@ Shader* lovrGraphicsGetDefaultShader(DefaultShader type) {
     case SHADER_BLENDER:
     case SHADER_TALLY_MERGE:
       return state.defaultShaders[type] = lovrShaderCreate(&(ShaderInfo) {
-        .type = SHADER_COMPUTE,
-        .source[0] = lovrGraphicsGetDefaultShaderSource(type, STAGE_COMPUTE),
+        .source[STAGE_COMPUTE] = lovrGraphicsGetDefaultShaderSource(type, STAGE_COMPUTE),
         .flags = &(ShaderFlag) { NULL, 0, state.device.subgroupSize },
         .flagCount = 1
       });
     default:
       return state.defaultShaders[type] = lovrShaderCreate(&(ShaderInfo) {
-        .type = SHADER_GRAPHICS,
-        .source[0] = lovrGraphicsGetDefaultShaderSource(type, STAGE_VERTEX),
-        .source[1] = lovrGraphicsGetDefaultShaderSource(type, STAGE_FRAGMENT)
+        .source[STAGE_VERTEX] = lovrGraphicsGetDefaultShaderSource(type, STAGE_VERTEX),
+        .source[STAGE_FRAGMENT] = lovrGraphicsGetDefaultShaderSource(type, STAGE_FRAGMENT)
       });
   }
 }
@@ -2735,16 +2766,35 @@ Shader* lovrShaderCreate(const ShaderInfo* info) {
   Shader* shader = calloc(1, sizeof(Shader) + gpu_sizeof_shader());
   lovrAssert(shader, "Out of memory");
 
-  uint32_t stageCount = info->type == SHADER_GRAPHICS ? 2 : 1;
-  uint32_t firstStage = info->type == SHADER_GRAPHICS ? GPU_STAGE_VERTEX : GPU_STAGE_COMPUTE;
-  gpu_phase firstPhase = info->type == SHADER_GRAPHICS ? GPU_PHASE_SHADER_VERTEX : GPU_PHASE_SHADER_COMPUTE;
-  uint32_t userSet = info->type == SHADER_GRAPHICS ? 2 : 0;
+  for (uint32_t i = 0; i < COUNTOF(info->source); i++) {
+    if (info->source[i].code) {
+      shader->stageMask |= (1 << i);
+    }
+  }
+
+  ShaderStage stages[2];
+  uint32_t stageCount = 0;
+
+  if (shader->stageMask == VERTEX) {
+    stages[stageCount++] = STAGE_VERTEX;
+  } else if (shader->stageMask == (VERTEX | FRAGMENT)) {
+    stages[stageCount++] = STAGE_VERTEX;
+    stages[stageCount++] = STAGE_FRAGMENT;
+  } else if (shader->stageMask == COMPUTE) {
+    stages[stageCount++] = STAGE_COMPUTE;
+  } else {
+    lovrThrow("Invalid combination of shader stages given.  Expected vertex, vertex + pixel, or compute");
+  }
 
   // Parse SPIR-V
   spv_result result;
   spv_info spv[2] = { 0 };
+  uint32_t maxResources = 0;
+  uint32_t maxSpecConstants = 0;
+  uint32_t maxFields = 0;
+  uint32_t maxChars = 0;
   for (uint32_t i = 0; i < stageCount; i++) {
-    result = spv_parse(info->source[i].code, info->source[i].size, &spv[i]);
+    result = spv_parse(info->source[stages[i]].code, info->source[stages[i]].size, &spv[i]);
     lovrCheck(result == SPV_OK, "Failed to load Shader: %s\n", spv_result_to_string(result));
     lovrCheck(spv[i].version <= 0x00010300, "Invalid SPIR-V version (up to 1.3 is supported)");
 
@@ -2755,14 +2805,33 @@ Shader* lovrShaderCreate(const ShaderInfo* info) {
     spv[i].fields = tempAlloc(&state.allocator, spv[i].fieldCount * sizeof(spv_field));
     memset(spv[i].fields, 0, spv[i].fieldCount * sizeof(spv_field));
 
-    result = spv_parse(info->source[i].code, info->source[i].size, &spv[i]);
+    result = spv_parse(info->source[stages[i]].code, info->source[stages[i]].size, &spv[i]);
     lovrCheck(result == SPV_OK, "Failed to load Shader: %s\n", spv_result_to_string(result));
 
     checkShaderFeatures(spv[i].features, spv[i].featureCount);
+
+    maxResources += spv[i].resourceCount;
+    maxSpecConstants += spv[i].specConstantCount;
+    maxFields += spv[i].fieldCount;
+
+    for (uint32_t j = 0; j < spv[i].fieldCount; j++) {
+      spv_field* field = &spv[i].fields[j];
+      maxChars += field->name ? strlen(field->name) + 1 : 0;
+    }
   }
 
+  // Allocate
+  gpu_slot* slots = tempAlloc(&state.allocator, maxResources * sizeof(gpu_slot));
+  shader->resources = malloc(maxResources * sizeof(ShaderResource));
+  shader->fields = malloc(maxFields * sizeof(DataField));
+  shader->flags = malloc(maxSpecConstants * sizeof(gpu_shader_flag));
+  shader->flagLookup = malloc(maxSpecConstants * sizeof(uint32_t));
+  shader->names = malloc(maxChars);
+  lovrAssert(shader->resources && shader->fields && shader->names, "Out of memory");
+  lovrAssert(shader->flags && shader->flagLookup, "Out of memory");
+
   // Stage-specific metadata
-  if (info->type == SHADER_COMPUTE) {
+  if (shader->stageMask & COMPUTE) {
     memcpy(shader->workgroupSize, spv[0].workgroupSize, 3 * sizeof(uint32_t));
     lovrCheck(shader->workgroupSize[0] <= state.limits.workgroupSize[0], "Shader workgroup size exceeds the 'workgroupSize' limit");
     lovrCheck(shader->workgroupSize[1] <= state.limits.workgroupSize[1], "Shader workgroup size exceeds the 'workgroupSize' limit");
@@ -2780,28 +2849,11 @@ Shader* lovrShaderCreate(const ShaderInfo* info) {
     }
   }
 
-  // Allocate
-  gpu_slot* slots = tempAlloc(&state.allocator, (spv[0].resourceCount + spv[1].resourceCount) * sizeof(gpu_slot));
-  shader->resources = malloc((spv[0].resourceCount + spv[1].resourceCount) * sizeof(ShaderResource));
-  shader->fields = malloc((spv[0].fieldCount + spv[1].fieldCount) * sizeof(DataField));
-  shader->flags = malloc((spv[0].specConstantCount + spv[1].specConstantCount) * sizeof(gpu_shader_flag));
-  shader->flagLookup = malloc((spv[0].specConstantCount + spv[1].specConstantCount) * sizeof(uint32_t));
-  lovrAssert(shader->resources && shader->fields, "Out of memory");
-  lovrAssert(shader->flags && shader->flagLookup, "Out of memory");
-
-  size_t charCount = 0;
-  for (uint32_t s = 0; s < stageCount; s++) {
-    for (uint32_t i = 0; i < spv[s].fieldCount; i++) {
-      spv_field* field = &spv[s].fields[i];
-      charCount += field->name ? strlen(field->name) + 1 : 0;
-    }
-  }
-
-  shader->names = malloc(charCount);
-  lovrAssert(shader->names, "Out of memory");
+  uint32_t userSet = shader->stageMask & COMPUTE ? 0 : 2;
 
   // Resources
   for (uint32_t s = 0; s < stageCount; s++) {
+    ShaderStage stage = stages[s];
     for (uint32_t i = 0; i < spv[s].resourceCount; i++) {
       spv_resource* resource = &spv[s].resources[i];
 
@@ -2809,6 +2861,7 @@ Shader* lovrShaderCreate(const ShaderInfo* info) {
         continue;
       }
 
+      lovrCheck(resource->count == 0, "Arrays of resources in shaders are not currently supported");
       lovrCheck(resource->type != SPV_COMBINED_TEXTURE_SAMPLER, "Shader variable (%d) is a%s, which is not supported%s", resource->binding, " combined texture sampler", " (use e.g. texture2D instead of sampler2D)");
       lovrCheck(resource->type != SPV_UNIFORM_TEXEL_BUFFER, "Shader variable (%d) is a%s, which is not supported%s", resource->binding, " uniform texel buffer", "");
       lovrCheck(resource->type != SPV_STORAGE_TEXEL_BUFFER, "Shader variable (%d) is a%s, which is not supported%s", resource->binding, " storage texel buffer", "");
@@ -2822,21 +2875,30 @@ Shader* lovrShaderCreate(const ShaderInfo* info) {
         [SPV_SAMPLER] = GPU_SLOT_SAMPLER
       };
 
+      gpu_phase stageMap[] = {
+        [STAGE_VERTEX] = GPU_STAGE_VERTEX,
+        [STAGE_FRAGMENT] = GPU_STAGE_FRAGMENT,
+        [STAGE_COMPUTE] = GPU_STAGE_COMPUTE
+      };
+
+      gpu_phase stagePhase[] = {
+        [STAGE_VERTEX] = GPU_PHASE_SHADER_VERTEX,
+        [STAGE_FRAGMENT] = GPU_PHASE_SHADER_FRAGMENT,
+        [STAGE_COMPUTE] = GPU_PHASE_SHADER_COMPUTE
+      };
+
       uint32_t hash = (uint32_t) hash64(resource->name, strlen(resource->name));
-      uint32_t stage = s == 0 ? firstStage : GPU_STAGE_FRAGMENT;
-      gpu_phase phase = s == 0 ? firstPhase : GPU_PHASE_SHADER_FRAGMENT;
       bool append = true;
 
-      if (s > 0) {
-        for (uint32_t j = 0; j < shader->resourceCount; j++) {
-          ShaderResource* other = &shader->resources[j];
-          if (other->binding == resource->binding) {
-            lovrCheck(other->type == resourceTypes[resource->type], "Shader variable (%d) does not use a consistent type", resource->binding);
-            slots[j].stages |= stage;
-            shader->resources[j].phase |= phase;
-            append = false;
-            break;
-          }
+      // It's ok to reuse binding slots (within or across stages), but the type must be consistent
+      for (uint32_t j = 0; j < shader->resourceCount; j++) {
+        ShaderResource* other = &shader->resources[j];
+        if (other->binding == resource->binding) {
+          lovrCheck(other->type == resourceTypes[resource->type], "Shader variable with binding number %d is declared multiple times with inconsistent types", resource->binding);
+          slots[j].stages |= stageMap[stage];
+          shader->resources[j].phase |= stagePhase[stage];
+          append = false;
+          break;
         }
       }
 
@@ -2855,14 +2917,14 @@ Shader* lovrShaderCreate(const ShaderInfo* info) {
       slots[index] = (gpu_slot) {
         .number = resource->binding,
         .type = resourceTypes[resource->type],
-        .stages = stage
+        .stages = stageMap[stage]
       };
 
       shader->resources[index] = (ShaderResource) {
         .hash = hash,
         .binding = resource->binding,
         .type = resourceTypes[resource->type],
-        .phase = phase
+        .phase = stagePhase[stage]
       };
 
       if (resource->fields) {
@@ -2898,7 +2960,7 @@ Shader* lovrShaderCreate(const ShaderInfo* info) {
       shader->storageMask |= (storage << resource->binding);
 
       if (storage) {
-        shader->resources[index].cache = stage == GPU_STAGE_COMPUTE ? GPU_CACHE_STORAGE_WRITE : GPU_CACHE_STORAGE_READ;
+        shader->resources[index].cache = stage == STAGE_COMPUTE ? GPU_CACHE_STORAGE_WRITE : GPU_CACHE_STORAGE_READ;
       } else {
         shader->resources[index].cache = texture ? GPU_CACHE_TEXTURE : GPU_CACHE_UNIFORM;
       }
@@ -3031,16 +3093,14 @@ Shader* lovrShaderCreate(const ShaderInfo* info) {
   shader->layout = getLayout(slots, shader->resourceCount);
 
   gpu_shader_info gpu = {
-    .stages[0] = { info->source[0].code, info->source[0].size },
+    .vertex = { info->source[STAGE_VERTEX].code, info->source[STAGE_VERTEX].size },
+    .fragment = { info->source[STAGE_FRAGMENT].code, info->source[STAGE_FRAGMENT].size },
+    .compute = { info->source[STAGE_COMPUTE].code, info->source[STAGE_COMPUTE].size },
     .pushConstantSize = shader->constantSize,
     .label = info->label
   };
 
-  if (info->source[1].code) {
-    gpu.stages[1] = (gpu_shader_stage) { info->source[1].code, info->source[1].size };
-  }
-
-  if (info->type == SHADER_GRAPHICS) {
+  if (shader->stageMask & (VERTEX | FRAGMENT)) {
     gpu.layouts[0] = state.layouts.data[LAYOUT_BUILTIN].gpu;
     gpu.layouts[1] = state.layouts.data[LAYOUT_MATERIAL].gpu;
   }
@@ -3063,6 +3123,7 @@ Shader* lovrShaderClone(Shader* parent, ShaderFlag* flags, uint32_t count) {
   shader->info.flags = flags;
   shader->info.flagCount = count;
   shader->layout = parent->layout;
+  shader->stageMask = parent->stageMask;
   shader->bufferMask = parent->bufferMask;
   shader->textureMask = parent->textureMask;
   shader->samplerMask = parent->samplerMask;
@@ -3071,8 +3132,11 @@ Shader* lovrShaderClone(Shader* parent, ShaderFlag* flags, uint32_t count) {
   shader->constantCount = parent->constantCount;
   shader->resourceCount = parent->resourceCount;
   shader->flagCount = parent->flagCount;
-  shader->constants = parent->constants;
+  shader->attributes = parent->attributes;
   shader->resources = parent->resources;
+  shader->constants = parent->constants;
+  shader->fields = parent->fields;
+  shader->names = parent->names;
   shader->flags = malloc(shader->flagCount * sizeof(gpu_shader_flag));
   shader->flagLookup = malloc(shader->flagCount * sizeof(uint32_t));
   lovrAssert(shader->flags && shader->flagLookup, "Out of memory");
@@ -3084,14 +3148,17 @@ Shader* lovrShaderClone(Shader* parent, ShaderFlag* flags, uint32_t count) {
 
 void lovrShaderDestroy(void* ref) {
   Shader* shader = ref;
-  gpu_shader_destroy(shader->gpu);
-  lovrRelease(shader->parent, lovrShaderDestroy);
-  free(shader->attributes);
-  free(shader->resources);
-  free(shader->fields);
+  if (shader->parent) {
+    lovrRelease(shader->parent, lovrShaderDestroy);
+  } else {
+    gpu_shader_destroy(shader->gpu);
+    free(shader->attributes);
+    free(shader->resources);
+    free(shader->fields);
+    free(shader->names);
+  }
   free(shader->flags);
   free(shader->flagLookup);
-  free(shader->names);
   free(shader);
 }
 
@@ -3100,12 +3167,7 @@ const ShaderInfo* lovrShaderGetInfo(Shader* shader) {
 }
 
 bool lovrShaderHasStage(Shader* shader, ShaderStage stage) {
-  switch (stage) {
-    case STAGE_VERTEX: return shader->info.type == SHADER_GRAPHICS;
-    case STAGE_FRAGMENT: return shader->info.type == SHADER_GRAPHICS;
-    case STAGE_COMPUTE: return shader->info.type == SHADER_COMPUTE;
-    default: return false;
-  }
+  return shader->stageMask & (1 << stage);
 }
 
 bool lovrShaderHasAttribute(Shader* shader, const char* name, uint32_t location) {
@@ -3169,10 +3231,9 @@ Material* lovrMaterialCreate(const MaterialInfo* info) {
       state.materialBlock = state.materialBlocks.length++;
       block = &state.materialBlocks.data[state.materialBlock];
       block->list = malloc(MATERIALS_PER_BLOCK * sizeof(Material));
-      block->buffer = malloc(gpu_sizeof_buffer());
       block->bundlePool = malloc(gpu_sizeof_bundle_pool());
       block->bundles = malloc(MATERIALS_PER_BLOCK * gpu_sizeof_bundle());
-      lovrAssert(block->list && block->buffer && block->bundlePool && block->bundles, "Out of memory");
+      lovrAssert(block->list && block->bundlePool && block->bundles, "Out of memory");
 
       for (uint32_t i = 0; i < MATERIALS_PER_BLOCK; i++) {
         block->list[i].next = i + 1;
@@ -3186,11 +3247,10 @@ Material* lovrMaterialCreate(const MaterialInfo* info) {
       block->tail = MATERIALS_PER_BLOCK - 1;
       block->head = 0;
 
-      gpu_buffer_init(block->buffer, &(gpu_buffer_info) {
-        .size = MATERIALS_PER_BLOCK * ALIGN(sizeof(MaterialData), state.limits.uniformBufferAlign),
-        .pointer = &block->pointer,
-        .label = "Material Block"
-      });
+      size_t align = state.limits.uniformBufferAlign;
+      size_t bufferSize = MATERIALS_PER_BLOCK * ALIGN(sizeof(MaterialData), align);
+      block->view = getBuffer(GPU_BUFFER_STATIC, bufferSize, align);
+      atomic_fetch_add(&block->view.block->ref, 1);
 
       gpu_bundle_pool_info poolInfo = {
         .bundles = block->bundles,
@@ -3211,24 +3271,24 @@ Material* lovrMaterialCreate(const MaterialInfo* info) {
   MaterialData* data;
   uint32_t stride = ALIGN(sizeof(MaterialData), state.limits.uniformBufferAlign);
 
-  if (block->pointer) {
-    data = (MaterialData*) ((char*) block->pointer + material->index * stride);
+  if (block->view.pointer) {
+    data = (MaterialData*) ((char*) block->view.pointer + material->index * stride);
   } else {
     beginFrame();
-    MappedBuffer mapped = mapBuffer(&state.uploadBuffers, sizeof(MaterialData), 4);
-    gpu_copy_buffers(state.stream, mapped.buffer, block->buffer, mapped.offset, stride * material->index, sizeof(MaterialData));
-    state.postBarrier.prev |= GPU_PHASE_TRANSFER;
+    BufferView staging = getBuffer(GPU_BUFFER_UPLOAD, sizeof(MaterialData), 4);
+    gpu_copy_buffers(state.stream, staging.buffer, block->view.buffer, staging.offset, block->view.offset + stride * material->index, sizeof(MaterialData));
+    state.postBarrier.prev |= GPU_PHASE_COPY;
     state.postBarrier.next |= GPU_PHASE_SHADER_VERTEX | GPU_PHASE_SHADER_FRAGMENT;
     state.postBarrier.flush |= GPU_CACHE_TRANSFER_WRITE;
     state.postBarrier.clear |= GPU_CACHE_UNIFORM;
-    data = mapped.pointer;
+    data = staging.pointer;
   }
 
   memcpy(data, info, sizeof(MaterialData));
 
   gpu_buffer_binding buffer = {
-    .object = block->buffer,
-    .offset = material->index * stride,
+    .object = block->view.buffer,
+    .offset = block->view.offset + material->index * stride,
     .extent = stride
   };
 
@@ -3445,10 +3505,10 @@ static Glyph* lovrFontGetGlyph(Font* font, uint32_t codepoint, bool* resized) {
     // - Ensure new atlas clear is finished/flushed before copying to it
     // - Ensure any unsynchronized pending uploads to old atlas finish before copying to new atlas
     gpu_barrier barrier;
-    barrier.prev = GPU_PHASE_TRANSFER;
-    barrier.next = GPU_PHASE_TRANSFER;
+    barrier.prev = GPU_PHASE_COPY | GPU_PHASE_CLEAR;
+    barrier.next = GPU_PHASE_COPY;
     barrier.flush = GPU_CACHE_TRANSFER_WRITE;
-    barrier.clear = GPU_CACHE_TRANSFER_READ;
+    barrier.clear = GPU_CACHE_TRANSFER_READ | GPU_CACHE_TRANSFER_WRITE;
     gpu_sync(state.stream, &barrier, 1);
 
     if (font->atlas) {
@@ -3487,9 +3547,9 @@ static Glyph* lovrFontGetGlyph(Font* font, uint32_t codepoint, bool* resized) {
   size_t stack = tempPush(&state.allocator);
   float* pixels = tempAlloc(&state.allocator, pixelWidth * pixelHeight * 4 * sizeof(float));
   lovrRasterizerGetPixels(font->info.rasterizer, glyph->codepoint, pixels, pixelWidth, pixelHeight, font->info.spread);
-  MappedBuffer mapped = mapBuffer(&state.uploadBuffers, pixelWidth * pixelHeight * 4 * sizeof(uint8_t), 64);
+  BufferView view = getBuffer(GPU_BUFFER_UPLOAD, pixelWidth * pixelHeight * 4 * sizeof(uint8_t), 64);
   float* src = pixels;
-  uint8_t* dst = mapped.pointer;
+  uint8_t* dst = view.pointer;
   for (uint32_t y = 0; y < pixelHeight; y++) {
     for (uint32_t x = 0; x < pixelWidth; x++) {
       for (uint32_t c = 0; c < 4; c++) {
@@ -3500,10 +3560,10 @@ static Glyph* lovrFontGetGlyph(Font* font, uint32_t codepoint, bool* resized) {
   }
   uint32_t dstOffset[4] = { glyph->x - font->padding, glyph->y - font->padding, 0, 0 };
   uint32_t extent[3] = { pixelWidth, pixelHeight, 1 };
-  gpu_copy_buffer_texture(state.stream, mapped.buffer, font->atlas->gpu, mapped.offset, dstOffset, extent);
+  gpu_copy_buffer_texture(state.stream, view.buffer, font->atlas->gpu, view.offset, dstOffset, extent);
   tempPop(&state.allocator, stack);
 
-  state.postBarrier.prev |= GPU_PHASE_TRANSFER;
+  state.postBarrier.prev |= GPU_PHASE_COPY;
   state.postBarrier.next |= GPU_PHASE_SHADER_FRAGMENT;
   state.postBarrier.flush |= GPU_CACHE_TRANSFER_WRITE;
   state.postBarrier.clear |= GPU_CACHE_TEXTURE;
@@ -4168,14 +4228,16 @@ Model* lovrModelCreate(const ModelInfo* info) {
     .format = (DataField[]) {
       { .length = data->vertexCount, .stride = sizeof(ModelVertex), .fieldCount = 5 },
       { .type = TYPE_F32x3, .offset = offsetof(ModelVertex, position), .hash = LOCATION_POSITION },
-      { .type = TYPE_F32x3, .offset = offsetof(ModelVertex, normal), .hash = LOCATION_NORMAL },
+      { .type = TYPE_SN10x3, .offset = offsetof(ModelVertex, normal), .hash = LOCATION_NORMAL },
       { .type = TYPE_F32x2, .offset = offsetof(ModelVertex, uv), .hash = LOCATION_UV },
       { .type = TYPE_UN8x4, .offset = offsetof(ModelVertex, color), .hash = LOCATION_COLOR },
-      { .type = TYPE_F32x4, .offset = offsetof(ModelVertex, tangent), .hash = LOCATION_TANGENT }
+      { .type = TYPE_SN10x3, .offset = offsetof(ModelVertex, tangent), .hash = LOCATION_TANGENT }
     }
   };
 
-  model->vertexBuffer = lovrBufferCreate(&vertexBufferInfo, (void**) &vertexData);
+  if (data->vertexCount > 0) {
+    model->vertexBuffer = lovrBufferCreate(&vertexBufferInfo, (void**) &vertexData);
+  }
 
   if (data->blendShapeVertexCount > 0) {
     model->blendBuffer = lovrBufferCreate(&(BufferInfo) {
@@ -4207,15 +4269,15 @@ Model* lovrModelCreate(const ModelInfo* info) {
 
     // The vertex buffer may already have a pending copy if its memory was not host-visible, need to
     // wait for that to complete before copying to the raw vertex buffer
-    gpu_barrier barrier = syncTransfer(&model->vertexBuffer->sync, GPU_CACHE_TRANSFER_READ);
+    gpu_barrier barrier = syncTransfer(&model->vertexBuffer->sync, GPU_PHASE_COPY, GPU_CACHE_TRANSFER_READ);
     gpu_sync(state.stream, &barrier, 1);
 
-    gpu_buffer* src = model->vertexBuffer->gpu;
-    gpu_buffer* dst = model->rawVertexBuffer->gpu;
-    gpu_copy_buffers(state.stream, src, dst, 0, 0, data->dynamicVertexCount * sizeof(ModelVertex));
+    Buffer* src = model->vertexBuffer;
+    Buffer* dst = model->rawVertexBuffer;
+    gpu_copy_buffers(state.stream, src->gpu, dst->gpu, src->base, dst->base, data->dynamicVertexCount * sizeof(ModelVertex));
 
     gpu_sync(state.stream, &(gpu_barrier) {
-      .prev = GPU_PHASE_TRANSFER,
+      .prev = GPU_PHASE_COPY,
       .next = GPU_PHASE_SHADER_COMPUTE,
       .flush = GPU_CACHE_TRANSFER_WRITE,
       .clear = GPU_CACHE_STORAGE_READ | GPU_CACHE_STORAGE_WRITE
@@ -4274,7 +4336,7 @@ Model* lovrModelCreate(const ModelInfo* info) {
       draw->index.buffer = model->indexBuffer;
       draw->start = indexCursor;
       draw->count = primitive->indices->count;
-      draw->base = vertexCursor;
+      draw->baseVertex = vertexCursor;
       indexCursor += draw->count;
     } else {
       draw->start = vertexCursor;
@@ -4301,10 +4363,10 @@ Model* lovrModelCreate(const ModelInfo* info) {
     size_t stride = sizeof(ModelVertex);
 
     lovrModelDataCopyAttribute(data, attributes[ATTR_POSITION], vertexData + 0, F32, 3, false, count, stride, 0);
-    lovrModelDataCopyAttribute(data, attributes[ATTR_NORMAL], vertexData + 12, F32, 3, false, count, stride, 0);
-    lovrModelDataCopyAttribute(data, attributes[ATTR_UV], vertexData + 24, F32, 2, false, count, stride, 0);
-    lovrModelDataCopyAttribute(data, attributes[ATTR_COLOR], vertexData + 32, U8, 4, true, count, stride, 255);
-    lovrModelDataCopyAttribute(data, attributes[ATTR_TANGENT], vertexData + 36, F32, 4, false, count, stride, 0);
+    lovrModelDataCopyAttribute(data, attributes[ATTR_NORMAL], vertexData + 12, SN10x3, 1, false, count, stride, 0);
+    lovrModelDataCopyAttribute(data, attributes[ATTR_UV], vertexData + 16, F32, 2, false, count, stride, 0);
+    lovrModelDataCopyAttribute(data, attributes[ATTR_COLOR], vertexData + 24, U8, 4, true, count, stride, 255);
+    lovrModelDataCopyAttribute(data, attributes[ATTR_TANGENT], vertexData + 28, SN10x3, 1, false, count, stride, 0);
     vertexData += count * stride;
 
     if (data->skinnedVertexCount > 0 && primitive->skin != ~0u) {
@@ -4359,11 +4421,9 @@ Model* lovrModelCreate(const ModelInfo* info) {
         group->vertexCount = groupVertexCount;
         group++;
       }
-
-      model->blendShapeWeights[i] = blendShape->weight;
     }
 
-    model->blendShapesDirty = true;
+    lovrModelResetBlendShapes(model);
   }
 
   // Transforms
@@ -4396,25 +4456,26 @@ Model* lovrModelClone(Model* parent) {
 
   model->blendGroups = parent->blendGroups;
   model->blendGroupCount = parent->blendGroupCount;
-  model->blendShapesDirty = true;
 
-  model->vertexBuffer = lovrBufferCreate(&parent->vertexBuffer->info, NULL);
+  if (parent->vertexBuffer) {
+    model->vertexBuffer = lovrBufferCreate(&parent->vertexBuffer->info, NULL);
 
-  beginFrame();
+    beginFrame();
 
-  gpu_barrier barrier = syncTransfer(&parent->vertexBuffer->sync, GPU_CACHE_TRANSFER_READ);
-  gpu_sync(state.stream, &barrier, 1);
+    gpu_barrier barrier = syncTransfer(&parent->vertexBuffer->sync, GPU_PHASE_COPY, GPU_CACHE_TRANSFER_READ);
+    gpu_sync(state.stream, &barrier, 1);
 
-  gpu_buffer* src = parent->vertexBuffer->gpu;
-  gpu_buffer* dst = model->vertexBuffer->gpu;
-  gpu_copy_buffers(state.stream, src, dst, 0, 0, parent->vertexBuffer->info.size);
+    Buffer* src = parent->vertexBuffer;
+    Buffer* dst = model->vertexBuffer;
+    gpu_copy_buffers(state.stream, src->gpu, dst->gpu, src->base, dst->base, parent->vertexBuffer->info.size);
 
-  gpu_sync(state.stream, &(gpu_barrier) {
-    .prev = GPU_PHASE_TRANSFER,
-    .next = GPU_PHASE_SHADER_COMPUTE,
-    .flush = GPU_CACHE_TRANSFER_WRITE,
-    .clear = GPU_CACHE_STORAGE_READ | GPU_CACHE_STORAGE_WRITE
-  }, 1);
+    gpu_sync(state.stream, &(gpu_barrier) {
+      .prev = GPU_PHASE_COPY,
+      .next = GPU_PHASE_SHADER_COMPUTE,
+      .flush = GPU_CACHE_TRANSFER_WRITE,
+      .clear = GPU_CACHE_STORAGE_READ | GPU_CACHE_STORAGE_WRITE
+    }, 1);
+  }
 
   model->draws = malloc(data->primitiveCount * sizeof(DrawInfo));
   lovrAssert(model->draws, "Out of memory");
@@ -4426,10 +4487,7 @@ Model* lovrModelClone(Model* parent) {
 
   model->blendShapeWeights = malloc(data->blendShapeCount * sizeof(float));
   lovrAssert(model->blendShapeWeights, "Out of memory");
-
-  for (uint32_t i = 0; i < data->blendShapeCount; i++) {
-    model->blendShapeWeights[i] = data->blendShapes[i].weight;
-  }
+  lovrModelResetBlendShapes(model);
 
   model->localTransforms = malloc(sizeof(NodeTransform) * data->nodeCount);
   model->globalTransforms = malloc(16 * sizeof(float) * data->nodeCount);
@@ -4486,20 +4544,26 @@ const ModelInfo* lovrModelGetInfo(Model* model) {
 void lovrModelResetNodeTransforms(Model* model) {
   ModelData* data = model->info.data;
   for (uint32_t i = 0; i < data->nodeCount; i++) {
-    vec3 position = model->localTransforms[i].properties[PROP_TRANSLATION];
-    quat orientation = model->localTransforms[i].properties[PROP_ROTATION];
-    vec3 scale = model->localTransforms[i].properties[PROP_SCALE];
+    NodeTransform* transform = &model->localTransforms[i];
     if (data->nodes[i].hasMatrix) {
-      mat4_getPosition(data->nodes[i].transform.matrix, position);
-      mat4_getOrientation(data->nodes[i].transform.matrix, orientation);
-      mat4_getScale(data->nodes[i].transform.matrix, scale);
+      mat4_getPosition(data->nodes[i].transform.matrix, transform->position);
+      mat4_getOrientation(data->nodes[i].transform.matrix, transform->rotation);
+      mat4_getScale(data->nodes[i].transform.matrix, transform->scale);
     } else {
-      vec3_init(position, data->nodes[i].transform.translation);
-      quat_init(orientation, data->nodes[i].transform.rotation);
-      vec3_init(scale, data->nodes[i].transform.scale);
+      vec3_init(transform->position, data->nodes[i].transform.translation);
+      quat_init(transform->rotation, data->nodes[i].transform.rotation);
+      vec3_init(transform->scale, data->nodes[i].transform.scale);
     }
   }
   model->transformsDirty = true;
+}
+
+void lovrModelResetBlendShapes(Model* model) {
+  ModelData* data = model->info.data;
+  for (uint32_t i = 0; i < data->blendShapeCount; i++) {
+    model->blendShapeWeights[i] = data->blendShapes[i].weight;
+  }
+  model->blendShapesDirty = true;
 }
 
 void lovrModelAnimate(Model* model, uint32_t animationIndex, float time, float alpha) {
@@ -4515,7 +4579,6 @@ void lovrModelAnimate(Model* model, uint32_t animationIndex, float time, float a
   for (uint32_t i = 0; i < animation->channelCount; i++) {
     ModelAnimationChannel* channel = &animation->channels[i];
     uint32_t node = channel->nodeIndex;
-    NodeTransform* transform = &model->localTransforms[node];
 
     uint32_t keyframe = 0;
     while (keyframe < channel->keyframeCount && channel->times[keyframe] < time) {
@@ -4523,17 +4586,14 @@ void lovrModelAnimate(Model* model, uint32_t animationIndex, float time, float a
     }
 
     size_t n;
-    float values[4];
-    float* property = values;
     switch (channel->property) {
       case PROP_TRANSLATION: n = 3; break;
       case PROP_SCALE: n = 3; break;
       case PROP_ROTATION: n = 4; break;
-      case PROP_WEIGHTS:
-        n = data->nodes[node].blendShapeCount;
-        property = tempAlloc(&state.allocator, n * sizeof(float));
-        break;
+      case PROP_WEIGHTS: n = data->nodes[node].blendShapeCount; break;
     }
+
+    float* property = tempAlloc(&state.allocator, n * sizeof(float));
 
     // Handle the first/last keyframe case (no interpolation)
     if (keyframe == 0 || keyframe >= channel->keyframeCount) {
@@ -4587,13 +4647,18 @@ void lovrModelAnimate(Model* model, uint32_t animationIndex, float time, float a
       }
     }
 
-    float* dst;
     if (channel->property == PROP_WEIGHTS) {
-      dst = &model->blendShapeWeights[data->nodes[node].blendShapeIndex];
       model->blendShapesDirty = true;
     } else {
-      dst = transform->properties[channel->property];
       model->transformsDirty = true;
+    }
+
+    float* dst;
+    switch (channel->property) {
+      case PROP_TRANSLATION: dst = model->localTransforms[node].position; break;
+      case PROP_SCALE: dst = model->localTransforms[node].scale; break;
+      case PROP_ROTATION: dst = model->localTransforms[node].rotation; break;
+      case PROP_WEIGHTS: dst = &model->blendShapeWeights[data->nodes[node].blendShapeIndex]; break;
     }
 
     if (alpha >= 1.f) {
@@ -4619,9 +4684,9 @@ void lovrModelSetBlendShapeWeight(Model* model, uint32_t index, float weight) {
 
 void lovrModelGetNodeTransform(Model* model, uint32_t node, float position[3], float scale[3], float rotation[4], OriginType origin) {
   if (origin == ORIGIN_PARENT) {
-    vec3_init(position, model->localTransforms[node].properties[PROP_TRANSLATION]);
-    vec3_init(scale, model->localTransforms[node].properties[PROP_SCALE]);
-    quat_init(rotation, model->localTransforms[node].properties[PROP_ROTATION]);
+    vec3_init(position, model->localTransforms[node].position);
+    vec3_init(scale, model->localTransforms[node].scale);
+    quat_init(rotation, model->localTransforms[node].rotation);
   } else {
     if (model->transformsDirty) {
       updateModelTransforms(model, model->info.data->rootNode, (float[]) MAT4_IDENTITY);
@@ -4639,13 +4704,13 @@ void lovrModelSetNodeTransform(Model* model, uint32_t node, float position[3], f
   NodeTransform* transform = &model->localTransforms[node];
 
   if (alpha >= 1.f) {
-    if (position) vec3_init(transform->properties[PROP_TRANSLATION], position);
-    if (scale) vec3_init(transform->properties[PROP_SCALE], scale);
-    if (rotation) quat_init(transform->properties[PROP_ROTATION], rotation);
+    if (position) vec3_init(transform->position, position);
+    if (scale) vec3_init(transform->scale, scale);
+    if (rotation) quat_init(transform->rotation, rotation);
   } else {
-    if (position) vec3_lerp(transform->properties[PROP_TRANSLATION], position, alpha);
-    if (scale) vec3_lerp(transform->properties[PROP_SCALE], scale, alpha);
-    if (rotation) quat_slerp(transform->properties[PROP_ROTATION], rotation, alpha);
+    if (position) vec3_lerp(transform->position, position, alpha);
+    if (scale) vec3_lerp(transform->scale, scale, alpha);
+    if (rotation) quat_slerp(transform->rotation, rotation, alpha);
   }
 
   model->transformsDirty = true;
@@ -4674,7 +4739,7 @@ Mesh* lovrModelGetMesh(Model* model, uint32_t index) {
     Mesh* mesh = lovrMeshCreate(&info, NULL);
     if (draw->index.buffer) lovrMeshSetIndexBuffer(mesh, model->indexBuffer);
     lovrMeshSetDrawMode(mesh, draw->mode);
-    lovrMeshSetDrawRange(mesh, draw->start, draw->count, draw->base);
+    lovrMeshSetDrawRange(mesh, draw->start, draw->count, draw->baseVertex);
     lovrMeshSetMaterial(mesh, draw->material);
     memcpy(mesh->bounds, draw->bounds, sizeof(mesh->bounds));
     mesh->hasBounds = true;
@@ -4720,9 +4785,9 @@ static void lovrModelAnimateVertices(Model* model) {
     uint32_t chunkSize = 64;
 
     gpu_binding bindings[] = {
-      { 0, GPU_SLOT_STORAGE_BUFFER, .buffer = { model->rawVertexBuffer->gpu, 0, vertexCount * sizeof(ModelVertex) } },
-      { 1, GPU_SLOT_STORAGE_BUFFER, .buffer = { model->vertexBuffer->gpu, 0, vertexCount * sizeof(ModelVertex) } },
-      { 2, GPU_SLOT_STORAGE_BUFFER, .buffer = { model->blendBuffer->gpu, 0, model->blendBuffer->info.size } },
+      { 0, GPU_SLOT_STORAGE_BUFFER, .buffer = { model->rawVertexBuffer->gpu, model->rawVertexBuffer->base, vertexCount * sizeof(ModelVertex) } },
+      { 1, GPU_SLOT_STORAGE_BUFFER, .buffer = { model->vertexBuffer->gpu, model->vertexBuffer->base, vertexCount * sizeof(ModelVertex) } },
+      { 2, GPU_SLOT_STORAGE_BUFFER, .buffer = { model->blendBuffer->gpu, model->blendBuffer->base, model->blendBuffer->info.size } },
       { 3, GPU_SLOT_UNIFORM_BUFFER, .buffer = { NULL, 0, chunkSize * sizeof(float) } }
     };
 
@@ -4736,9 +4801,9 @@ static void lovrModelAnimateVertices(Model* model) {
         uint32_t count = MIN(group->count - j, chunkSize);
         bool first = j == 0;
 
-        MappedBuffer mapped = mapBuffer(&state.streamBuffers, chunkSize * sizeof(float), state.limits.uniformBufferAlign);
-        memcpy(mapped.pointer, model->blendShapeWeights + group->index + j, count * sizeof(float));
-        bindings[3].buffer = (gpu_buffer_binding) { mapped.buffer, mapped.offset, mapped.extent };
+        BufferView view = getBuffer(GPU_BUFFER_STREAM, chunkSize * sizeof(float), state.limits.uniformBufferAlign);
+        memcpy(view.pointer, model->blendShapeWeights + group->index + j, count * sizeof(float));
+        bindings[3].buffer = (gpu_buffer_binding) { view.buffer, view.offset, view.extent };
 
         gpu_bundle* bundle = getBundle(shader->layout, bindings, COUNTOF(bindings));
         uint32_t constants[] = { group->vertexIndex, group->vertexCount, count, blendBufferCursor, first };
@@ -4777,14 +4842,14 @@ static void lovrModelAnimateVertices(Model* model) {
     }
 
     Shader* shader = lovrGraphicsGetDefaultShader(SHADER_ANIMATOR);
-    gpu_buffer* sourceBuffer = blend ? model->vertexBuffer->gpu : model->rawVertexBuffer->gpu;
+    Buffer* sourceBuffer = blend ? model->vertexBuffer : model->rawVertexBuffer;
 
     uint32_t count = data->skinnedVertexCount;
 
     gpu_binding bindings[] = {
-      { 0, GPU_SLOT_STORAGE_BUFFER, .buffer = { sourceBuffer, 0, count * sizeof(ModelVertex) } },
-      { 1, GPU_SLOT_STORAGE_BUFFER, .buffer = { model->vertexBuffer->gpu, 0, count * sizeof(ModelVertex) } },
-      { 2, GPU_SLOT_STORAGE_BUFFER, .buffer = { model->skinBuffer->gpu, 0, count * 8 } },
+      { 0, GPU_SLOT_STORAGE_BUFFER, .buffer = { sourceBuffer->gpu, sourceBuffer->base, count * sizeof(ModelVertex) } },
+      { 1, GPU_SLOT_STORAGE_BUFFER, .buffer = { model->vertexBuffer->gpu, model->vertexBuffer->base, count * sizeof(ModelVertex) } },
+      { 2, GPU_SLOT_STORAGE_BUFFER, .buffer = { model->skinBuffer->gpu, model->skinBuffer->base, count * 8 } },
       { 3, GPU_SLOT_UNIFORM_BUFFER, .buffer = { NULL, 0, 0 } } // Filled in for each skin
     };
 
@@ -4794,11 +4859,11 @@ static void lovrModelAnimateVertices(Model* model) {
       ModelSkin* skin = &data->skins[i];
 
       uint32_t align = state.limits.uniformBufferAlign;
-      MappedBuffer mapped = mapBuffer(&state.streamBuffers, skin->jointCount * 16 * sizeof(float), align);
-      bindings[3].buffer = (gpu_buffer_binding) { mapped.buffer, mapped.offset, mapped.extent };
+      BufferView view = getBuffer(GPU_BUFFER_STREAM, skin->jointCount * 16 * sizeof(float), align);
+      bindings[3].buffer = (gpu_buffer_binding) { view.buffer, view.offset, view.extent };
 
       float transform[16];
-      float* joints = mapped.pointer;
+      float* joints = view.pointer;
       for (uint32_t j = 0; j < skin->jointCount; j++) {
         mat4_init(transform, model->globalTransforms + 16 * skin->joints[j]);
         mat4_mul(transform, skin->inverseBindMatrices + 16 * j);
@@ -4850,7 +4915,6 @@ static Readback* lovrReadbackCreate(ReadbackType type) {
 
 Readback* lovrReadbackCreateBuffer(Buffer* buffer, uint32_t offset, uint32_t extent) {
   if (extent == ~0u) extent = buffer->info.size - offset;
-  lovrCheck(!lovrBufferIsTemporary(buffer), "Unable to read data back from a temporary Buffer");
   lovrCheck(offset + extent <= buffer->info.size, "Tried to read past the end of the Buffer");
   lovrCheck(!buffer->info.format || offset % buffer->info.format->stride == 0, "Readback offset must be a multiple of Buffer's stride");
   lovrCheck(!buffer->info.format || extent % buffer->info.format->stride == 0, "Readback size must be a multiple of Buffer's stride");
@@ -4859,11 +4923,11 @@ Readback* lovrReadbackCreateBuffer(Buffer* buffer, uint32_t offset, uint32_t ext
   void* data = malloc(extent);
   lovrAssert(data, "Out of memory");
   readback->blob = lovrBlobCreate(data, extent, "Readback");
-  readback->mapped = mapBuffer(&state.downloadBuffers, extent, 4);
+  readback->view = getBuffer(GPU_BUFFER_DOWNLOAD, extent, 4);
   lovrRetain(buffer);
-  gpu_barrier barrier = syncTransfer(&buffer->sync, GPU_CACHE_TRANSFER_READ);
+  gpu_barrier barrier = syncTransfer(&buffer->sync, GPU_PHASE_COPY, GPU_CACHE_TRANSFER_READ);
   gpu_sync(state.stream, &barrier, 1);
-  gpu_copy_buffers(state.stream, buffer->gpu, readback->mapped.buffer, offset, readback->mapped.offset, extent);
+  gpu_copy_buffers(state.stream, buffer->gpu, readback->view.buffer, buffer->base + offset, readback->view.offset, extent);
   return readback;
 }
 
@@ -4877,18 +4941,18 @@ Readback* lovrReadbackCreateTexture(Texture* texture, uint32_t offset[4], uint32
   checkTextureBounds(&texture->info, offset, extent);
   Readback* readback = lovrReadbackCreate(READBACK_TEXTURE);
   readback->texture = texture;
-  readback->image = lovrImageCreateRaw(extent[0], extent[1], texture->info.format);
-  readback->mapped = mapBuffer(&state.downloadBuffers, measureTexture(texture->info.format, extent[0], extent[1], 1), 64);
+  readback->image = lovrImageCreateRaw(extent[0], extent[1], texture->info.format, texture->info.srgb);
+  readback->view = getBuffer(GPU_BUFFER_DOWNLOAD, measureTexture(texture->info.format, extent[0], extent[1], 1), 64);
   lovrRetain(texture);
-  gpu_barrier barrier = syncTransfer(&texture->sync, GPU_CACHE_TRANSFER_READ);
+  gpu_barrier barrier = syncTransfer(&texture->sync, GPU_PHASE_COPY, GPU_CACHE_TRANSFER_READ);
   gpu_sync(state.stream, &barrier, 1);
-  gpu_copy_texture_buffer(state.stream, texture->gpu, readback->mapped.buffer, offset, readback->mapped.offset, extent);
+  gpu_copy_texture_buffer(state.stream, texture->gpu, readback->view.buffer, offset, readback->view.offset, extent);
   return readback;
 }
 
-static Readback* lovrReadbackCreateTimestamp(PassTime* times, uint32_t count, MappedBuffer buffer) {
+static Readback* lovrReadbackCreateTimestamp(TimingInfo* times, uint32_t count, BufferView buffer) {
   Readback* readback = lovrReadbackCreate(READBACK_TIMESTAMP);
-  readback->mapped = buffer;
+  readback->view = buffer;
   readback->times = times;
   readback->count = count;
   return readback;
@@ -4945,7 +5009,7 @@ void* lovrReadbackGetData(Readback* readback, DataField** format, uint32_t* coun
 
   if (readback->type == READBACK_BUFFER && readback->buffer->info.format) {
     *format = readback->buffer->info.format;
-    *count = readback->blob->size / readback->buffer->info.format->stride;
+    *count = (uint32_t) (readback->blob->size / readback->buffer->info.format->stride);
     return readback->blob->data;
   }
 
@@ -4966,7 +5030,17 @@ static void* lovrPassAllocate(Pass* pass, size_t size) {
   return tempAlloc(&pass->allocator, size);
 }
 
+static BufferView lovrPassGetBuffer(Pass* pass, uint32_t size, size_t align) {
+  return allocateBuffer(&pass->buffers, GPU_BUFFER_STREAM, size, align);
+}
+
 static void lovrPassRelease(Pass* pass) {
+  for (BufferBlock* block = pass->buffers.freelist; block; block = block->next) {
+    freeBlock(&state.bufferAllocators[GPU_BUFFER_STREAM], block);
+  }
+
+  pass->buffers.freelist = NULL;
+
   if (pass->pipeline) {
     for (uint32_t i = 0; i <= pass->pipelineIndex; i++) {
       lovrRelease(pass->pipeline->material, lovrMaterialDestroy);
@@ -4985,7 +5059,7 @@ static void lovrPassRelease(Pass* pass) {
   }
 
   for (uint32_t i = 0; i < pass->drawCount; i++) {
-    Draw* draw = &pass->draws[i >> 8][i & 0xff];
+    Draw* draw = &pass->draws[i];
     lovrRelease(draw->shader, lovrShaderDestroy);
     lovrRelease(draw->material, lovrMaterialDestroy);
   }
@@ -4993,13 +5067,8 @@ static void lovrPassRelease(Pass* pass) {
   for (uint32_t i = 0; i < COUNTOF(pass->access); i++) {
     for (AccessBlock* block = pass->access[i]; block != NULL; block = block->next) {
       for (uint32_t j = 0; j < block->count; j++) {
-        if (block->textureMask & (1ull << j)) {
-          Texture* texture = (Texture*) ((char*) block->list[j].sync - offsetof(Texture, sync));
-          lovrRelease(texture, lovrTextureDestroy);
-        } else {
-          Buffer* buffer = (Buffer*) ((char*) block->list[j].sync - offsetof(Buffer, sync));
-          lovrRelease(buffer, lovrBufferDestroy);
-        }
+        bool texture = block->textureMask & (1ull << j);
+        lovrRelease(block->list[j].object, texture ? lovrTextureDestroy : lovrBufferDestroy);
       }
     }
   }
@@ -5024,28 +5093,15 @@ Pass* lovrGraphicsGetWindowPass(void) {
   return state.windowPass;
 }
 
-Pass* lovrGraphicsGetPass(void) {
-  beginFrame();
-
-  if (state.passCount >= state.passes.length) {
-    arr_push(&state.passes, lovrPassCreate());
-  }
-
-  Pass* pass = state.passes.data[state.passCount++];
-  lovrPassReset(pass);
-  return pass;
-}
-
 Pass* lovrPassCreate(void) {
   Pass* pass = calloc(1, sizeof(Pass));
   lovrAssert(pass, "Out of memory");
   pass->ref = 1;
 
   pass->allocator.limit = 1 << 28;
-  pass->allocator.length = 1 << 16;
+  pass->allocator.length = 1 << 12;
   pass->allocator.memory = os_vm_init(pass->allocator.limit);
   os_vm_commit(pass->allocator.memory, pass->allocator.length);
-  pass->buffers.type = GPU_BUFFER_STREAM;
 
   lovrPassReset(pass);
 
@@ -5062,15 +5118,9 @@ void lovrPassDestroy(void* ref) {
   lovrRelease(pass->tally.buffer, lovrBufferDestroy);
   if (pass->tally.gpu) {
     gpu_tally_destroy(pass->tally.gpu);
-    gpu_buffer_destroy(pass->tally.secretBuffer);
+    lovrRelease(pass->tally.tempBuffer, lovrBufferDestroy);
   }
-  ScratchBuffer* buffer = pass->buffers.oldest;
-  while (buffer) {
-    ScratchBuffer* next = buffer->next;
-    gpu_buffer_destroy(buffer->gpu);
-    free(buffer);
-    buffer = next;
-  }
+  freeBlock(&state.bufferAllocators[GPU_BUFFER_STREAM], pass->buffers.current);
   os_vm_free(pass->allocator.memory, pass->allocator.limit);
   free(pass);
 }
@@ -5082,15 +5132,14 @@ void lovrPassReset(Pass* pass) {
   pass->access[ACCESS_RENDER] = NULL;
   pass->access[ACCESS_COMPUTE] = NULL;
   pass->flags = DIRTY_BINDINGS | DIRTY_CONSTANTS;
-  pass->firstScratchOffset = pass->buffers.cursor;
-  pass->firstScratchBuffer = pass->buffers.newest;
-  pass->transform = lovrPassAllocate(pass, MAX_TRANSFORMS * 16 * sizeof(float));
-  pass->pipeline = lovrPassAllocate(pass, MAX_PIPELINES * sizeof(Pipeline));
-  pass->bindings = lovrPassAllocate(pass, 32 * sizeof(gpu_binding));
+  pass->transform = lovrPassAllocate(pass, TRANSFORM_STACK_SIZE * 16 * sizeof(float));
+  pass->pipeline = lovrPassAllocate(pass, PIPELINE_STACK_SIZE * sizeof(Pipeline));
   pass->constants = lovrPassAllocate(pass, state.limits.pushConstantSize);
-  pass->draws = lovrPassAllocate(pass, 256 * sizeof(Draw*));
-  pass->lastDraw = NULL;
+  pass->bindings = lovrPassAllocate(pass, 32 * sizeof(gpu_binding));
+  pass->computeCount = 0;
   pass->computes = NULL;
+  pass->drawCount = 0;
+  pass->draws = lovrPassAllocate(pass, pass->drawCapacity * sizeof(Draw));
 
   memset(&pass->geocache, 0, sizeof(pass->geocache));
 
@@ -5108,33 +5157,24 @@ void lovrPassReset(Pass* pass) {
   pass->pipeline->color[1] = 1.f;
   pass->pipeline->color[2] = 1.f;
   pass->pipeline->color[3] = 1.f;
+  pass->pipeline->info.pass = pass->gpu;
   pass->pipeline->info.depth.test = GPU_COMPARE_GEQUAL;
   pass->pipeline->info.depth.write = true;
   pass->pipeline->info.stencil.testMask = 0xff;
   pass->pipeline->info.stencil.writeMask = 0xff;
 
-  for (uint32_t i = 0; i < COUNTOF(pass->pipeline->info.color); i++) {
+  for (uint32_t i = 0; i < 4; i++) {
     lovrPassSetBlendMode(pass, i, BLEND_ALPHA, BLEND_ALPHA_MULTIPLY);
-    pass->pipeline->info.color[i].mask = 0xf;
-  }
-
-  Canvas* canvas = &pass->canvas;
-  pass->pipeline->info.attachmentCount = canvas->count;
-  pass->pipeline->info.multisample.count = canvas->samples;
-  pass->pipeline->info.viewCount = canvas->views;
-  pass->pipeline->info.depth.format = (gpu_texture_format) canvas->depth.format;
-  for (uint32_t i = 0; i < canvas->count; i++) {
-    pass->pipeline->info.color[i].format = (gpu_texture_format) canvas->color[i].texture->info.format;
-    pass->pipeline->info.color[i].srgb = canvas->color[i].texture->info.format;
+    pass->pipeline->info.colorMask[i] = 0xf;
   }
 
   pass->cameraCount = 0;
-  if (canvas->views > 0) {
+  if (pass->canvas.views > 0) {
     float viewMatrix[16];
     float projection[16];
     mat4_identity(viewMatrix);
-    mat4_perspective(projection, 1.2f, (float) canvas->width / canvas->height, .01f, 0.f);
-    for (uint32_t i = 0; i < canvas->views; i++) {
+    mat4_perspective(projection, 1.2f, (float) pass->canvas.width / pass->canvas.height, .01f, 0.f);
+    for (uint32_t i = 0; i < pass->canvas.views; i++) {
       lovrPassSetViewMatrix(pass, i, viewMatrix);
       lovrPassSetProjection(pass, i, projection);
     }
@@ -5145,220 +5185,6 @@ void lovrPassReset(Pass* pass) {
 
   pass->sampler = NULL;
   pass->bindingMask = 0;
-
-  pass->computeCount = 0;
-  pass->drawCount = 0;
-}
-
-void lovrPassAppend(Pass* pass, Pass* other) {
-  lovrCheck(pass != other, "Unable to append a Pass to itself because it would destroy the universe or something...sorry");
-  beginFrame();
-
-  // First, copy all temporary buffer data into the buffer pool of the target Pass
-
-  uint32_t firstOffset = other->firstScratchBuffer ? other->firstScratchOffset: 0;
-  other->firstScratchBuffer = other->firstScratchBuffer ? other->firstScratchBuffer : other->buffers.oldest;
-  uint32_t totalScratchSize = 0;
-  uint32_t scratchBufferCount = 0;
-
-  // Need to calculate the LCM of *all* temp buffer data, because vertex data offsets need to be a
-  // multiple of the vertex stride after all the buffer data is copied.  It's slow to go over all
-  // the draws like this instead of computing the align as draws are recorded, but this keeps
-  // overhead isolated to :append instead of increasing the overhead of all draws.
-  uint32_t align = state.limits.uniformBufferAlign;
-  for (uint32_t i = 0; i < other->drawCount; i++) {
-    Draw* draw = &other->draws[i >> 8][i & 0xff];
-    if (draw->flags & DRAW_INLINE_MESH) {
-      align = lcm(align, draw->pipelineInfo->vertex.bufferStrides[0]);
-    }
-  }
-
-  for (ScratchBuffer* scratchBuffer = other->firstScratchBuffer; scratchBuffer != NULL; scratchBuffer = scratchBuffer->next) {
-    uint32_t start = scratchBuffer == other->firstScratchBuffer ? firstOffset : 0;
-    uint32_t end = scratchBuffer == other->buffers.newest ? other->buffers.cursor : scratchBuffer->size;
-    totalScratchSize = (totalScratchSize + (align - 1)) / align * align + (end - start);
-    scratchBufferCount++;
-  }
-
-  struct {
-    gpu_buffer* buffer;
-    uint32_t stashOffset;
-    uint32_t base;
-  } *lookup = lovrPassAllocate(pass, scratchBufferCount * sizeof(*lookup));
-
-  MappedBuffer stash = mapBuffer(&pass->buffers, totalScratchSize, align);
-
-  uint32_t i = 0;
-  uint32_t cursor = 0;
-  for (ScratchBuffer* scratchBuffer = other->firstScratchBuffer; scratchBuffer != NULL; scratchBuffer = scratchBuffer->next) {
-    uint32_t start = scratchBuffer == other->firstScratchBuffer ? firstOffset : 0;
-    uint32_t end = scratchBuffer == other->buffers.newest ? other->buffers.cursor : scratchBuffer->size;
-    lookup[i].buffer = scratchBuffer->gpu;
-    lookup[i].stashOffset = stash.offset + cursor;
-    lookup[i].base = start;
-    gpu_copy_buffers(state.stream, scratchBuffer->gpu, stash.buffer, start, lookup[i].stashOffset, end - start);
-    cursor = (cursor + (align - 1)) / align * align + (end - start);
-  }
-
-  gpu_sync(state.stream, &(gpu_barrier) {
-    .prev = GPU_PHASE_TRANSFER,
-    .next = GPU_PHASE_INPUT_INDEX | GPU_PHASE_INPUT_VERTEX | GPU_PHASE_SHADER_VERTEX,
-    .flush = GPU_CACHE_TRANSFER_WRITE,
-    .clear = GPU_CACHE_INDEX | GPU_CACHE_VERTEX | GPU_CACHE_UNIFORM
-  }, 1);
-
-  Canvas* canvas = &pass->canvas;
-  uint32_t baseTally = pass->tally.count;
-  gpu_pipeline_info* srcPipelineInfo = NULL;
-  gpu_pipeline_info* dstPipelineInfo = NULL;
-  gpu_bundle_info* srcBundleInfo = NULL;
-  gpu_bundle_info* dstBundleInfo = NULL;
-  void* srcConstants = NULL;
-  void* dstConstants = NULL;
-
-  for (uint32_t i = 0; i < other->drawCount; i++) {
-    if ((pass->drawCount & 0xff) == 0) {
-      lovrCheck(pass->drawCount < 256 * 256, "Pass has too many draws!");
-      pass->draws[pass->drawCount >> 8] = lovrPassAllocate(pass, 256 * sizeof(Draw));
-    }
-
-    Draw* src = &other->draws[i >> 8][i & 0xff];
-    Draw* dst = &pass->draws[pass->drawCount >> 8][pass->drawCount & 0xff];
-
-    dst->flags = src->flags;
-    dst->camera = pass->cameraCount - 1;
-    dst->tally = pass->tally.active ? pass->tally.count : (baseTally + src->tally);
-    dst->shader = src->shader;
-    dst->material = src->material;
-    lovrRetain(dst->shader);
-    lovrRetain(dst->material);
-
-    dst->pipeline = NULL;
-    if (src->pipelineInfo != srcPipelineInfo) {
-      dst->pipelineInfo = lovrPassAllocate(pass, sizeof(gpu_pipeline_info));
-      memcpy(dst->pipelineInfo, src->pipelineInfo, sizeof(gpu_pipeline_info));
-
-      dst->pipelineInfo->attachmentCount = canvas->count;
-      dst->pipelineInfo->multisample.count = canvas->samples;
-      dst->pipelineInfo->viewCount = canvas->views;
-      dst->pipelineInfo->depth.format = (gpu_texture_format) canvas->depth.format;
-      for (uint32_t j = 0; j < canvas->count; j++) {
-        dst->pipelineInfo->color[j].format = (gpu_texture_format) canvas->color[j].texture->info.format;
-        dst->pipelineInfo->color[j].srgb = canvas->color[j].texture->info.format;
-      }
-
-      srcPipelineInfo = src->pipelineInfo;
-      dstPipelineInfo = dst->pipelineInfo;
-    } else {
-      dst->pipelineInfo = dstPipelineInfo;
-    }
-
-    dst->bundle = NULL;
-    if (src->bundleInfo != srcBundleInfo) {
-      gpu_bundle_info* bundle = lovrPassAllocate(pass, sizeof(gpu_bundle_info));
-      bundle->count = src->bundleInfo->count;
-      bundle->layout = src->bundleInfo->layout;
-      bundle->bindings = lovrPassAllocate(pass, bundle->count * sizeof(gpu_binding));
-      memcpy(bundle->bindings, src->bundleInfo->bindings, bundle->count * sizeof(gpu_binding));
-      dst->bundleInfo = bundle;
-      srcBundleInfo = src->bundleInfo;
-      dstBundleInfo = bundle;
-
-      for (uint32_t j = 0; j < bundle->count; j++) {
-        if (bundle->bindings[j].type != GPU_SLOT_UNIFORM_BUFFER) continue;
-        for (uint32_t k = 0; k < scratchBufferCount; k++) {
-          gpu_buffer_binding* buffer = &bundle->bindings[j].buffer;
-          if (lookup[k].buffer == buffer->object) {
-            buffer->object = stash.buffer;
-            buffer->offset = buffer->offset - lookup[k].base + lookup[k].stashOffset;
-            break;
-          }
-        }
-      }
-    } else {
-      dst->bundleInfo = dstBundleInfo;
-    }
-
-    if (src->constants != srcConstants) {
-      dst->constants = lovrPassAllocate(pass, dst->shader->constantSize);
-      memcpy(dst->constants, src->constants, dst->shader->constantSize);
-      srcConstants = src->constants;
-      dstConstants = dst->constants;
-    } else {
-      dst->constants = dstConstants;
-    }
-
-    if (dst->flags & DRAW_INLINE_MESH) {
-      if (src->vertexBuffer) {
-        dst->vertexBuffer = stash.buffer;
-        for (uint32_t j = 0; j < scratchBufferCount; j++) {
-          if (lookup[j].buffer == src->vertexBuffer) {
-            uint32_t stride = dst->pipelineInfo->vertex.bufferStrides[0];
-            uint32_t* first = src->indexBuffer ? &dst->baseVertex : &dst->start;
-            *first *= stride;
-            *first -= lookup[j].base;
-            *first += lookup[j].stashOffset;
-            *first /= stride;
-            break;
-          }
-        }
-      }
-
-      if (src->indexBuffer) {
-        dst->indexBuffer = stash.buffer;
-        for (uint32_t j = 0; j < scratchBufferCount; j++) {
-          if (lookup[j].buffer == src->indexBuffer) {
-            uint32_t stride = dst->flags & DRAW_INDEX32 ? 4 : 2;
-            dst->start = (dst->start * stride - lookup[j].base + lookup[j].stashOffset) * stride;
-            break;
-          }
-        }
-      }
-    } else {
-      dst->vertexBuffer = src->vertexBuffer;
-      dst->indexBuffer = src->indexBuffer;
-    }
-
-    if (dst->flags & DRAW_INDIRECT) {
-      dst->start = src->start;
-      dst->count = src->count;
-      dst->instances = src->instances;
-      dst->baseVertex = src->baseVertex;
-    } else {
-      dst->indirect.buffer = src->indirect.buffer;
-      dst->indirect.offset = src->indirect.offset;
-      dst->indirect.count = src->indirect.count;
-      dst->indirect.stride = src->indirect.stride;
-    }
-
-    memcpy(dst->transform, src->transform, sizeof(src->transform));
-    memcpy(dst->color, src->color, sizeof(src->color));
-    memcpy(dst->bounds, src->bounds, sizeof(src->bounds));
-
-    pass->lastDraw = dst;
-    pass->drawCount++;
-  }
-
-  for (AccessBlock* block = other->access[ACCESS_RENDER]; block != NULL; block = block->next) {
-    for (uint64_t i = 0; i < block->count; i++) {
-      bool isTexture = !!(block->textureMask & (1ull << i));
-      Access* access = getNextAccess(pass, ACCESS_RENDER, isTexture);
-      memcpy(access, &block->list[i], sizeof(Access));
-      if (isTexture) {
-        Texture* texture = (Texture*) ((char*) block->list[i].sync - offsetof(Texture, sync));
-        lovrRetain(texture);
-      } else {
-        Buffer* buffer = (Buffer*) ((char*) block->list[i].sync - offsetof(Buffer, sync));
-        lovrRetain(buffer);
-      }
-    }
-  }
-
-  if (!pass->tally.active) {
-    pass->tally.count += other->tally.count;
-  }
-
-  pass->flags &= ~DIRTY_CAMERA;
 }
 
 const PassStats* lovrPassGetStats(Pass* pass) {
@@ -5439,6 +5265,8 @@ void lovrPassSetCanvas(Pass* pass, Texture* textures[4], Texture* depthTexture, 
     canvas->depth.format = depthFormat;
   }
 
+  pass->gpu = getPass(canvas);
+
   lovrPassReset(pass);
 }
 
@@ -5457,7 +5285,9 @@ void lovrPassGetClear(Pass* pass, LoadAction loads[4], float clears[4][4], LoadA
 }
 
 void lovrPassSetClear(Pass* pass, LoadAction loads[4], float clears[4][4], LoadAction depthLoad, float depthClear) {
+  bool dirty = false;
   for (uint32_t i = 0; i < pass->canvas.count; i++) {
+    dirty |= loads[i] != pass->canvas.color[i].load;
     pass->canvas.color[i].load = loads[i];
     if (loads[i] == LOAD_CLEAR) {
       pass->canvas.color[i].clear[0] = lovrMathGammaToLinear(clears[i][0]);
@@ -5468,8 +5298,10 @@ void lovrPassSetClear(Pass* pass, LoadAction loads[4], float clears[4][4], LoadA
       memset(pass->canvas.color[i].clear, 0, 4 * sizeof(float));
     }
   }
+  dirty |= depthLoad != pass->canvas.depth.load;
   pass->canvas.depth.load = depthLoad;
   pass->canvas.depth.clear = depthLoad == LOAD_CLEAR ? depthClear : 0.f;
+  if (dirty) pass->gpu = getPass(&pass->canvas);
 }
 
 uint32_t lovrPassGetAttachmentCount(Pass* pass, bool* depth) {
@@ -5546,12 +5378,12 @@ void lovrPassSetScissor(Pass* pass, uint32_t scissor[4]) {
 void lovrPassPush(Pass* pass, StackType stack) {
   switch (stack) {
     case STACK_TRANSFORM:
-      lovrCheck(++pass->transformIndex < MAX_TRANSFORMS, "%s stack overflow (more pushes than pops?)", "Transform");
+      lovrCheck(++pass->transformIndex < TRANSFORM_STACK_SIZE, "%s stack overflow (more pushes than pops?)", "Transform");
       mat4_init(pass->transform + 16, pass->transform);
       pass->transform += 16;
       break;
     case STACK_STATE:
-      lovrCheck(++pass->pipelineIndex < MAX_PIPELINES, "%s stack overflow (more pushes than pops?)", "Pipeline");
+      lovrCheck(++pass->pipelineIndex < PIPELINE_STACK_SIZE, "%s stack overflow (more pushes than pops?)", "Pipeline");
       memcpy(pass->pipeline + 1, pass->pipeline, sizeof(Pipeline));
       pass->pipeline++;
       lovrRetain(pass->pipeline->font);
@@ -5565,14 +5397,14 @@ void lovrPassPush(Pass* pass, StackType stack) {
 void lovrPassPop(Pass* pass, StackType stack) {
   switch (stack) {
     case STACK_TRANSFORM:
-      lovrCheck(--pass->transformIndex < MAX_TRANSFORMS, "%s stack underflow (more pops than pushes?)", "Transform");
+      lovrCheck(--pass->transformIndex < TRANSFORM_STACK_SIZE, "%s stack underflow (more pops than pushes?)", "Transform");
       pass->transform -= 16;
       break;
     case STACK_STATE:
       lovrRelease(pass->pipeline->font, lovrFontDestroy);
       lovrRelease(pass->pipeline->shader, lovrShaderDestroy);
       lovrRelease(pass->pipeline->material, lovrMaterialDestroy);
-      lovrCheck(--pass->pipelineIndex < MAX_PIPELINES, "%s stack underflow (more pops than pushes?)", "Pipeline");
+      lovrCheck(--pass->pipelineIndex < PIPELINE_STACK_SIZE, "%s stack underflow (more pops than pushes?)", "Pipeline");
       pass->pipeline--;
       pass->pipeline->dirty = true;
       break;
@@ -5607,78 +5439,51 @@ void lovrPassSetAlphaToCoverage(Pass* pass, bool enabled) {
 
 void lovrPassSetBlendMode(Pass* pass, uint32_t index, BlendMode mode, BlendAlphaMode alphaMode) {
   if (mode == BLEND_NONE) {
-    pass->pipeline->dirty |= pass->pipeline->info.color[index].blend.enabled;
-    memset(&pass->pipeline->info.color[index].blend, 0, sizeof(gpu_blend_state));
+    pass->pipeline->dirty |= pass->pipeline->info.blend[index].enabled;
+    memset(&pass->pipeline->info.blend[index], 0, sizeof(gpu_blend_state));
     return;
   }
 
-  gpu_blend_state* blend = &pass->pipeline->info.color[index].blend;
+  gpu_blend_state* blend = &pass->pipeline->info.blend[index];
 
-  switch (mode) {
-    case BLEND_ALPHA:
-      blend->color.src = GPU_BLEND_SRC_ALPHA;
-      blend->color.dst = GPU_BLEND_ONE_MINUS_SRC_ALPHA;
-      blend->color.op = GPU_BLEND_ADD;
-      blend->alpha.src = GPU_BLEND_ONE;
-      blend->alpha.dst = GPU_BLEND_ONE_MINUS_SRC_ALPHA;
-      blend->alpha.op = GPU_BLEND_ADD;
-      break;
-    case BLEND_ADD:
-      blend->color.src = GPU_BLEND_SRC_ALPHA;
-      blend->color.dst = GPU_BLEND_ONE;
-      blend->color.op = GPU_BLEND_ADD;
-      blend->alpha.src = GPU_BLEND_ZERO;
-      blend->alpha.dst = GPU_BLEND_ONE;
-      blend->alpha.op = GPU_BLEND_ADD;
-      break;
-    case BLEND_SUBTRACT:
-      blend->color.src = GPU_BLEND_SRC_ALPHA;
-      blend->color.dst = GPU_BLEND_ONE;
-      blend->color.op = GPU_BLEND_RSUB;
-      blend->alpha.src = GPU_BLEND_ZERO;
-      blend->alpha.dst = GPU_BLEND_ONE;
-      blend->alpha.op = GPU_BLEND_RSUB;
-      break;
-    case BLEND_MULTIPLY:
-      blend->color.src = GPU_BLEND_DST_COLOR;
-      blend->color.dst = GPU_BLEND_ZERO;
-      blend->color.op = GPU_BLEND_ADD;
-      blend->alpha.src = GPU_BLEND_DST_COLOR;
-      blend->alpha.dst = GPU_BLEND_ZERO;
-      blend->alpha.op = GPU_BLEND_ADD;
-      break;
-    case BLEND_LIGHTEN:
-      blend->color.src = GPU_BLEND_SRC_ALPHA;
-      blend->color.dst = GPU_BLEND_ZERO;
-      blend->color.op = GPU_BLEND_MAX;
-      blend->alpha.src = GPU_BLEND_ONE;
-      blend->alpha.dst = GPU_BLEND_ZERO;
-      blend->alpha.op = GPU_BLEND_MAX;
-      break;
-    case BLEND_DARKEN:
-      blend->color.src = GPU_BLEND_SRC_ALPHA;
-      blend->color.dst = GPU_BLEND_ZERO;
-      blend->color.op = GPU_BLEND_MIN;
-      blend->alpha.src = GPU_BLEND_ONE;
-      blend->alpha.dst = GPU_BLEND_ZERO;
-      blend->alpha.op = GPU_BLEND_MIN;
-      break;
-    case BLEND_SCREEN:
-      blend->color.src = GPU_BLEND_SRC_ALPHA;
-      blend->color.dst = GPU_BLEND_ONE_MINUS_SRC_COLOR;
-      blend->color.op = GPU_BLEND_ADD;
-      blend->alpha.src = GPU_BLEND_ONE;
-      blend->alpha.dst = GPU_BLEND_ONE_MINUS_SRC_COLOR;
-      blend->alpha.op = GPU_BLEND_ADD;
-      break;
-    default: lovrUnreachable();
+  static const gpu_blend_state table[] = {
+    [BLEND_ALPHA] = {
+      .color = { GPU_BLEND_SRC_ALPHA, GPU_BLEND_ONE_MINUS_SRC_ALPHA, GPU_BLEND_ADD },
+      .alpha = { GPU_BLEND_ONE, GPU_BLEND_ONE_MINUS_SRC_ALPHA, GPU_BLEND_ADD }
+    },
+    [BLEND_ADD] = {
+      .color = { GPU_BLEND_SRC_ALPHA, GPU_BLEND_ONE, GPU_BLEND_ADD },
+      .alpha = { GPU_BLEND_ZERO, GPU_BLEND_ONE, GPU_BLEND_ADD }
+    },
+    [BLEND_SUBTRACT] = {
+      .color = { GPU_BLEND_SRC_ALPHA, GPU_BLEND_ONE, GPU_BLEND_RSUB },
+      .alpha = { GPU_BLEND_ZERO, GPU_BLEND_ONE, GPU_BLEND_RSUB }
+    },
+    [BLEND_MULTIPLY] = {
+      .color = { GPU_BLEND_DST_COLOR, GPU_BLEND_ZERO, GPU_BLEND_ADD },
+      .alpha = { GPU_BLEND_DST_COLOR, GPU_BLEND_ZERO, GPU_BLEND_ADD }
+    },
+    [BLEND_LIGHTEN] = {
+      .color = { GPU_BLEND_SRC_ALPHA, GPU_BLEND_ZERO, GPU_BLEND_MAX },
+      .alpha = { GPU_BLEND_ONE, GPU_BLEND_ZERO, GPU_BLEND_MAX }
+    },
+    [BLEND_DARKEN] = {
+      .color = { GPU_BLEND_SRC_ALPHA, GPU_BLEND_ZERO, GPU_BLEND_MIN },
+      .alpha = { GPU_BLEND_ONE, GPU_BLEND_ZERO, GPU_BLEND_MIN }
+    },
+    [BLEND_SCREEN] = {
+      .color = { GPU_BLEND_SRC_ALPHA, GPU_BLEND_ONE_MINUS_SRC_COLOR, GPU_BLEND_ADD },
+      .alpha = { GPU_BLEND_ONE, GPU_BLEND_ONE_MINUS_SRC_COLOR, GPU_BLEND_ADD }
+    },
   };
+
+  *blend = table[mode];
+  blend->enabled = true;
 
   if (alphaMode == BLEND_PREMULTIPLIED && mode != BLEND_MULTIPLY) {
     blend->color.src = GPU_BLEND_ONE;
   }
 
-  blend->enabled = true;
   pass->pipeline->dirty = true;
 }
 
@@ -5691,8 +5496,8 @@ void lovrPassSetColor(Pass* pass, float color[4]) {
 
 void lovrPassSetColorWrite(Pass* pass, uint32_t index, bool r, bool g, bool b, bool a) {
   uint8_t mask = (r << 0) | (g << 1) | (b << 2) | (a << 3);
-  pass->pipeline->dirty |= pass->pipeline->info.color[index].mask != mask;
-  pass->pipeline->info.color[index].mask = mask;
+  pass->pipeline->dirty |= pass->pipeline->info.colorMask[index] != mask;
+  pass->pipeline->info.colorMask[index] = mask;
 }
 
 void lovrPassSetDepthTest(Pass* pass, CompareMode test) {
@@ -5731,12 +5536,8 @@ void lovrPassSetFont(Pass* pass, Font* font) {
   }
 }
 
-void lovrPassSetMaterial(Pass* pass, Material* material, Texture* texture) {
-  if (texture) {
-    material = lovrTextureGetMaterial(texture);
-  }
-
-  material = material ? material : state.defaultMaterial;
+void lovrPassSetMaterial(Pass* pass, Material* material) {
+  if (!material) material = state.defaultMaterial;
 
   if (pass->pipeline->material != material) {
     lovrRetain(material);
@@ -5761,8 +5562,8 @@ void lovrPassSetShader(Pass* pass, Shader* shader) {
   Shader* previous = pass->pipeline->shader;
   if (shader == previous) return;
 
-  bool fromCompute = previous && previous->info.type == SHADER_COMPUTE;
-  bool toCompute = shader && shader->info.type == SHADER_COMPUTE;
+  bool fromCompute = previous && (previous->stageMask & COMPUTE);
+  bool toCompute = shader && (shader->stageMask & COMPUTE);
 
   if (fromCompute ^ toCompute) {
     pass->bindingMask = 0;
@@ -5770,7 +5571,7 @@ void lovrPassSetShader(Pass* pass, Shader* shader) {
 
   // Clear any bindings for resources that share the same slot but have different types
   if (shader) {
-    if (previous && previous->info.type == shader->info.type) {
+    if (previous) {
       for (uint32_t i = 0, j = 0; i < previous->resourceCount && j < shader->resourceCount;) {
         if (previous->resources[i].binding < shader->resources[j].binding) {
           i++;
@@ -5802,7 +5603,7 @@ void lovrPassSetShader(Pass* pass, Shader* shader) {
 
         if (shader->bufferMask & bit) {
           pass->bindings[i].buffer.object = state.defaultBuffer->gpu;
-          pass->bindings[i].buffer.offset = 0;
+          pass->bindings[i].buffer.offset = state.defaultBuffer->base;
           pass->bindings[i].buffer.extent = state.defaultBuffer->info.size;
         } else if (shader->textureMask & bit) {
           pass->bindings[i].texture = state.defaultTexture->gpu;
@@ -5905,7 +5706,6 @@ void lovrPassSendBuffer(Pass* pass, const char* name, size_t length, uint32_t sl
   uint32_t limit;
 
   if (shader->storageMask & (1u << slot)) {
-    lovrCheck(!lovrBufferIsTemporary(buffer), "Temporary buffers can not be sent to storage buffer variables", slot + 1);
     lovrCheck((offset & (state.limits.storageBufferAlign - 1)) == 0, "Storage buffer offset (%d) is not aligned to storageBufferAlign limit (%d)", offset, state.limits.storageBufferAlign);
     limit = state.limits.storageBufferRange;
   } else {
@@ -5922,7 +5722,7 @@ void lovrPassSendBuffer(Pass* pass, const char* name, size_t length, uint32_t sl
 
   trackBuffer(pass, buffer, resource->phase, resource->cache);
   pass->bindings[slot].buffer.object = buffer->gpu;
-  pass->bindings[slot].buffer.offset = buffer->offset + offset;
+  pass->bindings[slot].buffer.offset = buffer->base + offset;
   pass->bindings[slot].buffer.extent = extent;
   pass->bindingMask |= (1u << slot);
   pass->flags |= DIRTY_BINDINGS;
@@ -5936,14 +5736,16 @@ void lovrPassSendTexture(Pass* pass, const char* name, size_t length, uint32_t s
 
   lovrCheck(shader->textureMask & (1u << slot), "Trying to send a Texture to slot %d, but the active Shader doesn't have a Texture in that slot");
 
+  gpu_texture* view = texture->gpu;
   if (shader->storageMask & (1u << slot)) {
     lovrCheck(texture->info.usage & TEXTURE_STORAGE, "Textures must be created with the 'storage' usage to send them to image variables in shaders");
+    view = texture->storageView;
   } else {
     lovrCheck(texture->info.usage & TEXTURE_SAMPLE, "Textures must be created with the 'sample' usage to send them to sampler variables in shaders");
   }
 
   trackTexture(pass, texture, resource->phase, resource->cache);
-  pass->bindings[slot].texture = texture->gpu;
+  pass->bindings[slot].texture = view;
   pass->bindingMask |= (1u << slot);
   pass->flags |= DIRTY_BINDINGS;
 }
@@ -5982,16 +5784,16 @@ void lovrPassSendData(Pass* pass, const char* name, size_t length, uint32_t slot
   lovrCheck(~shader->storageMask & (1u << slot), "Unable to send table data to a storage buffer");
 
   uint32_t size = resource->format->stride * MAX(resource->format->length, 1);
-  MappedBuffer mapped = mapBuffer(&pass->buffers, size, state.limits.uniformBufferAlign);
-  pass->bindings[slot].buffer = (gpu_buffer_binding) { mapped.buffer, mapped.offset, mapped.extent };
+  BufferView view = lovrPassGetBuffer(pass, size, state.limits.uniformBufferAlign);
+  pass->bindings[slot].buffer = (gpu_buffer_binding) { view.buffer, view.offset, view.extent };
   pass->bindingMask |= (1u << slot);
   pass->flags |= DIRTY_BINDINGS;
 
-  *data = mapped.pointer;
+  *data = view.pointer;
   *format = resource->format;
 }
 
-static void lovrPassResolvePipeline(Pass* pass, DrawInfo* info, Draw* draw) {
+static void lovrPassResolvePipeline(Pass* pass, DrawInfo* info, Draw* draw, Draw* prev) {
   Pipeline* pipeline = pass->pipeline;
   Shader* shader = draw->shader;
 
@@ -6074,19 +5876,19 @@ static void lovrPassResolvePipeline(Pass* pass, DrawInfo* info, Draw* draw) {
     memcpy(draw->pipelineInfo, &pipeline->info, sizeof(pipeline->info));
     draw->pipeline = NULL;
   } else {
-    draw->pipelineInfo = pass->lastDraw->pipelineInfo;
-    draw->pipeline = pass->lastDraw->pipeline;
+    draw->pipelineInfo = prev->pipelineInfo;
+    draw->pipeline = prev->pipeline;
   }
 }
 
 static void lovrPassResolveBuffers(Pass* pass, DrawInfo* info, Draw* draw) {
-  Shape* cache = info->hash ? &pass->geocache[info->hash & (COUNTOF(pass->geocache) - 1)] : NULL;
+  CachedShape* cached = info->hash ? &pass->geocache[info->hash & (COUNTOF(pass->geocache) - 1)] : NULL;
 
-  if (cache && cache->hash == info->hash) {
-    draw->vertexBuffer = cache->vertexBuffer;
-    draw->indexBuffer = cache->indexBuffer;
-    draw->start = cache->start;
-    draw->baseVertex = cache->baseVertex;
+  if (cached && cached->hash == info->hash) {
+    draw->vertexBuffer = cached->vertexBuffer;
+    draw->indexBuffer = cached->indexBuffer;
+    draw->start = cached->start;
+    draw->baseVertex = cached->baseVertex;
     *info->vertex.pointer = NULL;
     *info->index.pointer = NULL;
     return;
@@ -6095,51 +5897,49 @@ static void lovrPassResolveBuffers(Pass* pass, DrawInfo* info, Draw* draw) {
   if (!info->vertex.buffer && info->vertex.count > 0) {
     lovrCheck(info->vertex.count <= UINT16_MAX, "Shape has too many vertices (max is 65535)");
     uint32_t stride = state.vertexFormats[info->vertex.format].bufferStrides[0];
-    MappedBuffer mapped = mapBuffer(&pass->buffers, info->vertex.count * stride, stride);
-    *info->vertex.pointer = mapped.pointer;
-    draw->flags |= DRAW_INLINE_MESH;
-    draw->vertexBuffer = mapped.buffer;
+    BufferView view = lovrPassGetBuffer(pass, info->vertex.count * stride, stride);
+    *info->vertex.pointer = view.pointer;
+    draw->vertexBuffer = view.buffer;
     if (info->index.buffer || info->index.count > 0) {
-      draw->baseVertex = mapped.offset / stride;
+      draw->baseVertex = view.offset / stride;
     } else {
-      draw->start = mapped.offset / stride;
+      draw->start = view.offset / stride;
     }
   } else if (info->vertex.buffer) {
-    lovrCheck(info->vertex.buffer->info.format->stride <= state.limits.vertexBufferStride, "Vertex buffer stride exceeds vertexBufferStride limit");
-    trackBuffer(pass, info->vertex.buffer, GPU_PHASE_INPUT_VERTEX, GPU_CACHE_VERTEX);
-    draw->vertexBuffer = info->vertex.buffer->gpu;
-
-    // Deprecated (temp buffer offset)
+    Buffer* buffer = info->vertex.buffer;
+    uint32_t stride = buffer->info.format->stride;
+    lovrCheck(stride <= state.limits.vertexBufferStride, "Vertex buffer stride exceeds vertexBufferStride limit");
+    trackBuffer(pass, buffer, GPU_PHASE_INPUT_VERTEX, GPU_CACHE_VERTEX);
+    draw->vertexBuffer = buffer->gpu;
     if (info->index.buffer || info->index.count > 0) {
-      draw->baseVertex += info->vertex.buffer->offset / info->vertex.buffer->info.format->stride;
+      draw->baseVertex += buffer->base / stride;
     } else {
-      draw->start += info->vertex.buffer->offset / info->vertex.buffer->info.format->stride;
+      draw->start += buffer->base / stride;
     }
   } else {
     draw->vertexBuffer = state.defaultBuffer->gpu;
   }
 
   if (!info->index.buffer && info->index.count > 0) {
-    MappedBuffer mapped = mapBuffer(&pass->buffers, info->index.count * 2, 2);
-    *info->index.pointer = mapped.pointer;
-    draw->flags |= DRAW_INLINE_MESH;
-    draw->indexBuffer = mapped.buffer;
-    draw->start = mapped.offset / 2;
+    BufferView view = lovrPassGetBuffer(pass, info->index.count * 2, 2);
+    *info->index.pointer = view.pointer;
+    draw->indexBuffer = view.buffer;
+    draw->start = view.offset / 2;
   } else if (info->index.buffer) {
     trackBuffer(pass, info->index.buffer, GPU_PHASE_INPUT_INDEX, GPU_CACHE_INDEX);
     draw->indexBuffer = info->index.buffer->gpu;
     draw->flags |= info->index.buffer->info.format->stride == 4 ? DRAW_INDEX32 : 0;
-    draw->start += info->index.buffer->offset / info->index.buffer->info.format->stride; // Deprecated
+    draw->start += info->index.buffer->base / info->index.buffer->info.format->stride;
   } else {
     draw->indexBuffer = NULL;
   }
 
-  if (cache) {
-    cache->hash = info->hash;
-    cache->vertexBuffer = draw->vertexBuffer;
-    cache->indexBuffer = draw->indexBuffer;
-    cache->start = draw->start;
-    cache->baseVertex = draw->baseVertex;
+  if (info->hash) {
+    cached->hash = info->hash;
+    cached->vertexBuffer = draw->vertexBuffer;
+    cached->indexBuffer = draw->indexBuffer;
+    cached->start = draw->start;
+    cached->baseVertex = draw->baseVertex;
   }
 }
 
@@ -6182,12 +5982,16 @@ static void* lovrPassResolveConstants(Pass* pass, Shader* shader, void* previous
 }
 
 void lovrPassDraw(Pass* pass, DrawInfo* info) {
-  if ((pass->drawCount & 0xff) == 0) {
-    lovrCheck(pass->drawCount < 256 * 256, "Pass has too many draws!");
-    pass->draws[pass->drawCount >> 8] = lovrPassAllocate(pass, 256 * sizeof(Draw));
+  if (pass->drawCount >= pass->drawCapacity) {
+    lovrAssert(pass->drawCount < 1 << 16, "Pass has too many draws!");
+    pass->drawCapacity = pass->drawCapacity > 0 ? pass->drawCapacity << 1 : 1;
+    Draw* draws = lovrPassAllocate(pass, pass->drawCapacity * sizeof(Draw));
+    if (pass->draws) memcpy(draws, pass->draws, pass->drawCount * sizeof(Draw));
+    pass->draws = draws;
   }
 
-  Draw* draw = &pass->draws[pass->drawCount >> 8][pass->drawCount & 0xff];
+  Draw* prev = pass->drawCount > 0 ? &pass->draws[pass->drawCount - 1] : NULL;
+  Draw* draw = &pass->draws[pass->drawCount++];
 
   draw->flags = 0;
   draw->tally = pass->tally.active ? pass->tally.count : ~0u;
@@ -6195,7 +5999,7 @@ void lovrPassDraw(Pass* pass, DrawInfo* info) {
   pass->flags &= ~DIRTY_CAMERA;
 
   draw->shader = pass->pipeline->shader ? pass->pipeline->shader : lovrGraphicsGetDefaultShader(info->shader);
-  lovrCheck(draw->shader->info.type == SHADER_GRAPHICS, "Tried to draw while a compute shader is active");
+  lovrCheck(draw->shader->stageMask & (VERTEX | FRAGMENT), "Tried to draw while a compute shader is active");
   lovrRetain(draw->shader);
 
   draw->material = info->material;
@@ -6206,13 +6010,13 @@ void lovrPassDraw(Pass* pass, DrawInfo* info) {
   draw->start = info->start;
   draw->count = info->count > 0 ? info->count : (info->index.buffer || info->index.count > 0 ? info->index.count : info->vertex.count);
   draw->instances = MAX(info->instances, 1);
-  draw->baseVertex = info->base;
+  draw->baseVertex = info->baseVertex;
 
-  lovrPassResolvePipeline(pass, info, draw);
+  lovrPassResolvePipeline(pass, info, draw, prev);
   lovrPassResolveBuffers(pass, info, draw);
 
-  draw->bundleInfo = lovrPassResolveBindings(pass, draw->shader, pass->lastDraw ? pass->lastDraw->bundleInfo : NULL);
-  draw->constants = lovrPassResolveConstants(pass, draw->shader, pass->lastDraw ? pass->lastDraw->constants : NULL);
+  draw->bundleInfo = lovrPassResolveBindings(pass, draw->shader, prev ? prev->bundleInfo : NULL);
+  draw->constants = lovrPassResolveConstants(pass, draw->shader, prev ? prev->constants : NULL);
 
   if (pass->pipeline->viewCull && info->bounds) {
     memcpy(draw->bounds, info->bounds, sizeof(draw->bounds));
@@ -6223,8 +6027,6 @@ void lovrPassDraw(Pass* pass, DrawInfo* info) {
   mat4_init(draw->transform, pass->transform);
   if (info->transform) mat4_mul(draw->transform, info->transform);
   memcpy(draw->color, pass->pipeline->color, 4 * sizeof(float));
-  pass->lastDraw = draw;
-  pass->drawCount++;
 }
 
 void lovrPassPoints(Pass* pass, uint32_t count, float** points) {
@@ -7073,7 +6875,7 @@ void lovrPassSkybox(Pass* pass, Texture* texture) {
   lovrPassDraw(pass, &(DrawInfo) {
     .mode = DRAW_TRIANGLES,
     .shader = !texture || texture->info.type == TEXTURE_2D ? SHADER_EQUIRECT : SHADER_CUBEMAP,
-    .material = texture ? lovrTextureGetMaterial(texture) : NULL,
+    .material = texture ? lovrTextureToMaterial(texture) : NULL,
     .vertex.format = VERTEX_EMPTY,
     .count = 6
   });
@@ -7083,7 +6885,7 @@ void lovrPassFill(Pass* pass, Texture* texture) {
   lovrPassDraw(pass, &(DrawInfo) {
     .mode = DRAW_TRIANGLES,
     .shader = texture && texture->info.type == TEXTURE_ARRAY ? SHADER_FILL_ARRAY : SHADER_FILL_2D,
-    .material = texture ? lovrTextureGetMaterial(texture) : NULL,
+    .material = texture ? lovrTextureToMaterial(texture) : NULL,
     .vertex.format = VERTEX_EMPTY,
     .count = 3
   });
@@ -7194,7 +6996,7 @@ void lovrPassDrawTexture(Pass* pass, Texture* texture, float* transform) {
     .mode = DRAW_TRIANGLES,
     .transform = transform,
     .bounds = (float[6]) { 0.f, 0.f, 0.f, .5f, .5f, 0.f },
-    .material = lovrTextureGetMaterial(texture),
+    .material = lovrTextureToMaterial(texture),
     .vertex.pointer = (void**) &vertices,
     .vertex.count = vertexCount,
     .index.pointer = (void**) &indices,
@@ -7216,7 +7018,7 @@ void lovrPassDrawTexture(Pass* pass, Texture* texture, float* transform) {
   }
 }
 
-void lovrPassMesh(Pass* pass, Buffer* vertices, Buffer* indices, float* transform, uint32_t start, uint32_t count, uint32_t instances, uint32_t base) {
+void lovrPassMesh(Pass* pass, Buffer* vertices, Buffer* indices, float* transform, uint32_t start, uint32_t count, uint32_t instances, uint32_t baseVertex) {
   lovrCheck(!indices || indices->info.format, "Buffer must have been created with a format to use it as a%s buffer", "n index");
   lovrCheck(!vertices || vertices->info.format, "Buffer must have been created with a format to use it as a%s buffer", " vertex");
   lovrCheck(!vertices || !vertices->info.complexFormat, "Vertex buffers must use a simple format without nested types or arrays");
@@ -7242,7 +7044,7 @@ void lovrPassMesh(Pass* pass, Buffer* vertices, Buffer* indices, float* transfor
     .start = start,
     .count = count,
     .instances = instances,
-    .base = base
+    .baseVertex = baseVertex
   });
 }
 
@@ -7260,12 +7062,16 @@ void lovrPassMeshIndirect(Pass* pass, Buffer* vertices, Buffer* indices, Buffer*
     .index.buffer = indices
   };
 
-  if ((pass->drawCount & 0xff) == 0) {
-    lovrCheck(pass->drawCount < 256 * 256, "Pass has too many draws!");
-    pass->draws[pass->drawCount >> 8] = lovrPassAllocate(pass, 256 * sizeof(Draw));
+  if (pass->drawCount >= pass->drawCapacity) {
+    lovrAssert(pass->drawCount < 1 << 16, "Pass has too many draws!");
+    pass->drawCapacity = pass->drawCapacity > 0 ? pass->drawCapacity << 1 : 1;
+    Draw* draws = lovrPassAllocate(pass, pass->drawCapacity * sizeof(Draw));
+    memcpy(draws, pass->draws, pass->drawCount * sizeof(Draw));
+    pass->draws = draws;
   }
 
-  Draw* draw = &pass->draws[pass->drawCount >> 8][pass->drawCount++ & 0xff];
+  Draw* prev = pass->drawCount > 0 ? &pass->draws[pass->drawCount - 1] : NULL;
+  Draw* draw = &pass->draws[pass->drawCount++];
 
   draw->flags = DRAW_INDIRECT;
   draw->tally = pass->tally.active ? pass->tally.count : ~0u;
@@ -7280,19 +7086,18 @@ void lovrPassMeshIndirect(Pass* pass, Buffer* vertices, Buffer* indices, Buffer*
   trackMaterial(pass, draw->material);
 
   draw->indirect.buffer = draws->gpu;
-  draw->indirect.offset = offset;
+  draw->indirect.offset = draws->base + offset;
   draw->indirect.count = count;
   draw->indirect.stride = stride;
 
-  lovrPassResolvePipeline(pass, &info, draw);
+  lovrPassResolvePipeline(pass, &info, draw, prev);
   lovrPassResolveBuffers(pass, &info, draw);
 
-  draw->bundleInfo = lovrPassResolveBindings(pass, shader, pass->lastDraw ? pass->lastDraw->bundleInfo : NULL);
-  draw->constants = lovrPassResolveConstants(pass, shader, pass->lastDraw ? pass->lastDraw->constants : NULL);
+  draw->bundleInfo = lovrPassResolveBindings(pass, shader, prev ? prev->bundleInfo : NULL);
+  draw->constants = lovrPassResolveConstants(pass, shader, prev ? prev->constants : NULL);
 
   mat4_init(draw->transform, pass->transform);
   memcpy(draw->color, pass->pipeline->color, 4 * sizeof(float));
-  pass->lastDraw = draw;
 
   trackBuffer(pass, draws, GPU_PHASE_INDIRECT, GPU_CACHE_INDIRECT);
 }
@@ -7334,7 +7139,7 @@ void lovrPassCompute(Pass* pass, uint32_t x, uint32_t y, uint32_t z, Buffer* ind
   Compute* compute = &pass->computes[pass->computeCount++];
   Shader* shader = pass->pipeline->shader;
 
-  lovrCheck(shader && shader->info.type == SHADER_COMPUTE, "To run a compute shader, a compute shader must be active");
+  lovrCheck(shader->stageMask == COMPUTE, "To run a compute shader, a compute shader must be active");
   lovrCheck(x <= state.limits.workgroupCount[0], "Compute %s count exceeds workgroupCount limit", "x");
   lovrCheck(y <= state.limits.workgroupCount[1], "Compute %s count exceeds workgroupCount limit", "y");
   lovrCheck(z <= state.limits.workgroupCount[2], "Compute %s count exceeds workgroupCount limit", "z");
@@ -7349,7 +7154,7 @@ void lovrPassCompute(Pass* pass, uint32_t x, uint32_t y, uint32_t z, Buffer* ind
   if (indirect) {
     compute->flags |= COMPUTE_INDIRECT;
     compute->indirect.buffer = indirect->gpu;
-    compute->indirect.offset = offset;
+    compute->indirect.offset = indirect->base + offset;
     trackBuffer(pass, indirect, GPU_PHASE_INDIRECT, GPU_CACHE_INDIRECT);
   } else {
     compute->x = x;
@@ -7390,58 +7195,70 @@ static void tempPop(Allocator* allocator, size_t stack) {
   allocator->cursor = stack;
 }
 
-static MappedBuffer mapBuffer(BufferPool* pool, uint32_t size, size_t align) {
-  uint32_t cursor = (uint32_t) ((pool->cursor + (align - 1)) / align * align);
-  ScratchBuffer* buffer = pool->newest;
+static gpu_pipeline* getPipeline(uint32_t index) {
+  return (gpu_pipeline*) ((char*) state.pipelines + index * gpu_sizeof_pipeline());
+}
 
-  if (buffer && cursor + size > buffer->size) {
-    buffer->tick = state.tick;
-    buffer = NULL;
+static BufferBlock* getBlock(gpu_buffer_type type, uint32_t size) {
+  BufferBlock* block = state.bufferAllocators[type].freelist;
 
-    // Search through the freelist for a buffer to use
-    ScratchBuffer* previous = NULL;
-    for (ScratchBuffer* b = pool->oldest; b && b != pool->newest; previous = b, b = b->next) {
-      if (b->size >= size && gpu_is_complete(b->tick)) {
-        buffer = b;
-        if (previous) previous->next = buffer->next;
-        else pool->oldest = buffer->next;
-        pool->newest->next = buffer;
-        pool->newest = buffer;
-        buffer->next = NULL;
-        cursor = 0;
-        break;
-      }
-    }
+  if (block && block->size >= size && gpu_is_complete(block->tick)) {
+    state.bufferAllocators[type].freelist = block->next;
+    block->next = NULL;
+    return block;
   }
 
-  if (!buffer) {
-    buffer = malloc(sizeof(ScratchBuffer) + gpu_sizeof_buffer());
-    lovrAssert(buffer, "Out of memory");
-    buffer->gpu = (gpu_buffer*) (buffer + 1);
-    buffer->size = MAX(size, 1 << 22);
-    buffer->next = NULL;
+  block = malloc(sizeof(BufferBlock) + gpu_sizeof_buffer());
+  lovrAssert(block, "Out of memory");
+  block->handle = (gpu_buffer*) (block + 1);
+  block->size = MAX(size, 1 << 22);
+  block->next = NULL;
+  block->ref = 0;
 
-    gpu_buffer_init(buffer->gpu, &(gpu_buffer_info) {
-      .type = pool->type,
-      .size = buffer->size,
-      .pointer = &buffer->pointer,
-      .label = "Scratch Buffer"
-    });
+  gpu_buffer_init(block->handle, &(gpu_buffer_info) {
+    .type = type,
+    .size = block->size,
+    .pointer = &block->pointer,
+    .label = "Buffer Block"
+  });
 
-    if (pool->newest) pool->newest->next = buffer;
-    if (!pool->oldest) pool->oldest = buffer;
-    pool->newest = buffer;
+  return block;
+}
+
+static void freeBlock(BufferAllocator* allocator, BufferBlock* block) {
+  BufferBlock** list = &allocator->freelist;
+  while (*list) list = (BufferBlock**) &(*list)->next;
+  *list = block;
+}
+
+static BufferView allocateBuffer(BufferAllocator* allocator, gpu_buffer_type type, uint32_t size, size_t align) {
+  uint32_t cursor = (uint32_t) ((allocator->cursor + (align - 1)) / align * align);
+  BufferBlock* block = allocator->current;
+
+  if (!block || cursor + size > block->size) {
+    if (block && type != GPU_BUFFER_STATIC) {
+      block->tick = state.tick;
+      freeBlock(allocator, block);
+    }
+
+    block = getBlock(type, size);
+    allocator->current = block;
     cursor = 0;
   }
 
-  pool->cursor = cursor + size;
+  allocator->cursor = cursor + size;
 
-  return (MappedBuffer) {
-    .buffer = buffer->gpu,
+  return (BufferView) {
+    .block = block,
+    .buffer = block->handle,
     .offset = cursor,
     .extent = size,
-    .pointer = (char*) buffer->pointer + cursor
+    .pointer = block->pointer ? (char*) block->pointer + cursor : NULL
   };
+}
+
+static BufferView getBuffer(gpu_buffer_type type, uint32_t size, size_t align) {
+  return allocateBuffer(&state.bufferAllocators[type], type, size, align);
 }
 
 static int u64cmp(const void* a, const void* b) {
@@ -7466,8 +7283,21 @@ static void beginFrame(void) {
   state.tick = gpu_begin();
   state.stream = gpu_stream_begin("Internal");
   state.allocator.cursor = 0;
-  state.passCount = 0;
   processReadbacks();
+}
+
+// When a Texture is garbage collected, if it has any transfer operations recorded to state.stream,
+// those transfers need to be submitted before it gets destroyed.  The allocator offset is saved and
+// restored, which is pretty gross, but we don't want to invalidate temp memory (currently this is
+// only a problem for Font: when the font's atlas gets destroyed, it could invalidate the temp
+// memory used by Font:getLines and Pass:text).
+static void flushTransfers() {
+  if (state.active) {
+    size_t cursor = state.allocator.cursor;
+    lovrGraphicsSubmit(NULL, 0);
+    beginFrame();
+    state.allocator.cursor = cursor;
+  }
 }
 
 static void processReadbacks(void) {
@@ -7476,15 +7306,15 @@ static void processReadbacks(void) {
 
     switch (readback->type) {
       case READBACK_BUFFER:
-        memcpy(readback->blob->data, readback->mapped.pointer, readback->mapped.extent);
+        memcpy(readback->blob->data, readback->view.pointer, readback->view.extent);
         break;
       case READBACK_TEXTURE:;
         size_t size = lovrImageGetLayerSize(readback->image, 0);
         void* data = lovrImageGetLayerData(readback->image, 0, 0);
-        memcpy(data, readback->mapped.pointer, size);
+        memcpy(data, readback->view.pointer, size);
         break;
       case READBACK_TIMESTAMP:;
-        uint32_t* timestamps = readback->mapped.pointer;
+        uint32_t* timestamps = readback->view.pointer;
         for (uint32_t i = 0; i < readback->count; i++) {
           Pass* pass = readback->times[i].pass;
           pass->stats.submitTime = readback->times[i].cpuTime;
@@ -7502,6 +7332,46 @@ static void processReadbacks(void) {
   if (!state.oldestReadback) {
     state.newestReadback = NULL;
   }
+}
+
+static gpu_pass* getPass(Canvas* canvas) {
+  gpu_pass_info info = { 0 };
+
+  for (uint32_t i = 0; i < canvas->count; i++) {
+    info.color[i].format = (gpu_texture_format) canvas->color[i].texture->info.format;
+    info.color[i].srgb = canvas->color[i].texture->info.srgb;
+    info.color[i].load = canvas->resolve ? GPU_LOAD_OP_CLEAR : (gpu_load_op) canvas->color[i].load;
+  }
+
+  DepthAttachment* depth = &canvas->depth;
+
+  if (depth->texture || depth->format) {
+    info.depth.format = (gpu_texture_format) (depth->texture ? depth->texture->info.format : depth->format);
+    info.depth.load = (gpu_load_op) canvas->resolve ? GPU_LOAD_OP_CLEAR : (gpu_load_op) depth->load;
+    info.depth.save = depth->texture ? GPU_SAVE_OP_KEEP : GPU_SAVE_OP_DISCARD;
+    info.depth.stencilLoad = info.depth.load;
+    info.depth.stencilSave = info.depth.save;
+  }
+
+  info.colorCount = canvas->count;
+  info.samples = canvas->samples;
+  info.views = canvas->views;
+  info.resolveColor = canvas->resolve;
+  info.resolveDepth = canvas->resolve && !!depth->texture;
+  info.surface = canvas->count > 0 && canvas->color[0].texture == state.window;
+
+  uint64_t hash = hash64(&info, sizeof(info));
+  uint64_t value = map_get(&state.passLookup, hash);
+
+  if (value == MAP_NIL) {
+    gpu_pass* pass = malloc(gpu_sizeof_pass());
+    lovrAssert(pass, "Out of memory");
+    gpu_pass_init(pass, &info);
+    map_set(&state.passLookup, hash, (uint64_t) (uintptr_t) pass);
+    return pass;
+  }
+
+  return (gpu_pass*) (uintptr_t) value;
 }
 
 static size_t getLayout(gpu_slot* slots, uint32_t count) {
@@ -7622,7 +7492,8 @@ static gpu_texture* getScratchTexture(Canvas* canvas, TextureFormat format, bool
     .size = { canvas->width, canvas->height, canvas->views },
     .mipmaps = 1,
     .samples = canvas->samples,
-    .usage = GPU_TEXTURE_RENDER | GPU_TEXTURE_TRANSIENT
+    .usage = GPU_TEXTURE_RENDER,
+    .upload.stream = state.stream
   };
 
   lovrAssert(gpu_texture_init(scratch->texture, &info), "Failed to create scratch texture");
@@ -7633,6 +7504,35 @@ static gpu_texture* getScratchTexture(Canvas* canvas, TextureFormat format, bool
 
 static bool isDepthFormat(TextureFormat format) {
   return format == FORMAT_D16 || format == FORMAT_D32F || format == FORMAT_D24S8 || format == FORMAT_D32FS8;
+}
+
+static bool supportsSRGB(TextureFormat format) {
+  switch (format) {
+    case FORMAT_R8:
+    case FORMAT_RG8:
+    case FORMAT_RGBA8:
+    case FORMAT_BC1:
+    case FORMAT_BC2:
+    case FORMAT_BC3:
+    case FORMAT_BC7:
+    case FORMAT_ASTC_4x4:
+    case FORMAT_ASTC_5x4:
+    case FORMAT_ASTC_5x5:
+    case FORMAT_ASTC_6x5:
+    case FORMAT_ASTC_6x6:
+    case FORMAT_ASTC_8x5:
+    case FORMAT_ASTC_8x6:
+    case FORMAT_ASTC_8x8:
+    case FORMAT_ASTC_10x5:
+    case FORMAT_ASTC_10x6:
+    case FORMAT_ASTC_10x8:
+    case FORMAT_ASTC_10x10:
+    case FORMAT_ASTC_12x10:
+    case FORMAT_ASTC_12x12:
+      return true;
+    default:
+      return false;
+  }
 }
 
 // Returns number of bytes of a 3D texture region of a given format
@@ -7715,12 +7615,14 @@ static void mipmapTexture(gpu_stream* stream, Texture* texture, uint32_t base, u
       volumetric ? MAX(texture->info.layers >> level, 1) : 1
     };
     gpu_blit(stream, texture->gpu, texture->gpu, srcOffset, dstOffset, srcExtent, dstExtent, GPU_FILTER_LINEAR);
-    gpu_sync(stream, &(gpu_barrier) {
-      .prev = GPU_PHASE_TRANSFER,
-      .next = GPU_PHASE_TRANSFER,
-      .flush = GPU_CACHE_TRANSFER_WRITE,
-      .clear = GPU_CACHE_TRANSFER_READ
-    }, 1);
+    if (i != count - 1) {
+      gpu_sync(stream, &(gpu_barrier) {
+        .prev = GPU_PHASE_BLIT,
+        .next = GPU_PHASE_BLIT,
+        .flush = GPU_CACHE_TRANSFER_WRITE,
+        .clear = GPU_CACHE_TRANSFER_READ
+      }, 1);
+    }
   }
 }
 
@@ -7760,9 +7662,10 @@ static Access* getNextAccess(Pass* pass, int type, bool texture) {
 }
 
 static void trackBuffer(Pass* pass, Buffer* buffer, gpu_phase phase, gpu_cache cache) {
-  if (!buffer || lovrBufferIsTemporary(buffer)) return;
+  if (!buffer) return;
   Access* access = getNextAccess(pass, phase == GPU_PHASE_SHADER_COMPUTE ? ACCESS_COMPUTE : ACCESS_RENDER, false);
   access->sync = &buffer->sync;
+  access->object = buffer;
   access->phase = phase;
   access->cache = cache;
   lovrRetain(buffer);
@@ -7781,6 +7684,7 @@ static void trackTexture(Pass* pass, Texture* texture, gpu_phase phase, gpu_cach
 
   Access* access = getNextAccess(pass, phase == GPU_PHASE_SHADER_COMPUTE ? ACCESS_COMPUTE : ACCESS_RENDER, true);
   access->sync = &root->sync;
+  access->object = texture;
   access->phase = phase;
   access->cache = cache;
   lovrRetain(texture);
@@ -7865,7 +7769,7 @@ static bool syncResource(Access* access, gpu_barrier* barrier) {
   return write;
 }
 
-static gpu_barrier syncTransfer(Sync* sync, gpu_cache cache) {
+static gpu_barrier syncTransfer(Sync* sync, gpu_phase phase, gpu_cache cache) {
   gpu_barrier localBarrier = { 0 };
   gpu_barrier* barrier = NULL;
 
@@ -7878,7 +7782,7 @@ static gpu_barrier syncTransfer(Sync* sync, gpu_cache cache) {
     barrier = &state.preBarrier;
   }
 
-  syncResource(&(Access) { sync, GPU_PHASE_TRANSFER, cache }, barrier);
+  syncResource(&(Access) { sync, NULL, phase, cache }, barrier);
   if (cache & GPU_CACHE_READ_MASK) sync->lastTransferRead = state.tick;
   if (cache & GPU_CACHE_WRITE_MASK) sync->lastTransferWrite = state.tick;
 
@@ -7888,14 +7792,11 @@ static gpu_barrier syncTransfer(Sync* sync, gpu_cache cache) {
 static void updateModelTransforms(Model* model, uint32_t nodeIndex, float* parent) {
   mat4 global = model->globalTransforms + 16 * nodeIndex;
   NodeTransform* local = &model->localTransforms[nodeIndex];
-  vec3 T = local->properties[PROP_TRANSLATION];
-  quat R = local->properties[PROP_ROTATION];
-  vec3 S = local->properties[PROP_SCALE];
 
   mat4_init(global, parent);
-  mat4_translate(global, T[0], T[1], T[2]);
-  mat4_rotateQuat(global, R);
-  mat4_scale(global, S[0], S[1], S[2]);
+  mat4_translate(global, local->position[0], local->position[1], local->position[2]);
+  mat4_rotateQuat(global, local->rotation);
+  mat4_scale(global, local->scale[0], local->scale[1], local->scale[2]);
 
   ModelNode* node = &model->info.data->nodes[nodeIndex];
   for (uint32_t i = 0; i < node->childCount; i++) {
@@ -7935,7 +7836,7 @@ static void checkShaderFeatures(uint32_t* features, uint32_t count) {
       case 42: lovrThrow("Shader uses unsupported feature #%d: %s", features[i], "min LOD");
       case 43: lovrThrow("Shader uses unsupported feature #%d: %s", features[i], "1D textures");
       case 44: lovrThrow("Shader uses unsupported feature #%d: %s", features[i], "1D textures");
-      case 45: lovrThrow("Shader uses unsupported feature #%d: %s", features[i], "cubemap array textures");
+      case 45: break; // Cubemap arrays
       case 46: lovrThrow("Shader uses unsupported feature #%d: %s", features[i], "texel buffers");
       case 47: lovrThrow("Shader uses unsupported feature #%d: %s", features[i], "texel buffers");
       case 48: lovrThrow("Shader uses unsupported feature #%d: %s", features[i], "multisampled storage textures");
@@ -7984,7 +7885,7 @@ static void onResize(uint32_t width, uint32_t height) {
 static void onMessage(void* context, const char* message, bool severe) {
   if (severe) {
 #ifdef _WIN32
-    if (!state.initialized) {
+    if (!state.defaultTexture) { // Hacky way to determine if initialization has completed
       const char* format = "This program requires a graphics card with support for Vulkan 1.1, but no device was found or it failed to initialize properly.  The error message was:\n\n%s";
       size_t size = snprintf(NULL, 0, format, message) + 1;
       char* string = malloc(size);

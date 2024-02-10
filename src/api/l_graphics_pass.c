@@ -13,13 +13,6 @@ static int l_lovrPassReset(lua_State* L) {
   return 1;
 }
 
-static int l_lovrPassAppend(lua_State* L) {
-  Pass* pass = luax_checktype(L, 1, Pass);
-  Pass* other = luax_checktype(L, 2, Pass);
-  lovrPassAppend(pass, other);
-  return 0;
-}
-
 static int l_lovrPassGetStats(lua_State* L) {
   Pass* pass = luax_checktype(L, 1, Pass);
   const PassStats* stats = lovrPassGetStats(pass);
@@ -82,15 +75,6 @@ int l_lovrPassSetCanvas(lua_State* L) {
       case LUA_TSTRING: depthFormat = luax_checkenum(L, -1, TextureFormat, NULL); break;
       case LUA_TBOOLEAN: depthFormat = lua_toboolean(L, -1) ? FORMAT_D32F : 0; break;
       case LUA_TNIL: depthFormat = FORMAT_D32F; break;
-      case LUA_TTABLE: // Deprecated
-        lua_getfield(L, -1, "format");
-        if (!lua_isnil(L, -1)) depthFormat = luax_checkenum(L, -1, TextureFormat, NULL);
-        lua_pop(L, 1);
-
-        lua_getfield(L, -1, "texture");
-        if (!lua_isnil(L, -1)) depthTexture = luax_checktype(L, -1, Texture);
-        lua_pop(L, 1);
-        break;
       default: lovrThrow("Expected Texture, TextureFormat, boolean, or nil for canvas depth buffer");
     }
     lua_pop(L, 1);
@@ -559,9 +543,8 @@ static int l_lovrPassSetFont(lua_State* L) {
 
 static int l_lovrPassSetMaterial(lua_State* L) {
   Pass* pass = luax_checktype(L, 1, Pass);
-  Material* material = luax_totype(L, 2, Material);
-  Texture* texture = luax_totype(L, 2, Texture);
-  lovrPassSetMaterial(pass, material, texture);
+  Material* material = luax_optmaterial(L, 2);
+  lovrPassSetMaterial(pass, material);
   return 0;
 }
 
@@ -886,6 +869,7 @@ static int l_lovrPassSphere(lua_State* L) {
   int index = luax_readmat4(L, 2, transform, 1);
   uint32_t segmentsH = luax_optu32(L, index++, 48);
   uint32_t segmentsV = luax_optu32(L, index++, segmentsH / 2);
+  lovrAssert(segmentsH >= 2 && segmentsV >= 2, "Number of longitudes and latitudes must be >= 2");
   lovrPassSphere(pass, transform, segmentsH, segmentsV);
   return 0;
 }
@@ -1041,11 +1025,11 @@ static int l_lovrPassMesh(lua_State* L) {
     uint32_t start = luax_optu32(L, index++, 1) - 1;
     uint32_t count = luax_optu32(L, index++, ~0u);
     uint32_t instances = luax_optu32(L, index++, 1);
-    uint32_t base = luax_optu32(L, index++, 0);
+    uint32_t baseVertex = luax_optu32(L, index++, 0);
     if (count == ~0u && lua_type(L, 2) == LUA_TNUMBER) {
       count = lua_tointeger(L, 2);
     }
-    lovrPassMesh(pass, vertices, indices, transform, start, count, instances, base);
+    lovrPassMesh(pass, vertices, indices, transform, start, count, instances, baseVertex);
   }
   return 0;
 }
@@ -1107,26 +1091,8 @@ static int l_lovrPassBarrier(lua_State* L) {
   return 0;
 }
 
-// Deprecated
-static int l_lovrPassGetType(lua_State* L) {
-  lua_pushliteral(L, "render");
-  return 1;
-}
-
-static int l_lovrPassGetSampleCount(lua_State* L) {
-  Pass* pass = luax_checktype(L, 1, Pass);
-  Texture* textures[4];
-  Texture* depthTexture;
-  uint32_t depthFormat;
-  uint32_t samples;
-  lovrPassGetCanvas(pass, textures, &depthTexture, &depthFormat, &samples);
-  lua_pushinteger(L, samples);
-  return 1;
-}
-
 const luaL_Reg lovrPass[] = {
   { "reset", l_lovrPassReset },
-  { "append", l_lovrPassAppend },
   { "getStats", l_lovrPassGetStats },
 
   { "getCanvas", l_lovrPassGetCanvas },
@@ -1205,9 +1171,6 @@ const luaL_Reg lovrPass[] = {
   { "barrier", l_lovrPassBarrier },
 
   // Deprecated
-  { "getType", l_lovrPassGetType },
-  { "getTarget", l_lovrPassGetCanvas },
-  { "getSampleCount", l_lovrPassGetSampleCount },
   { "setCullMode", l_lovrPassSetFaceCull },
 
   { NULL, NULL }

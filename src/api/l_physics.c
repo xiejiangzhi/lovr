@@ -29,9 +29,7 @@ static int l_lovrPhysicsNewWorld(lua_State* L) {
   int tagCount;
   if (lua_type(L, 5) == LUA_TTABLE) {
     tagCount = luax_len(L, 5);
-    if (tagCount > MAX_TAGS) {
-      return luaL_error(L, "World max number of tags is 32");
-    }
+    lovrCheck(tagCount <= MAX_TAGS, "Max number of world tags is %d", MAX_TAGS);
     for (int i = 0; i < tagCount; i++) {
       lua_rawgeti(L, -1, i + 1);
       if (lua_isstring(L, -1)) {
@@ -181,8 +179,7 @@ int luaopen_lovr_physics(lua_State* L) {
   luax_registertype(L, CylinderShape);
   luax_registertype(L, MeshShape);
   luax_registertype(L, TerrainShape);
-  if (lovrPhysicsInit()) {
-    luax_atexit(L, lovrPhysicsDestroy);
-  }
+  lovrPhysicsInit();
+  luax_atexit(L, lovrPhysicsDestroy);
   return 1;
 }

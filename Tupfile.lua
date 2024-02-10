@@ -400,7 +400,6 @@ src = {
   'src/core/fs.c',
   ('src/core/os_%s.c'):format(target),
   'src/core/spv.c',
-  'src/core/zip.c',
   'src/api/api.c',
   'src/api/l_lovr.c'
 }
@@ -443,6 +442,7 @@ else
 end
 
 src += 'src/lib/stb/*.c'
+src += 'src/lib/miniz/*.c'
 src += (config.modules.audio or config.modules.data) and 'src/lib/miniaudio/*.c' or nil
 src += config.modules.data and 'src/lib/jsmn/*.c' or nil
 src += config.modules.data and 'src/lib/minimp3/*.c' or nil
@@ -450,7 +450,7 @@ src += config.modules.math and 'src/lib/noise/*.c' or nil
 
 -- embed resource files with xxd
 
-res = { 'etc/boot.lua', 'etc/nogame.lua', 'etc/*.ttf', 'etc/shaders/*.glsl' }
+res = { 'etc/boot.lua', 'etc/*.ttf', 'etc/shaders/*.glsl' }
 tup.foreach_rule(res, '^ XD %b^ xxd -i %f > %o', '%f.h')
 
 for i, pattern in ipairs(res) do
@@ -465,7 +465,10 @@ comp = 'etc/shaders/*.comp'
 
 function compileShaders(stage)
   pattern = 'etc/shaders/*.' .. stage
-  tup.foreach_rule(pattern, 'glslangValidator --quiet --target-env vulkan1.1 --vn lovr_shader_%B_' .. stage .. ' -o %o %f', '%f.h')
+  glslang_flags += '--quiet'
+  glslang_flags += config.debug and '-gVS' or ''
+  glslang_flags += '--target-env vulkan1.1'
+  tup.foreach_rule(pattern, 'glslangValidator $(glslang_flags) --vn lovr_shader_%B_' .. stage .. ' -o %o %f', '%f.h')
 end
 
 compileShaders('vert')

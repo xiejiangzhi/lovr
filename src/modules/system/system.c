@@ -2,13 +2,15 @@
 #include "event/event.h"
 #include "core/os.h"
 #include "util.h"
+#include <stdatomic.h>
 #include <string.h>
 
 static struct {
-  bool initialized;
+  uint32_t ref;
   bool keyRepeat;
-  bool prevKeyState[KEY_COUNT];
-  bool keyState[KEY_COUNT];
+  bool prevKeyState[OS_KEY_COUNT];
+  bool keyState[OS_KEY_COUNT];
+  bool prevMouseState[8];
   bool mouseState[8];
   double mouseX;
   double mouseY;
@@ -83,20 +85,19 @@ static void onQuit(void) {
 }
 
 bool lovrSystemInit(void) {
-  if (state.initialized) return false;
+  if (atomic_fetch_add(&state.ref, 1)) return false;
   os_on_key(onKey);
   os_on_text(onText);
   os_on_mouse_button(onMouseButton);
   os_on_mouse_move(onMouseMove);
   os_on_mousewheel_move(onWheelMove);
   os_on_permission(onPermission);
-  state.initialized = true;
   os_get_mouse_position(&state.mouseX, &state.mouseY);
   return true;
 }
 
 void lovrSystemDestroy(void) {
-  if (!state.initialized) return;
+  if (atomic_fetch_sub(&state.ref, 1) != 1) return;
   os_on_key(NULL);
   os_on_text(NULL);
   os_on_permission(NULL);
@@ -105,6 +106,10 @@ void lovrSystemDestroy(void) {
 
 const char* lovrSystemGetOS(void) {
   return os_get_name();
+}
+
+void lovrSystemOpenConsole(void) {
+  os_open_console();
 }
 
 uint32_t lovrSystemGetCoreCount(void) {
@@ -134,6 +139,7 @@ float lovrSystemGetWindowDensity(void) {
 
 void lovrSystemPollEvents(void) {
   memcpy(state.prevKeyState, state.keyState, sizeof(state.keyState));
+  memcpy(state.prevMouseState, state.mouseState, sizeof(state.mouseState));
   state.scrollDelta = 0.;
   os_poll_events();
 }
@@ -168,7 +174,25 @@ bool lovrSystemIsMouseDown(int button) {
   return state.mouseState[button];
 }
 
+bool lovrSystemWasMousePressed(int button) {
+  if ((size_t) button > COUNTOF(state.mouseState)) return false;
+  return !state.prevMouseState[button] && state.mouseState[button];
+}
+
+bool lovrSystemWasMouseReleased(int button) {
+  if ((size_t) button > COUNTOF(state.mouseState)) return false;
+  return state.prevMouseState[button] && !state.mouseState[button];
+}
+
 // This is kind of a hacky thing for the simulator, since we're kinda bad at event dispatch
 float lovrSystemGetScrollDelta(void) {
   return state.scrollDelta;
+}
+
+const char* lovrSystemGetClipboardText(void) {
+  return os_get_clipboard_text();
+}
+
+void lovrSystemSetClipboardText(const char* text) {
+  os_set_clipboard_text(text);
 }

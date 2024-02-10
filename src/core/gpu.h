@@ -11,6 +11,7 @@ typedef struct gpu_layout gpu_layout;
 typedef struct gpu_shader gpu_shader;
 typedef struct gpu_bundle_pool gpu_bundle_pool;
 typedef struct gpu_bundle gpu_bundle;
+typedef struct gpu_pass gpu_pass;
 typedef struct gpu_pipeline gpu_pipeline;
 typedef struct gpu_tally gpu_tally;
 typedef struct gpu_stream gpu_stream;
@@ -22,6 +23,7 @@ size_t gpu_sizeof_layout(void);
 size_t gpu_sizeof_shader(void);
 size_t gpu_sizeof_bundle_pool(void);
 size_t gpu_sizeof_bundle(void);
+size_t gpu_sizeof_pass(void);
 size_t gpu_sizeof_pipeline(void);
 size_t gpu_sizeof_tally(void);
 
@@ -52,8 +54,7 @@ enum {
   GPU_TEXTURE_RENDER    = (1 << 1),
   GPU_TEXTURE_STORAGE   = (1 << 2),
   GPU_TEXTURE_COPY_SRC  = (1 << 3),
-  GPU_TEXTURE_COPY_DST  = (1 << 4),
-  GPU_TEXTURE_TRANSIENT = (1 << 5)
+  GPU_TEXTURE_COPY_DST  = (1 << 4)
 };
 
 typedef enum {
@@ -115,6 +116,8 @@ typedef enum {
 typedef struct {
   gpu_texture* source;
   gpu_texture_type type;
+  uint32_t usage;
+  bool srgb;
   uint32_t layerIndex;
   uint32_t layerCount;
   uint32_t levelIndex;
@@ -247,7 +250,9 @@ typedef struct {
 } gpu_shader_stage;
 
 typedef struct {
-  gpu_shader_stage stages[2];
+  gpu_shader_stage vertex;
+  gpu_shader_stage fragment;
+  gpu_shader_stage compute;
   gpu_layout* layouts[4];
   uint32_t pushConstantSize;
   const char* label;
@@ -267,10 +272,14 @@ typedef struct {
 typedef struct {
   uint32_t number;
   gpu_slot_type type;
+  uint32_t count;
   union {
     gpu_buffer_binding buffer;
     gpu_texture* texture;
     gpu_sampler* sampler;
+    gpu_buffer_binding* buffers;
+    gpu_texture** textures;
+    gpu_sampler** samplers;
   };
 } gpu_binding;
 
@@ -290,6 +299,46 @@ typedef struct {
 bool gpu_bundle_pool_init(gpu_bundle_pool* pool, gpu_bundle_pool_info* info);
 void gpu_bundle_pool_destroy(gpu_bundle_pool* pool);
 void gpu_bundle_write(gpu_bundle** bundles, gpu_bundle_info* info, uint32_t count);
+
+// Canvas
+
+typedef enum {
+  GPU_LOAD_OP_CLEAR,
+  GPU_LOAD_OP_DISCARD,
+  GPU_LOAD_OP_KEEP
+} gpu_load_op;
+
+typedef enum {
+  GPU_SAVE_OP_KEEP,
+  GPU_SAVE_OP_DISCARD
+} gpu_save_op;
+
+typedef struct {
+  gpu_texture_format format;
+  bool srgb;
+  gpu_load_op load;
+  gpu_save_op save;
+} gpu_color_info;
+
+typedef struct {
+  gpu_texture_format format;
+  gpu_load_op load, stencilLoad;
+  gpu_save_op save, stencilSave;
+} gpu_depth_info;
+
+typedef struct {
+  gpu_color_info color[4];
+  gpu_depth_info depth;
+  uint32_t colorCount;
+  uint32_t samples;
+  uint32_t views;
+  bool resolveColor;
+  bool resolveDepth;
+  bool surface;
+} gpu_pass_info;
+
+bool gpu_pass_init(gpu_pass* pass, gpu_pass_info* info);
+void gpu_pass_destroy(gpu_pass* pass);
 
 // Pipeline
 
@@ -322,6 +371,7 @@ typedef enum {
   GPU_TYPE_U8x4,
   GPU_TYPE_SN8x4,
   GPU_TYPE_UN8x4,
+  GPU_TYPE_SN10x3,
   GPU_TYPE_UN10x3,
   GPU_TYPE_I16,
   GPU_TYPE_I16x2,
@@ -392,7 +442,6 @@ typedef struct {
 } gpu_multisample_state;
 
 typedef struct {
-  gpu_texture_format format;
   gpu_compare_mode test;
   bool write;
 } gpu_depth_state;
@@ -449,13 +498,7 @@ typedef struct {
 } gpu_blend_state;
 
 typedef struct {
-  gpu_texture_format format;
-  bool srgb;
-  gpu_blend_state blend;
-  uint8_t mask;
-} gpu_color_state;
-
-typedef struct {
+  gpu_pass* pass;
   gpu_shader* shader;
   gpu_shader_flag* flags;
   uint32_t flagCount;
@@ -465,9 +508,8 @@ typedef struct {
   gpu_multisample_state multisample;
   gpu_depth_state depth;
   gpu_stencil_state stencil;
-  gpu_color_state color[4];
-  uint32_t attachmentCount;
-  uint32_t viewCount;
+  gpu_blend_state blend[4];
+  uint8_t colorMask[4];
   const char* label;
 } gpu_pipeline_info;
 
@@ -500,37 +542,25 @@ void gpu_tally_destroy(gpu_tally* tally);
 
 // Stream
 
-typedef enum {
-  GPU_LOAD_OP_CLEAR,
-  GPU_LOAD_OP_DISCARD,
-  GPU_LOAD_OP_KEEP
-} gpu_load_op;
-
-typedef enum {
-  GPU_SAVE_OP_KEEP,
-  GPU_SAVE_OP_DISCARD
-} gpu_save_op;
-
 typedef struct {
   gpu_texture* texture;
   gpu_texture* resolve;
-  gpu_load_op load;
-  gpu_save_op save;
   float clear[4];
 } gpu_color_attachment;
 
 typedef struct {
   gpu_texture* texture;
   gpu_texture* resolve;
-  gpu_load_op load, stencilLoad;
-  gpu_save_op save, stencilSave;
-  struct { float depth; uint8_t stencil; } clear;
+  float clear;
+  uint8_t stencilClear;
 } gpu_depth_attachment;
 
 typedef struct {
   gpu_color_attachment color[4];
   gpu_depth_attachment depth;
-  uint32_t size[2];
+  gpu_pass* pass;
+  uint32_t width;
+  uint32_t height;
 } gpu_canvas;
 
 typedef enum {
@@ -548,8 +578,9 @@ typedef enum {
   GPU_PHASE_DEPTH_EARLY = (1 << 6),
   GPU_PHASE_DEPTH_LATE = (1 << 7),
   GPU_PHASE_COLOR = (1 << 8),
-  GPU_PHASE_TRANSFER = (1 << 9),
-  GPU_PHASE_ALL = (1 << 10)
+  GPU_PHASE_COPY = (1 << 9),
+  GPU_PHASE_CLEAR = (1 << 10),
+  GPU_PHASE_BLIT = (1 << 11)
 } gpu_phase;
 
 typedef enum {
@@ -580,7 +611,7 @@ typedef struct {
 gpu_stream* gpu_stream_begin(const char* label);
 void gpu_stream_end(gpu_stream* stream);
 void gpu_render_begin(gpu_stream* stream, gpu_canvas* canvas);
-void gpu_render_end(gpu_stream* stream);
+void gpu_render_end(gpu_stream* stream, gpu_canvas* canvas);
 void gpu_compute_begin(gpu_stream* stream);
 void gpu_compute_end(gpu_stream* stream);
 void gpu_set_viewport(gpu_stream* stream, float viewport[4], float depthRange[2]);
@@ -624,14 +655,10 @@ typedef struct {
 } gpu_device_info;
 
 enum {
-  GPU_FEATURE_SAMPLE   = (1 << 0),
-  GPU_FEATURE_RENDER   = (1 << 1),
-  GPU_FEATURE_BLEND    = (1 << 2),
-  GPU_FEATURE_FILTER   = (1 << 3),
-  GPU_FEATURE_STORAGE  = (1 << 4),
-  GPU_FEATURE_ATOMIC   = (1 << 5),
-  GPU_FEATURE_BLIT_SRC = (1 << 6),
-  GPU_FEATURE_BLIT_DST = (1 << 7)
+  GPU_FEATURE_SAMPLE  = (1 << 0),
+  GPU_FEATURE_RENDER  = (1 << 1),
+  GPU_FEATURE_STORAGE = (1 << 2),
+  GPU_FEATURE_BLIT    = (1 << 3)
 };
 
 typedef struct {
@@ -685,7 +712,9 @@ typedef struct {
 typedef struct {
   bool debug;
   void* userdata;
-  void (*callback)(void* userdata, const char* message, bool error);
+  void (*fnLog)(void* userdata, const char* message, bool error);
+  void* (*fnAlloc)(size_t size);
+  void (*fnFree)(void* data);
   const char* engineName;
   uint32_t engineVersion[3];
   gpu_device_info* device;

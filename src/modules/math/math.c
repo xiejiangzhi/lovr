@@ -4,12 +4,12 @@
 #include "util.h"
 #include "lib/noise/simplexnoise1234.h"
 #include <math.h>
-#include <string.h>
+#include <stdatomic.h>
 #include <inttypes.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
-#include <math.h>
 
 struct Curve {
   uint32_t ref;
@@ -32,20 +32,20 @@ struct RandomGenerator {
 };
 
 static struct {
-  bool initialized;
+  uint32_t ref;
   RandomGenerator* generator;
 } state;
 
 bool lovrMathInit(void) {
-  if (state.initialized) return false;
+  if (atomic_fetch_add(&state.ref, 1)) return false;
   state.generator = lovrRandomGeneratorCreate();
   Seed seed = { .b64 = (uint64_t) time(0) };
   lovrRandomGeneratorSetSeed(state.generator, seed);
-  return state.initialized = true;
+  return true;
 }
 
 void lovrMathDestroy(void) {
-  if (!state.initialized) return;
+  if (atomic_fetch_sub(&state.ref, 1) != 1) return;
   lovrRelease(state.generator, lovrRandomGeneratorDestroy);
   memset(&state, 0, sizeof(state));
 }

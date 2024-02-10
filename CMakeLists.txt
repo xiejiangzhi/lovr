@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.1.0)
+cmake_minimum_required(VERSION 3.3.0)
 cmake_policy(SET CMP0063 NEW)
 cmake_policy(SET CMP0079 NEW)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS deployment version")
@@ -295,7 +295,6 @@ endif()
 
 set(LOVR_SRC
   src/core/fs.c
-  src/core/zip.c
   src/api/api.c
   src/api/l_lovr.c
   src/util.c
@@ -419,6 +418,8 @@ if(LOVR_ENABLE_FILESYSTEM)
   target_sources(lovr PRIVATE
     src/modules/filesystem/filesystem.c
     src/api/l_filesystem.c
+    src/api/l_filesystem_file.c
+    src/lib/miniz/miniz_tinfl.c
   )
 else()
   target_compile_definitions(lovr PRIVATE LOVR_DISABLE_FILESYSTEM)
@@ -477,6 +478,7 @@ if(LOVR_ENABLE_GRAPHICS)
         COMMAND
           ${GLSLANG_VALIDATOR}
           --quiet
+          $<$<CONFIG:Debug>:-gVS>
           --target-env vulkan1.1
           --vn lovr_shader_${shader}_${ARGV0}
           -o ${shader_file}.h
@@ -495,8 +497,9 @@ endif()
 
 if(LOVR_ENABLE_HEADSET)
   target_sources(lovr PRIVATE
-    src/api/l_headset.c
     src/modules/headset/headset.c
+    src/api/l_headset.c
+    src/api/l_headset_layer.c
   )
 
   if(LOVR_USE_OPENXR)
@@ -626,6 +629,20 @@ foreach(path ${LOVR_RESOURCES})
   # Write some xxd-compatible C code!
   file(WRITE ${output} "const unsigned char ${identifier}[] = {${data}};\nconst unsigned int ${identifier}_len = sizeof(${identifier});\n")
 endforeach()
+
+if(NOT ANDROID)
+  if(APPLE AND LOVR_BUILD_BUNDLE)
+    set(NOGAME_BUNDLE "${CMAKE_CURRENT_BINARY_DIR}/lovr.app/Contents/Resources/nogame.lovr")
+  else()
+    set(NOGAME_BUNDLE "$<TARGET_FILE:lovr>")
+  endif()
+  add_custom_command(TARGET lovr POST_BUILD
+    DEPENDS "etc/nogame"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/etc/nogame"
+    COMMAND ${CMAKE_COMMAND} -E tar c "${CMAKE_CURRENT_BINARY_DIR}/nogame.zip" --format=zip arg.lua conf.lua main.lua
+    COMMAND ${CMAKE_COMMAND} -E cat "${CMAKE_CURRENT_BINARY_DIR}/nogame.zip" >> ${NOGAME_BUNDLE}
+  )
+endif()
 
 # Add a custom target that is always out of date so libraries are always moved
 add_custom_target(move_files ALL)
@@ -763,11 +780,7 @@ elseif(ANDROID)
   if(LOVR_BUILD_EXE)
     set(ANDROID_JAR "${ANDROID_SDK}/platforms/${ANDROID_PLATFORM}/android.jar")
     set(ANDROID_TOOLS "${ANDROID_SDK}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}")
-
-    # If assets are included in the apk then add '-A assets' to aapt, otherwise don't add any flags
-    if(ANDROID_ASSETS)
-      set(ANDROID_ASSETS -A ${ANDROID_ASSETS})
-    endif()
+    set(ANDROID_ASSETS "${CMAKE_CURRENT_SOURCE_DIR}/etc/nogame" CACHE STRING "The project folder to include in the APK")
 
     if(LOVR_USE_OPENXR)
       add_custom_command(TARGET move_files POST_BUILD
@@ -809,7 +822,7 @@ elseif(ANDROID)
         -M AndroidManifest.xml
         -I ${ANDROID_JAR}
         -F lovr.unaligned.apk
-        ${ANDROID_ASSETS}
+        -A ${ANDROID_ASSETS}
         raw
       COMMAND ${ANDROID_TOOLS}/zipalign -f -p 4 lovr.unaligned.apk lovr.unsigned.apk
       COMMAND ${ANDROID_TOOLS}/apksigner

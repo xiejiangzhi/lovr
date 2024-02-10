@@ -45,12 +45,12 @@ extern StringEntry lovrJointType[];
 extern StringEntry lovrKeyboardKey[];
 extern StringEntry lovrMeshStorage[];
 extern StringEntry lovrModelDrawMode[];
+extern StringEntry lovrOpenMode[];
 extern StringEntry lovrOriginType[];
 extern StringEntry lovrPassType[];
 extern StringEntry lovrPermission[];
 extern StringEntry lovrSampleFormat[];
 extern StringEntry lovrShaderStage[];
-extern StringEntry lovrShaderType[];
 extern StringEntry lovrShapeType[];
 extern StringEntry lovrSmoothMode[];
 extern StringEntry lovrStackType[];
@@ -62,6 +62,7 @@ extern StringEntry lovrTextureUsage[];
 extern StringEntry lovrTimeUnit[];
 extern StringEntry lovrUniformAccess[];
 extern StringEntry lovrVerticalAlign[];
+extern StringEntry lovrViewMask[];
 extern StringEntry lovrVolumeUnit[];
 extern StringEntry lovrWinding[];
 extern StringEntry lovrWrapMode[];
@@ -157,6 +158,7 @@ bool luax_writefile(const char* filename, const void* data, size_t size);
 
 #ifndef LOVR_DISABLE_GRAPHICS
 struct DataField;
+struct Material;
 struct ColoredString;
 void luax_checkfieldn(lua_State* L, int index, int type, void* data);
 void luax_checkfieldv(lua_State* L, int index, int type, void* data);
@@ -170,6 +172,7 @@ int luax_pushbufferdata(lua_State* L, const struct DataField* format, uint32_t c
 void luax_pushbufferformat(lua_State* L, const struct DataField* fields, uint32_t count);
 uint32_t luax_gettablestride(lua_State* L, int index, int subindex, struct DataField* fields, uint32_t count);
 uint32_t luax_checkcomparemode(lua_State* L, int index);
+struct Material* luax_optmaterial(lua_State* L, int index);
 struct ColoredString* luax_checkcoloredstrings(lua_State* L, int index, uint32_t* count, struct ColoredString* stack);
 #endif
 

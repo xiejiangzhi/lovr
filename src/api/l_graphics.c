@@ -80,6 +80,7 @@ StringEntry lovrDataType[] = {
   [TYPE_U8x4] = ENTRY("u8x4"),
   [TYPE_SN8x4] = ENTRY("sn8x4"),
   [TYPE_UN8x4] = ENTRY("un8x4"),
+  [TYPE_SN10x3] = ENTRY("sn10x3"),
   [TYPE_UN10x3] = ENTRY("un10x3"),
   [TYPE_I16] = ENTRY("i16"),
   [TYPE_I16x2] = ENTRY("i16x2"),
@@ -140,14 +141,8 @@ StringEntry lovrOriginType[] = {
 
 StringEntry lovrShaderStage[] = {
   [STAGE_VERTEX] = ENTRY("vertex"),
-  [STAGE_FRAGMENT] = ENTRY("fragment"),
+  [STAGE_FRAGMENT] = ENTRY("pixel"),
   [STAGE_COMPUTE] = ENTRY("compute"),
-  { 0 }
-};
-
-StringEntry lovrShaderType[] = {
-  [SHADER_GRAPHICS] = ENTRY("graphics"),
-  [SHADER_COMPUTE] = ENTRY("compute"),
   { 0 }
 };
 
@@ -171,13 +166,9 @@ StringEntry lovrStencilAction[] = {
 
 StringEntry lovrTextureFeature[] = {
   [0] = ENTRY("sample"),
-  [1] = ENTRY("filter"),
-  [2] = ENTRY("render"),
-  [3] = ENTRY("blend"),
-  [4] = ENTRY("storage"),
-  [5] = ENTRY("atomic"),
-  [6] = ENTRY("blitsrc"),
-  [7] = ENTRY("blitdst"),
+  [1] = ENTRY("render"),
+  [2] = ENTRY("storage"),
+  [3] = ENTRY("blit"),
   { 0 }
 };
 
@@ -363,17 +354,14 @@ static int l_lovrGraphicsInitialize(lua_State* L) {
     config.cacheData = luax_readfile(".lovrshadercache", &config.cacheSize);
   }
 
-  if (lovrGraphicsInit(&config)) {
-    luax_atexit(L, lovrGraphicsDestroy);
+  lovrGraphicsInit(&config);
+  luax_atexit(L, lovrGraphicsDestroy);
 
-    // Finalizers run in the opposite order they were added, so this has to go last
-    if (shaderCache) {
-      luax_atexit(L, luax_writeshadercache);
-    }
+  if (shaderCache) { // Finalizers run in the opposite order they were added, so this has to go last
+    luax_atexit(L, luax_writeshadercache);
   }
 
   free(config.cacheData);
-
   return 0;
 }
 
@@ -592,25 +580,13 @@ static uint32_t luax_checkbufferformat(lua_State* L, int index, DataField* field
     lua_pop(L, 1);
 
     lua_getfield(L, -1, "name");
-    if (lua_isnil(L, -1)) {
-      lua_pop(L, 1);
-      lua_rawgeti(L, -1, 1);
-
-      // Deprecated
-      if (lua_isnil(L, -1)) {
-        lua_pop(L, 1);
-        lua_getfield(L, -1, "location");
-      }
-    }
+    if (lua_isnil(L, -1)) lua_pop(L, 1), lua_rawgeti(L, -1, 1);
     lovrCheck(lua_type(L, -1) == LUA_TSTRING, "Buffer fields must have a 'name' key");
     field->name = lua_tostring(L, -1);
     lua_pop(L, 1);
 
     lua_getfield(L, -1, "length");
-    if (lua_isnil(L, -1)) {
-      lua_pop(L, 1);
-      lua_rawgeti(L, -1, 3);
-    }
+    if (lua_isnil(L, -1)) lua_pop(L, 1), lua_rawgeti(L, -1, 3);
     field->length = luax_optu32(L, -1, 0);
     lua_pop(L, 1);
 
@@ -624,41 +600,12 @@ static uint32_t luax_checkbufferformat(lua_State* L, int index, DataField* field
   return length;
 }
 
-static int luax_newbuffer(lua_State* L, Buffer* (*constructor)(const BufferInfo* info, void** data)) {
+static int l_lovrGraphicsNewBuffer(lua_State* L) {
   DataField format[64];
   BufferInfo info = { 0 };
   DataLayout layout = LAYOUT_PACKED;
   bool hasData = false;
   Blob* blob = NULL;
-
-  // Handle deprecated variants (type/format given second)
-  if (lua_type(L, 2) == LUA_TSTRING) {
-    lua_settop(L, 2);
-    lua_insert(L, 1);
-  } else if (lua_type(L, 2) == LUA_TTABLE) {
-    lua_rawgeti(L, 2, 1);
-    if (lua_type(L, -1) == LUA_TSTRING) {
-      lua_settop(L, 2);
-      lua_insert(L, 1);
-    } else if (lua_type(L, -1) == LUA_TTABLE) {
-      lua_getfield(L, -1, "type");
-      if (lua_isnil(L, -1)) {
-        lua_pop(L, 1);
-        lua_rawgeti(L, -1, 2);
-        if (lua_type(L, -1) == LUA_TSTRING) {
-          lua_settop(L, 2);
-          lua_insert(L, 1);
-        } else {
-          lua_pop(L, 2);
-        }
-      } else {
-        lua_settop(L, 2);
-        lua_insert(L, 1);
-      }
-    } else {
-      lua_pop(L, 1);
-    }
-  }
 
   int type = lua_type(L, 1);
 
@@ -741,7 +688,7 @@ static int luax_newbuffer(lua_State* L, Buffer* (*constructor)(const BufferInfo*
   }
 
   void* data;
-  Buffer* buffer = constructor(&info, (blob || hasData) ? &data : NULL);
+  Buffer* buffer = lovrBufferCreate(&info, (blob || hasData) ? &data : NULL);
 
   // Write data
   if (blob) {
@@ -771,14 +718,6 @@ static int luax_newbuffer(lua_State* L, Buffer* (*constructor)(const BufferInfo*
   luax_pushtype(L, Buffer, buffer);
   lovrRelease(buffer, lovrBufferDestroy);
   return 1;
-}
-
-static int l_lovrGraphicsGetBuffer(lua_State* L) {
-  return luax_newbuffer(L, lovrGraphicsGetBuffer);
-}
-
-static int l_lovrGraphicsNewBuffer(lua_State* L) {
-  return luax_newbuffer(L, lovrBufferCreate);
 }
 
 static int l_lovrGraphicsNewTexture(lua_State* L) {
@@ -853,10 +792,11 @@ static int l_lovrGraphicsNewTexture(lua_State* L) {
     Image* image = images[0];
     uint32_t levels = lovrImageGetLevelCount(image);
     info.format = lovrImageGetFormat(image);
+    info.srgb = lovrImageIsSRGB(image);
     info.width = lovrImageGetWidth(image, 0);
     info.height = lovrImageGetHeight(image, 0);
-    info.mipmaps = levels == 1 ? ~0u : levels;
-    info.srgb = lovrImageIsSRGB(image);
+    bool mipmappable = lovrGraphicsGetFormatSupport(info.format, TEXTURE_FEATURE_BLIT) & (1 << info.srgb);
+    info.mipmaps = (levels == 1 && mipmappable) ? ~0u : levels;
     for (uint32_t i = 1; i < info.imageCount; i++) {
       lovrAssert(lovrImageGetWidth(images[0], 0) == lovrImageGetWidth(images[i], 0), "Image widths must match");
       lovrAssert(lovrImageGetHeight(images[0], 0) == lovrImageGetHeight(images[i], 0), "Image heights must match");
@@ -886,13 +826,15 @@ static int l_lovrGraphicsNewTexture(lua_State* L) {
     lua_pop(L, 1);
 
     lua_getfield(L, index, "mipmaps");
+    bool mipmappable = lovrGraphicsGetFormatSupport(info.format, TEXTURE_FEATURE_BLIT) & (1 << info.srgb);
     if (lua_type(L, -1) == LUA_TNUMBER) {
       info.mipmaps = lua_tonumber(L, -1);
     } else if (!lua_isnil(L, -1)) {
       info.mipmaps = lua_toboolean(L, -1) ? ~0u : 1;
     } else {
-      info.mipmaps = (info.samples > 1 || info.imageCount == 0) ? 1 : ~0u;
+      info.mipmaps = (info.samples > 1 || info.imageCount == 0 || !mipmappable) ? 1 : ~0u;
     }
+    lovrCheck(info.imageCount == 0 || info.mipmaps == 1 || mipmappable, "This texture format does not support blitting, which is required for mipmap generation");
     lua_pop(L, 1);
 
     lua_getfield(L, index, "usage");
@@ -915,6 +857,10 @@ static int l_lovrGraphicsNewTexture(lua_State* L) {
     lua_getfield(L, index, "label");
     info.label = lua_tostring(L, -1);
     lua_pop(L, 1);
+  }
+
+  if (lua_type(L, 1) == LUA_TNUMBER && lua_type(L, 3) != LUA_TNUMBER && info.type == TEXTURE_CUBE) {
+    info.layers = 6;
   }
 
   Texture* texture = lovrTextureCreate(&info);
@@ -1025,18 +971,6 @@ static ShaderSource luax_checkshadersource(lua_State* L, int index, ShaderStage 
         luaL_argerror(L, index, "single-line string was not filename or DefaultShader");
       }
     }
-  } else if (lua_istable(L, index)) {
-    int length = luax_len(L, index);
-    source.size = length * sizeof(uint32_t);
-    uint32_t* words = malloc(source.size);
-    lovrAssert(words, "Out of memory");
-    source.code = words;
-    *allocated = true;
-    for (int i = 0; i < length; i++) {
-      lua_rawgeti(L, index, i + 1);
-      words[i] = luax_checku32(L, -1);
-      lua_pop(L, 1);
-    }
   } else if (lua_isuserdata(L, index)) {
     Blob* blob = luax_checktype(L, index, Blob);
     source.code = blob->data;
@@ -1080,9 +1014,8 @@ static int l_lovrGraphicsNewShader(lua_State* L) {
       const char* string = lua_tolstring(L, 1, &length);
       for (int i = 0; lovrDefaultShader[i].length; i++) {
         if (lovrDefaultShader[i].length == length && !memcmp(lovrDefaultShader[i].string, string, length)) {
-          info.source[0] = lovrGraphicsGetDefaultShaderSource(i, STAGE_VERTEX);
-          info.source[1] = lovrGraphicsGetDefaultShaderSource(i, STAGE_FRAGMENT);
-          info.type = SHADER_GRAPHICS;
+          info.source[STAGE_VERTEX] = lovrGraphicsGetDefaultShaderSource(i, STAGE_VERTEX);
+          info.source[STAGE_FRAGMENT] = lovrGraphicsGetDefaultShaderSource(i, STAGE_FRAGMENT);
           allocated[0] = false;
           allocated[1] = false;
           break;
@@ -1091,15 +1024,13 @@ static int l_lovrGraphicsNewShader(lua_State* L) {
     }
 
     if (!info.source[0].code) {
-      info.type = SHADER_COMPUTE;
-      info.source[0] = luax_checkshadersource(L, 1, STAGE_COMPUTE, &allocated[0]);
+      info.source[STAGE_COMPUTE] = luax_checkshadersource(L, 1, STAGE_COMPUTE, &allocated[0]);
     }
 
     index = 2;
   } else {
-    info.type = SHADER_GRAPHICS;
-    info.source[0] = luax_checkshadersource(L, 1, STAGE_VERTEX, &allocated[0]);
-    info.source[1] = luax_checkshadersource(L, 2, STAGE_FRAGMENT, &allocated[1]);
+    info.source[STAGE_VERTEX] = luax_checkshadersource(L, 1, STAGE_VERTEX, &allocated[0]);
+    info.source[STAGE_FRAGMENT] = luax_checkshadersource(L, 2, STAGE_FRAGMENT, &allocated[1]);
     index = 3;
   }
 
@@ -1472,17 +1403,6 @@ static int l_lovrGraphicsNewPass(lua_State* L) {
   return 1;
 }
 
-// Deprecated
-static int l_lovrGraphicsGetPass(lua_State* L) {
-  Pass* pass = lovrGraphicsGetPass();
-  luax_pushtype(L, Pass, pass);
-  lua_replace(L, 1);
-  l_lovrPassSetCanvas(L);
-  lua_settop(L, 1);
-  // No release, I live forever
-  return 1;
-}
-
 static const luaL_Reg lovrGraphics[] = {
   { "initialize", l_lovrGraphicsInitialize },
   { "isInitialized", l_lovrGraphicsIsInitialized },
@@ -1499,7 +1419,6 @@ static const luaL_Reg lovrGraphics[] = {
   { "setBackgroundColor", l_lovrGraphicsSetBackgroundColor },
   { "getWindowPass", l_lovrGraphicsGetWindowPass },
   { "getDefaultFont", l_lovrGraphicsGetDefaultFont },
-  { "getBuffer", l_lovrGraphicsGetBuffer },
   { "newBuffer", l_lovrGraphicsNewBuffer },
   { "newTexture", l_lovrGraphicsNewTexture },
   { "newSampler", l_lovrGraphicsNewSampler },
@@ -1510,7 +1429,6 @@ static const luaL_Reg lovrGraphics[] = {
   { "newMesh", l_lovrGraphicsNewMesh },
   { "newModel", l_lovrGraphicsNewModel },
   { "newPass", l_lovrGraphicsNewPass },
-  { "getPass", l_lovrGraphicsGetPass },
   { NULL, NULL }
 };
 
