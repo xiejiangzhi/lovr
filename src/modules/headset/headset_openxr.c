@@ -301,12 +301,6 @@ static void createReferenceSpace(XrTime time) {
     return;
   }
 
-  char name[256];
-  if (openxr_getDriverName(name, sizeof(name)) && !memcmp(name, "SteamVR", strlen("SteamVR"))) {
-    state.referenceSpace = state.spaces[DEVICE_FLOOR];
-    return;
-  }
-
   if (state.features.localFloor) {
     info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR_EXT;
   } else if (state.config.seated) {
@@ -472,7 +466,6 @@ static void swapchain_init(Swapchain* swapchain, uint32_t width, uint32_t height
       .height = height,
       .layers = 1 << stereo,
       .mipmaps = 1,
-      .samples = 1,
       .usage = TEXTURE_RENDER | (depth ? 0 : TEXTURE_SAMPLE),
       .handle = (uintptr_t) images[i].image,
       .label = "OpenXR Swapchain",
