@@ -53,6 +53,14 @@ static void luax_destroypool(void) {
 
 float* luax_tovector(lua_State* L, int index, VectorType* type) {
   if (lua_istable(L, index)) {
+    lua_rawgeti(L, index, 1);
+    bool is_num = lua_isnumber(L, -1);
+    lua_pop(L, 1);
+    if (!is_num) {
+      type = V_NONE;
+      return NULL;
+    }
+
     VectorType vtype;
     switch(luax_len(L, index)) {
     case 2: vtype = V_VEC2; break;
