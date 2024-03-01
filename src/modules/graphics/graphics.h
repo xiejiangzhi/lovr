@@ -202,16 +202,6 @@ enum {
 };
 
 typedef struct {
-  Texture* parent;
-  TextureType type;
-  uint32_t layerIndex;
-  uint32_t layerCount;
-  uint32_t levelIndex;
-  uint32_t levelCount;
-} TextureViewInfo;
-
-typedef struct {
-  Texture* parent;
   TextureType type;
   uint32_t format;
   uint32_t width;
@@ -221,11 +211,20 @@ typedef struct {
   uint32_t usage;
   bool srgb;
   bool xr;
-  uintptr_t handle;
   uint32_t imageCount;
   struct Image** images;
   const char* label;
+  uintptr_t handle;
 } TextureInfo;
+
+typedef struct {
+  TextureType type;
+  uint32_t layerIndex;
+  uint32_t layerCount;
+  uint32_t levelIndex;
+  uint32_t levelCount;
+  const char* label;
+} TextureViewInfo;
 
 typedef enum {
   FILTER_NEAREST,
@@ -234,7 +233,7 @@ typedef enum {
 
 Texture* lovrGraphicsGetWindowTexture(void);
 Texture* lovrTextureCreate(const TextureInfo* info);
-Texture* lovrTextureCreateView(const TextureViewInfo* view);
+Texture* lovrTextureCreateView(Texture* parent, const TextureViewInfo* info);
 void lovrTextureDestroy(void* ref);
 const TextureInfo* lovrTextureGetInfo(Texture* texture);
 struct Image* lovrTextureGetPixels(Texture* texture, uint32_t offset[4], uint32_t extent[3]);
@@ -286,7 +285,6 @@ typedef enum {
   SHADER_EQUIRECT,
   SHADER_FILL_2D,
   SHADER_FILL_ARRAY,
-  SHADER_LOGO,
   SHADER_ANIMATOR,
   SHADER_BLENDER,
   SHADER_TALLY_MERGE,
@@ -294,13 +292,18 @@ typedef enum {
 } DefaultShader;
 
 typedef enum {
+  SHADER_GRAPHICS,
+  SHADER_COMPUTE
+} ShaderType;
+
+typedef enum {
   STAGE_VERTEX,
   STAGE_FRAGMENT,
-  STAGE_COMPUTE,
-  STAGE_COUNT
+  STAGE_COMPUTE
 } ShaderStage;
 
 typedef struct {
+  ShaderStage stage;
   const void* code;
   size_t size;
 } ShaderSource;
@@ -312,15 +315,18 @@ typedef struct {
 } ShaderFlag;
 
 typedef struct {
-  ShaderSource source[STAGE_COUNT];
-  uint32_t flagCount;
+  ShaderType type;
+  ShaderSource* stages;
+  uint32_t stageCount;
   ShaderFlag* flags;
+  uint32_t flagCount;
   const char* label;
+  bool isDefault;
 } ShaderInfo;
 
 typedef void* ShaderIncluder(const char* filename, size_t* bytesRead);
 
-ShaderSource lovrGraphicsCompileShader(ShaderStage stage, ShaderSource* source, ShaderIncluder* includer);
+void lovrGraphicsCompileShader(ShaderSource* stages, ShaderSource* outputs, uint32_t count, ShaderIncluder* includer);
 ShaderSource lovrGraphicsGetDefaultShaderSource(DefaultShader type, ShaderStage stage);
 Shader* lovrGraphicsGetDefaultShader(DefaultShader type);
 Shader* lovrShaderCreate(const ShaderInfo* info);
@@ -607,10 +613,10 @@ void lovrPassSetViewCull(Pass* pass, bool enable);
 void lovrPassSetWinding(Pass* pass, Winding winding);
 void lovrPassSetWireframe(Pass* pass, bool wireframe);
 
-void lovrPassSendBuffer(Pass* pass, const char* name, size_t length, uint32_t slot, Buffer* buffer, uint32_t offset, uint32_t extent);
-void lovrPassSendTexture(Pass* pass, const char* name, size_t length, uint32_t slot, Texture* texture);
-void lovrPassSendSampler(Pass* pass, const char* name, size_t length, uint32_t slot, Sampler* sampler);
-void lovrPassSendData(Pass* pass, const char* name, size_t length, uint32_t slot, void** data, DataField** format);
+void lovrPassSendBuffer(Pass* pass, const char* name, size_t length, Buffer* buffer, uint32_t offset, uint32_t extent);
+void lovrPassSendTexture(Pass* pass, const char* name, size_t length, Texture* texture);
+void lovrPassSendSampler(Pass* pass, const char* name, size_t length, Sampler* sampler);
+void lovrPassSendData(Pass* pass, const char* name, size_t length, void** data, DataField** format);
 
 void lovrPassPoints(Pass* pass, uint32_t count, float** vertices);
 void lovrPassLine(Pass* pass, uint32_t count, float** vertices);
