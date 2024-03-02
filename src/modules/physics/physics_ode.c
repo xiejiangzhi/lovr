@@ -538,6 +538,9 @@ Collider* lovrColliderCreate(World* world, float x, float y, float z) {
   return collider;
 }
 
+void lovrWorldSetContactCallbacks(World* world, ContactCallbacks callbacks) {};
+ContactCallbacks lovrWorldGetContactCallbacks(World* world) {};
+
 void lovrColliderDestroy(void* ref) {
   Collider* collider = ref;
   lovrColliderDestroyData(collider);

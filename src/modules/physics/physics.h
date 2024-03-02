@@ -29,6 +29,23 @@ typedef void (*CollisionResolver)(World* world, void* userdata);
 typedef bool (*RaycastCallback)(Shape* shape, float x, float y, float z, float nx, float ny, float nz, void* userdata);
 typedef bool (*QueryCallback)(Shape* shape, void* userdata);
 
+typedef int (*ContactValidateCallback)(Collider* c1, Collider* c2, float baseOffset[3], void* result, void* userdata);
+typedef void (*ContactAddedCallback)(const Collider* c1, const Collider* c2, void* userdata);
+typedef void (*ContactPersistedCallback)(const Collider* c1, const Collider* c2, void* userdata);
+typedef void (*ContactRemovedCallback)(Collider* c1, Collider* c2, void* userdata);
+
+typedef struct ContactCallbacks {
+  ContactValidateCallback validateCallback;
+  int validateFnIdx;
+  ContactAddedCallback addedCallback;
+  int addedFnIdx;
+  ContactPersistedCallback persistedCallback;
+  int persistedFnIdx;
+  ContactRemovedCallback removedCallback;
+  int removedFnIdx;
+  void* userdata;
+} ContactCallbacks;
+
 bool lovrPhysicsInit(void);
 void lovrPhysicsDestroy(void);
 
@@ -54,7 +71,7 @@ void lovrWorldRaycast(World* world, float start[3], float end[3], const char* ta
 bool lovrWorldQueryBox(World* world, float position[3], float size[3], const char* tag, QueryCallback callback, void* userdata);
 bool lovrWorldQuerySphere(World* world, float position[3], float radius, const char* tag, QueryCallback callback, void* userdata);
 bool lovrWorldQueryTriangle(World* world, float position[9], const char* tag, QueryCallback callback, void* userdata);
-bool lovrWorldQueryShape(World* world, Shape* shape, float position[3], float orientation[4], const char* tag, QueryCallback callback, void* userdata);
+// bool lovrWorldQueryShape(World* world, Shape* shape, float position[3], float orientation[4], const char* tag, QueryCallback callback, void* userdata);
 Collider* lovrWorldGetFirstCollider(World* world);
 void lovrWorldGetGravity(World* world, float* x, float* y, float* z);
 void lovrWorldSetGravity(World* world, float x, float y, float z);
@@ -72,6 +89,8 @@ const char* lovrWorldGetTagName(World* world, uint32_t tag);
 void lovrWorldDisableCollisionBetween(World* world, const char* tag1, const char* tag2);
 void lovrWorldEnableCollisionBetween(World* world, const char* tag1, const char* tag2);
 bool lovrWorldIsCollisionEnabledBetween(World* world, const char* tag1, const char* tag);
+void lovrWorldSetContactCallbacks(World* world, ContactCallbacks callbacks);
+ContactCallbacks lovrWorldGetContactCallbacks(World* world);
 
 // Collider
 

@@ -97,6 +97,61 @@ static bool queryCallback(Shape* shape, void* userdata) {
   return shouldStop;
 }
 
+int ContactValidateLuaCallback(
+  Collider* c1, Collider* c2, float baseOffset[3], void* result, void* userdata
+) {
+  ContactCallbacks* cbs = userdata;
+  if (cbs->validateFnIdx && cbs->userdata) {
+    lua_State* L = cbs->userdata;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, cbs->validateFnIdx);
+    luaL_checktype(L, -1, LUA_TFUNCTION);
+    luax_pushtype(L, Collider, c1);
+    luax_pushtype(L, Collider, c2);
+    lua_call(L, 2, 1);
+    int r = lua_tointeger(L, -1);
+    lua_pop(L, 1);
+    if (r >= 0 && r <= 3) {
+      return r;
+    } else {
+      // TODO warning or error for invalid value
+    }
+  }
+  return 0;
+}
+
+void ContactAddedLuaCallback(const Collider* c1, const Collider* c2, void* userdata) {
+  ContactCallbacks* cbs = userdata;
+  if (cbs->addedFnIdx && cbs->userdata) {
+    lua_State* L = cbs->userdata;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, cbs->addedFnIdx);
+    luax_pushtype(L, Collider, c1);
+    luax_pushtype(L, Collider, c2);
+    lua_call(L, 2, 0);
+  }
+}
+
+void ContactPersistedLuaCallback(const Collider* c1, const Collider* c2, void* userdata) {
+  ContactCallbacks* cbs = userdata;
+  if (cbs->persistedFnIdx && cbs->userdata) {
+    lua_State* L = cbs->userdata;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, cbs->persistedFnIdx);
+    luax_pushtype(L, Collider, c1);
+    luax_pushtype(L, Collider, c2);
+    lua_call(L, 2, 0);
+  }
+}
+
+void ContactRemovedLuaCallback(Collider* c1, Collider* c2, void* userdata) {
+  ContactCallbacks* cbs = userdata;
+  if (cbs->removedFnIdx && cbs->userdata) {
+    lua_State* L = cbs->userdata;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, cbs->removedFnIdx);
+    // luax_pushtype(L, Collider, c1);
+    // luax_pushtype(L, Collider, c2);
+    lua_call(L, 0, 0);
+  }
+}
+
 static int l_lovrWorldNewCollider(lua_State* L) {
   World* world = luax_checktype(L, 1, World);
   float position[3];
@@ -223,6 +278,11 @@ static int l_lovrWorldGetTags(lua_State* L) {
 
 static int l_lovrWorldDestroy(lua_State* L) {
   World* world = luax_checktype(L, 1, World);
+  ContactCallbacks cbs = lovrWorldGetContactCallbacks(world);
+  if (cbs.validateFnIdx) { luaL_unref(L, LUA_REGISTRYINDEX, cbs.validateFnIdx); }
+  if (cbs.addedFnIdx) { luaL_unref(L, LUA_REGISTRYINDEX, cbs.addedFnIdx); }
+  if (cbs.persistedFnIdx) { luaL_unref(L, LUA_REGISTRYINDEX, cbs.persistedFnIdx); }
+  if (cbs.removedFnIdx) { luaL_unref(L, LUA_REGISTRYINDEX, cbs.removedFnIdx); }
   lovrWorldDestroyData(world);
   return 0;
 }
@@ -402,26 +462,26 @@ static int l_lovrWorldQueryTriangle(lua_State* L) {
   return 1;
 }
 
-/*
-world:queryShape(shape, pos, rot, cb)
-world:queryShape(shape, pos, rot, tag, cb)
-*/
-static int l_lovrWorldQueryShape(lua_State* L) {
-  World* world = luax_checktype(L, 1, World);
-  Shape* shape = luax_checkshape(L, 2);
-  float position[3], orientation[4];
-  int index = luax_readvec3(L, 3, position, NULL);
-  index = luax_readquat(L, index, orientation, NULL);
-  const char* tag = NULL;
-  if ((lua_gettop(L) - index) > 0) {
-    tag = lua_tostring(L, index++);
-  }
-  bool function = lua_type(L, index) == LUA_TFUNCTION;
-  lua_settop(L, index);
-  bool any = lovrWorldQueryShape(world, shape, position, orientation, tag, function ? queryCallback : NULL, L);
-  lua_pushboolean(L, any);
-  return 1;
-}
+// /*
+// world:queryShape(shape, pos, rot, cb)
+// world:queryShape(shape, pos, rot, tag, cb)
+// */
+// static int l_lovrWorldQueryShape(lua_State* L) {
+//   World* world = luax_checktype(L, 1, World);
+//   Shape* shape = luax_checkshape(L, 2);
+//   float position[3], orientation[4];
+//   int index = luax_readvec3(L, 3, position, NULL);
+//   index = luax_readquat(L, index, orientation, NULL);
+//   const char* tag = NULL;
+//   if ((lua_gettop(L) - index) > 0) {
+//     tag = lua_tostring(L, index++);
+//   }
+//   bool function = lua_type(L, index) == LUA_TFUNCTION;
+//   lua_settop(L, index);
+//   bool any = lovrWorldQueryShape(world, shape, position, orientation, tag, function ? queryCallback : NULL, L);
+//   lua_pushboolean(L, any);
+//   return 1;
+// }
 
 static int l_lovrWorldGetGravity(lua_State* L) {
   World* world = luax_checktype(L, 1, World);
@@ -556,6 +616,67 @@ static int l_lovrWorldSetStepCount(lua_State* L) {
   return 0;
 }
 
+
+static int l_lovrWorldSetContactCallbacks(lua_State* L) {
+  World* world = luax_checktype(L, 1, World);
+
+  // int n = lua_gettop(L) - 2;
+  // for (int i = 0; i < n; i++) {
+  //   lua_pushnil(L);
+  // }
+
+  ContactCallbacks cbs = { .userdata = L };
+  int index = 1 + 4;
+  if (lua_type(L, index) == LUA_TFUNCTION) {
+    lua_settop(L, index);
+    cbs.removedFnIdx = luaL_ref(L, LUA_REGISTRYINDEX);
+    cbs.removedCallback = ContactRemovedLuaCallback;
+  } else {
+    cbs.removedFnIdx = 0;
+    cbs.removedCallback = NULL;
+  }
+
+  index--;
+  if (lua_type(L, index) == LUA_TFUNCTION) {
+    lua_settop(L, index);
+    cbs.persistedFnIdx = luaL_ref(L, LUA_REGISTRYINDEX);
+    cbs.persistedCallback = ContactPersistedLuaCallback;
+  } else {
+    cbs.persistedFnIdx = 0;
+    cbs.persistedCallback = NULL;
+  }
+
+  index--;
+  if (lua_type(L, index) == LUA_TFUNCTION) {
+    lua_settop(L, index);
+    cbs.addedFnIdx = luaL_ref(L, LUA_REGISTRYINDEX);
+    cbs.addedCallback = ContactAddedLuaCallback;
+  } else {
+    cbs.addedFnIdx = 0;
+    cbs.addedCallback = NULL;
+  }
+
+  index--;
+  if (lua_type(L, index) == LUA_TFUNCTION) {
+    lua_settop(L, index);
+    cbs.validateFnIdx = luaL_ref(L, LUA_REGISTRYINDEX);
+    cbs.validateCallback = ContactValidateLuaCallback;
+  } else {
+    cbs.validateFnIdx = 0;
+    cbs.validateCallback = NULL;
+  }
+
+  ContactCallbacks old_cbs = lovrWorldGetContactCallbacks(world);
+  if (old_cbs.validateFnIdx) { luaL_unref(L, LUA_REGISTRYINDEX, old_cbs.validateFnIdx); }
+  if (old_cbs.addedFnIdx) { luaL_unref(L, LUA_REGISTRYINDEX, old_cbs.addedFnIdx); }
+  if (old_cbs.persistedFnIdx) { luaL_unref(L, LUA_REGISTRYINDEX, old_cbs.persistedFnIdx); }
+  if (old_cbs.removedFnIdx) { luaL_unref(L, LUA_REGISTRYINDEX, old_cbs.removedFnIdx); }
+
+  lovrWorldSetContactCallbacks(world, cbs);
+
+  return 0;
+}
+
 const luaL_Reg lovrWorld[] = {
   { "newCollider", l_lovrWorldNewCollider },
   { "newBoxCollider", l_lovrWorldNewBoxCollider },
@@ -578,7 +699,7 @@ const luaL_Reg lovrWorld[] = {
   { "queryBox", l_lovrWorldQueryBox },
   { "querySphere", l_lovrWorldQuerySphere },
   { "queryTriangle", l_lovrWorldQueryTriangle },
-  { "queryShape", l_lovrWorldQueryShape },
+  // { "queryShape", l_lovrWorldQueryShape },
   { "getGravity", l_lovrWorldGetGravity },
   { "setGravity", l_lovrWorldSetGravity },
   { "getTightness", l_lovrWorldGetTightness },
@@ -596,5 +717,6 @@ const luaL_Reg lovrWorld[] = {
   { "isCollisionEnabledBetween", l_lovrWorldIsCollisionEnabledBetween },
   { "getStepCount", l_lovrWorldGetStepCount },
   { "setStepCount", l_lovrWorldSetStepCount },
+  { "setContactCallbacks", l_lovrWorldSetContactCallbacks },
   { NULL, NULL }
 };

@@ -26,6 +26,9 @@ struct World {
   float defaultAngularDamping;
   bool defaultIsSleepingAllowed;
   char* tags[MAX_TAGS];
+
+  JPH_ContactListener *jph_listener;
+  ContactCallbacks contactCallbacks;
 };
 
 struct Collider {
@@ -145,6 +148,8 @@ World* lovrWorldCreate(float xg, float yg, float zg, bool allowSleep, const char
   };
   world->physics_system = JPH_PhysicsSystem_Create(&settings);
   world->body_interface = JPH_PhysicsSystem_GetBodyInterface(world->physics_system);
+  world->jph_listener = NULL;
+  world->contactCallbacks = (ContactCallbacks){ 0,0, 0,0, 0,0, 0,0, 0 };
 
   lovrWorldSetGravity(world, xg, yg, zg);
   for (uint32_t i = 0; i < tagCount; i++) {
@@ -175,6 +180,9 @@ void lovrWorldDestroyData(World* world) {
     world->head = next;
   }
   JPH_PhysicsSystem_Destroy(world->physics_system);
+  if (world->jph_listener) {
+    JPH_ContactListener_Destroy(world->jph_listener);
+  }
 }
 
 void lovrWorldUpdate(World* world, float dt, CollisionResolver resolver, void* userdata) {
@@ -277,6 +285,15 @@ bool lovrWorldQuerySphere(World* world, float position[3], float radius, QueryCa
   float scale[3] = {radius, radius, radius};
   return lovrWorldQueryShape(world, querySphere, position, scale, callback, userdata);
 }
+
+bool lovrWorldQueryTriangle(World* world, float position[9], const char* tag, QueryCallback callback, void* userdata) {
+  return false;
+
+}
+
+// bool lovrWorldQueryShape(World* world, Shape* shape, float position[3], float orientation[4], const char* tag, QueryCallback callback, void* userdata) {
+//   return false;
+// }
 
 Collider* lovrWorldGetFirstCollider(World* world) {
   return world->head;
@@ -391,6 +408,77 @@ bool lovrWorldIsCollisionEnabledBetween(World* world, const char* tag1, const ch
   uint32_t jDynamic = j * 2 + 1;
   return JPH_ObjectLayerPairFilterTable_ShouldCollide(world->object_layer_pair_filter, iDynamic, jDynamic);
 }
+
+
+JPH_ValidateResult OnContactValidate(
+  const JPH_Body* body1, const JPH_Body* body2,
+  const JPH_RVec3* baseOffset, const JPH_CollideShapeResult* collisionResult,
+  void* userdata
+) {
+  World* world = userdata;
+  if (world->contactCallbacks.validateCallback) {
+    Collider* c1 = (Collider*) JPH_Body_GetUserData(body1);
+    Collider* c2 = (Collider*) JPH_Body_GetUserData(body2);
+    float offset[3] = { baseOffset->x, baseOffset->y, baseOffset->z };
+    return world->contactCallbacks.validateCallback(
+      c1, c2, offset, collisionResult, &world->contactCallbacks
+    );
+  }
+  return JPH_ValidateResult_AcceptAllContactsForThisBodyPair;
+}
+
+void OnContactAdded(const JPH_Body* body1, const JPH_Body* body2, void* userdata) {
+  World* world = userdata;
+  if (!world->contactCallbacks.addedCallback) return;
+
+  Collider* c1 = (Collider*) JPH_Body_GetUserData(body1);
+  Collider* c2 = (Collider*) JPH_Body_GetUserData(body2);
+  world->contactCallbacks.addedCallback(c1, c2, &world->contactCallbacks);
+}
+
+void OnContactPersisted(const JPH_Body* body1, const JPH_Body* body2, void* userdata) {
+  World* world = userdata;
+  if (!world->contactCallbacks.persistedCallback) return;
+
+  Collider* c1 = (Collider*) JPH_Body_GetUserData(body1);
+  Collider* c2 = (Collider*) JPH_Body_GetUserData(body2);
+  world->contactCallbacks.persistedCallback(c1, c2, &world->contactCallbacks);
+}
+
+void OnContactRemoved(const JPH_SubShapeIDPair* subShapePair, void* userdata) {
+  World* world = userdata;
+  if (!world->contactCallbacks.persistedCallback) return;
+
+  // Collider* c1 = (Collider*)JPH_BodyInterface_GetUserData(
+  //   world->body_interface, subShapePair->Body1ID
+  // );
+  // Collider* c2 = (Collider*)JPH_BodyInterface_GetUserData(
+  //   world->body_interface, subShapePair->Body2ID
+  // );
+  world->contactCallbacks.persistedCallback(NULL, NULL, &world->contactCallbacks);
+}
+
+// return old refs
+void lovrWorldSetContactCallbacks(World* world, ContactCallbacks callbacks) {
+  if (!world->jph_listener) {
+    JPH_ContactListener_Procs procs = {
+      .OnContactValidate = OnContactValidate,
+      .OnContactAdded = OnContactAdded,
+      .OnContactPersisted = OnContactPersisted,
+      .OnContactRemoved = OnContactRemoved,
+    };
+    world->jph_listener = JPH_ContactListener_Create(procs, world);
+    JPH_PhysicsSystem_SetContactListener(world->physics_system, world->jph_listener);
+  }
+
+  world->contactCallbacks = callbacks;
+}
+
+ContactCallbacks lovrWorldGetContactCallbacks(World* world) {
+  return world->contactCallbacks;
+}
+
+
 
 Collider* lovrColliderCreate(World* world, float x, float y, float z) {
   // todo: crashes when too many are added
@@ -1085,6 +1173,11 @@ TerrainShape* lovrTerrainShapeCreate(float* vertices, uint32_t widthSamples, uin
   terrain->shape = (JPH_Shape *) JPH_HeightFieldShapeSettings_CreateShape(shape_settings);
   JPH_ShapeSettings_Destroy((JPH_ShapeSettings *) shape_settings);
   return terrain;
+}
+
+bool lovrShapeQueryOverlapping(Shape* shape, QueryCallback callback, void* userdata) {
+  return false;
+
 }
 
 void lovrJointGetAnchors(Joint* joint, float anchor1[3], float anchor2[3]) {

@@ -33,4 +33,4 @@
 	url = https://github.com/bjornbytes/lovr-http
 [submodule "deps/jolt-physics-sharp"]
 	path = deps/jolt-physics-sharp
-	url = https://github.com/amerkoleci/JoltPhysicsSharp
+	url = git@github.com:xiejiangzhi/JoltPhysicsC.git
