@@ -606,6 +606,11 @@ else()
   target_compile_definitions(lovr PRIVATE LOVR_DISABLE_UTF8)
 endif()
 
+target_sources(lovr PRIVATE
+  src/api/l_myext.c
+  # src/modules/myext/myext.c
+)
+
 # Plugins
 if(NOT EMSCRIPTEN)
   set(LOVR 1)

@@ -32,6 +32,7 @@ LOVR_EXPORT int luaopen_lovr_physics(lua_State* L);
 LOVR_EXPORT int luaopen_lovr_system(lua_State* L);
 LOVR_EXPORT int luaopen_lovr_thread(lua_State* L);
 LOVR_EXPORT int luaopen_lovr_timer(lua_State* L);
+LOVR_EXPORT int luaopen_lovr_myext(lua_State* L);
 
 // Object names are lightuserdata because Variants need a non-Lua string due to threads.
 static int luax_meta__tostring(lua_State* L) {
@@ -123,6 +124,7 @@ void luax_preload(lua_State* L) {
 #ifndef LOVR_DISABLE_UTF8
     { "utf8", luaopen_utf8 },
 #endif
+    { "lovr.myext", luaopen_lovr_myext },
     { NULL, NULL }
   };
 

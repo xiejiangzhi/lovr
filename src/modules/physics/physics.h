@@ -53,8 +53,7 @@ void lovrWorldGetContacts(World* world, Shape* a, Shape* b, Contact contacts[MAX
 void lovrWorldRaycast(World* world, float start[3], float end[3], const char* tag, RaycastCallback callback, void* userdata);
 bool lovrWorldQueryBox(World* world, float position[3], float size[3], const char* tag, QueryCallback callback, void* userdata);
 bool lovrWorldQuerySphere(World* world, float position[3], float radius, const char* tag, QueryCallback callback, void* userdata);
-bool lovrWorldQueryTriangle(World* world, float position[9], const char* tag, QueryCallback callback, void* userdata);
-bool lovrWorldQueryShape(World* world, Shape* shape, float position[3], float orientation[4], const char* tag, QueryCallback callback, void* userdata);
+
 Collider* lovrWorldGetFirstCollider(World* world);
 void lovrWorldGetGravity(World* world, float* x, float* y, float* z);
 void lovrWorldSetGravity(World* world, float x, float y, float z);
@@ -157,7 +156,6 @@ void lovrShapeGetOrientation(Shape* shape, float* orientation);
 void lovrShapeSetOrientation(Shape* shape, float* orientation);
 void lovrShapeGetMass(Shape* shape, float density, float* cx, float* cy, float* cz, float* mass, float inertia[6]);
 void lovrShapeGetAABB(Shape* shape, float aabb[6]);
-bool lovrShapeQueryOverlapping(Shape* shape, QueryCallback callback, void* userdata);
 
 SphereShape* lovrSphereShapeCreate(float radius);
 float lovrSphereShapeGetRadius(SphereShape* sphere);
@@ -256,3 +254,5 @@ void lovrSliderJointSetUpperLimit(SliderJoint* joint, float limit);
 #define lovrDistanceJointDestroy lovrJointDestroy
 #define lovrHingeJointDestroy lovrJointDestroy
 #define lovrSliderJointDestroy lovrJointDestroy
+
+#include "myext/physics.h"
