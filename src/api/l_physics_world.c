@@ -518,7 +518,7 @@ static int l_lovrWorldSetStepCount(lua_State* L) {
   return 0;
 }
 
-#include "myext/physics_world.c"
+#include "myext/l_physics_world.c"
 
 const luaL_Reg lovrWorld[] = {
   { "newCollider", l_lovrWorldNewCollider },
