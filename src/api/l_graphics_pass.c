@@ -891,6 +891,8 @@ static int l_lovrPassSphere(lua_State* L) {
 }
 
 static bool luax_checkendpoints(lua_State* L, int index, float transform[16], bool center) {
+  return false;
+/*
   float *v, *u;
   VectorType t1, t2;
   if ((v = luax_tovector(L, index + 0, &t1)) == NULL || t1 != V_VEC3) return false;
@@ -912,6 +914,7 @@ static bool luax_checkendpoints(lua_State* L, int index, float transform[16], bo
   mat4_rotateQuat(transform, orientation);
   mat4_scale(transform, radius, radius, length);
   return true;
+*/
 }
 
 static int l_lovrPassCylinder(lua_State* L) {
