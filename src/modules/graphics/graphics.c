@@ -2136,6 +2136,12 @@ Texture* lovrTextureCreate(const TextureInfo* info) {
   texture->gpu = (gpu_texture*) (texture + 1);
   texture->info = *info;
   texture->info.mipmaps = mipmaps;
+  if (info->label) {
+    size_t label_size = strlen(info->label) + 1;
+    char* label = malloc(label_size);
+    memcpy(label, info->label, label_size);
+    texture->info.label = label;
+  }
 
   uint32_t levelCount = 0;
   uint32_t levelOffsets[16];
@@ -2191,7 +2197,7 @@ Texture* lovrTextureCreate(const TextureInfo* info) {
       ((info->usage == TEXTURE_RENDER) ? GPU_TEXTURE_TRANSIENT : 0),
     .srgb = info->srgb,
     .handle = info->handle,
-    .label = info->label,
+    .label = texture->info.label,
     .upload = {
       .stream = state.stream,
       .buffer = mapped.buffer,
@@ -2299,6 +2305,9 @@ void lovrTextureDestroy(void* ref) {
     lovrRelease(texture->info.parent, lovrTextureDestroy);
     if (texture->renderView && texture->renderView != texture->gpu) gpu_texture_destroy(texture->renderView);
     if (texture->gpu) gpu_texture_destroy(texture->gpu);
+  }
+  if (texture->info.label) {
+    free((char*)texture->info.label);
   }
   free(texture);
 }
@@ -2439,6 +2448,10 @@ void lovrTextureGenerateMipmaps(Texture* texture, uint32_t base, uint32_t count)
   gpu_barrier barrier = syncTransfer(&texture->sync, GPU_CACHE_TRANSFER_READ | GPU_CACHE_TRANSFER_WRITE);
   gpu_sync(state.stream, &barrier, 1);
   mipmapTexture(state.stream, texture, base, count);
+}
+
+const char* lovrTextureGetLabel(Texture* texture) {
+  return texture->info.label;
 }
 
 // Sampler
