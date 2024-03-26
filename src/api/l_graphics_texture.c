@@ -198,6 +198,12 @@ static int l_lovrTextureGenerateMipmaps(lua_State* L) {
   return 0;
 }
 
+static int l_lovrTextureToString(lua_State* L) {
+  Texture* texture = luax_checktype(L, 1, Texture);
+  lua_pushfstring(L, "Texture(%s)", lovrTextureGetLabel(texture));
+  return 1;
+}
+
 const luaL_Reg lovrTexture[] = {
   { "getType", l_lovrTextureGetType },
   { "getFormat", l_lovrTextureGetFormat },
@@ -213,5 +219,6 @@ const luaL_Reg lovrTexture[] = {
   { "setPixels", l_lovrTextureSetPixels },
   { "clear", l_lovrTextureClear },
   { "generateMipmaps", l_lovrTextureGenerateMipmaps },
+  { "__tostring", l_lovrTextureToString },
   { NULL, NULL }
 };

@@ -2152,6 +2152,12 @@ Texture* lovrTextureCreate(const TextureInfo* info) {
   texture->info = *info;
   texture->info.mipmaps = mipmaps;
   texture->info.srgb = srgb;
+  if (info->label) {
+    size_t label_size = strlen(info->label) + 1;
+    char* label = malloc(label_size);
+    memcpy(label, info->label, label_size);
+    texture->info.label = label;
+  }
 
   uint32_t levelCount = 0;
   uint32_t levelOffsets[16];
@@ -2205,7 +2211,7 @@ Texture* lovrTextureCreate(const TextureInfo* info) {
       (transfer ? GPU_TEXTURE_COPY_SRC | GPU_TEXTURE_COPY_DST : 0),
     .srgb = srgb,
     .handle = info->handle,
-    .label = info->label,
+    .label = texture->info.label,
     .upload = {
       .stream = state.stream,
       .buffer = view.buffer,
@@ -2365,6 +2371,9 @@ void lovrTextureDestroy(void* ref) {
     if (texture->storageView && texture->storageView != texture->gpu) gpu_texture_destroy(texture->storageView);
     if (texture->gpu) gpu_texture_destroy(texture->gpu);
   }
+  if (texture->info.label) {
+    free((char*)texture->info.label);
+  }
   free(texture);
 }
 
@@ -2519,6 +2528,10 @@ Material* lovrTextureToMaterial(Texture* texture) {
   }
 
   return texture->material;
+}
+
+const char* lovrTextureGetLabel(Texture* texture) {
+  return texture->info.label;
 }
 
 // Sampler
