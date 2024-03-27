@@ -68,7 +68,6 @@ static void onFocus(bool focused) {
 
 static bool simulator_init(HeadsetConfig* config) {
   state.config = *config;
-  state.epoch = os_get_time();
   state.clipNear = .01f;
   state.clipFar = 0.f;
   state.distance = .5f;
@@ -101,6 +100,9 @@ static void simulator_start(void) {
       state.depthFormat = FORMAT_D24S8; // Guaranteed to be supported if the other one isn't
     }
   }
+
+  state.epoch = os_get_time();
+  state.time = 0.;
 }
 
 static void simulator_stop(void) {
@@ -272,7 +274,7 @@ static bool simulator_animate(struct Model* model) {
 }
 
 static Layer* simulator_newLayer(uint32_t width, uint32_t height) {
-  Layer* layer = calloc(1, sizeof(Layer));
+  Layer* layer = lovrCalloc(sizeof(Layer));
   layer->ref = 1;
   layer->textureWidth = width;
   layer->textureWeight = height;
@@ -281,7 +283,7 @@ static Layer* simulator_newLayer(uint32_t width, uint32_t height) {
 
 static void simulator_destroyLayer(void* ref) {
   Layer* layer = ref;
-  free(layer);
+  lovrFree(layer);
 }
 
 static Layer** simulator_getLayers(uint32_t* count) {

@@ -81,9 +81,8 @@ Shape* luax_newmeshshape(lua_State* L, int index) {
   if (!shouldFree) {
     float* v = vertices;
     uint32_t* i = indices;
-    vertices = malloc(3 * vertexCount * sizeof(float));
-    indices = malloc(indexCount * sizeof(uint32_t));
-    lovrAssert(vertices && indices, "Out of memory");
+    vertices = lovrMalloc(3 * vertexCount * sizeof(float));
+    indices = lovrMalloc(indexCount * sizeof(uint32_t));
     memcpy(vertices, v, 3 * vertexCount * sizeof(float));
     memcpy(indices, i, indexCount * sizeof(uint32_t));
   }
@@ -99,8 +98,7 @@ Shape* luax_newterrainshape(lua_State* L, int index) {
     return lovrTerrainShapeCreate(vertices, 2, 2, horizontalScale, 1.f);
   } else if (type == LUA_TFUNCTION) {
     uint32_t samples = luax_optu32(L, index + 1, 100);
-    float* vertices = malloc(sizeof(float) * samples * samples);
-    lovrAssert(vertices, "Out of memory");
+    float* vertices = lovrMalloc(sizeof(float) * samples * samples);
     for (uint32_t i = 0; i < samples * samples; i++) {
       float x = horizontalScale * (-.5f + ((float) (i % samples)) / samples);
       float z = horizontalScale * (-.5f + ((float) (i / samples)) / samples);
@@ -113,15 +111,14 @@ Shape* luax_newterrainshape(lua_State* L, int index) {
       lua_pop(L, 1);
     }
     TerrainShape* shape = lovrTerrainShapeCreate(vertices, samples, samples, horizontalScale, 1.f);
-    free(vertices);
+    lovrFree(vertices);
     return shape;
   } else if (type == LUA_TUSERDATA) {
     Image* image = luax_checktype(L, index, Image);
     uint32_t imageWidth = lovrImageGetWidth(image, 0);
     uint32_t imageHeight = lovrImageGetHeight(image, 0);
     float verticalScale = luax_optfloat(L, index + 1, 1.f);
-    float* vertices = malloc(sizeof(float) * imageWidth * imageHeight);
-    lovrAssert(vertices, "Out of memory");
+    float* vertices = lovrMalloc(sizeof(float) * imageWidth * imageHeight);
     for (uint32_t y = 0; y < imageHeight; y++) {
       for (uint32_t x = 0; x < imageWidth; x++) {
         float pixel[4];
@@ -130,7 +127,7 @@ Shape* luax_newterrainshape(lua_State* L, int index) {
       }
     }
     TerrainShape* shape = lovrTerrainShapeCreate(vertices, imageWidth, imageHeight, horizontalScale, verticalScale);
-    free(vertices);
+    lovrFree(vertices);
     return shape;
   } else {
     luax_typeerror(L, index, "Image, number, or function");
@@ -218,7 +215,7 @@ static int l_lovrShapeGetPosition(lua_State* L) {
 
 static int l_lovrShapeSetPosition(lua_State* L) {
   Shape* shape = luax_checkshape(L, 1);
-  lovrAssert(lovrShapeGetCollider(shape) != NULL, "Shape must be attached to collider");
+  lovrCheck(lovrShapeGetCollider(shape) != NULL, "Shape must be attached to collider");
   float position[3];
   luax_readvec3(L, 2, position, NULL);
   lovrShapeSetPosition(shape, position[0], position[1], position[2]);
@@ -239,7 +236,7 @@ static int l_lovrShapeGetOrientation(lua_State* L) {
 
 static int l_lovrShapeSetOrientation(lua_State* L) {
   Shape* shape = luax_checkshape(L, 1);
-  lovrAssert(lovrShapeGetCollider(shape) != NULL, "Shape must be attached to collider");
+  lovrCheck(lovrShapeGetCollider(shape) != NULL, "Shape must be attached to collider");
   float orientation[4];
   luax_readquat(L, 2, orientation, NULL);
   lovrShapeSetOrientation(shape, orientation);
@@ -265,7 +262,7 @@ static int l_lovrShapeGetPose(lua_State* L) {
 
 static int l_lovrShapeSetPose(lua_State* L) {
   Shape* shape = luax_checkshape(L, 1);
-  lovrAssert(lovrShapeGetCollider(shape) != NULL, "Shape must be attached to collider");
+  lovrCheck(lovrShapeGetCollider(shape) != NULL, "Shape must be attached to collider");
   float position[3], orientation[4];
   int index = luax_readvec3(L, 2, position, NULL);
   luax_readquat(L, index, orientation, NULL);

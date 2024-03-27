@@ -200,8 +200,8 @@ static int l_lovrAudioSetGeometry(lua_State* L) {
   AudioMaterial material = luax_checkenum(L, index, AudioMaterial, "generic");
   bool success = lovrAudioSetGeometry(vertices, indices, vertexCount, indexCount, material);
   if (shouldFree) {
-    free(vertices);
-    free(indices);
+    lovrFree(vertices);
+    lovrFree(indices);
   }
   lua_pushboolean(L, success);
   return 1;
@@ -256,7 +256,7 @@ static int l_lovrAudioNewSource(lua_State* L) {
     lua_getfield(L, 2, "effects");
     if (!lua_isnil(L, -1)) {
       effects = 0;
-      lovrAssert(lua_istable(L, -1), "Source effects must be a table");
+      lovrCheck(lua_istable(L, -1), "Source effects must be a table");
       lua_pushnil(L);
       while (lua_next(L, -2) != 0) {
         if (lua_type(L, -2) == LUA_TSTRING) {

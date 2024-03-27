@@ -189,8 +189,7 @@ void lovrPhysicsDestroy(void) {
 }
 
 World* lovrWorldCreate(float xg, float yg, float zg, bool allowSleep, const char** tags, uint32_t tagCount) {
-  World* world = calloc(1, sizeof(World));
-  lovrAssert(world, "Out of memory");
+  World* world = lovrCalloc(sizeof(World));
   world->ref = 1;
   world->id = dWorldCreate();
   world->space = dHashSpaceCreate(0);
@@ -201,7 +200,7 @@ World* lovrWorldCreate(float xg, float yg, float zg, bool allowSleep, const char
   lovrWorldSetSleepingAllowed(world, allowSleep);
   for (uint32_t i = 0; i < tagCount; i++) {
     size_t size = strlen(tags[i]) + 1;
-    world->tags[i] = malloc(size);
+    world->tags[i] = lovrMalloc(size);
     memcpy(world->tags[i], tags[i], size);
   }
   memset(world->masks, 0xffff, sizeof(world->masks));
@@ -213,9 +212,9 @@ void lovrWorldDestroy(void* ref) {
   lovrWorldDestroyData(world);
   arr_free(&world->overlaps);
   for (uint32_t i = 0; i < MAX_TAGS && world->tags[i]; i++) {
-    free(world->tags[i]);
+    lovrFree(world->tags[i]);
   }
-  free(world);
+  lovrFree(world);
 }
 
 void lovrWorldDestroyData(World* world) {
@@ -476,8 +475,7 @@ bool lovrWorldIsCollisionEnabledBetween(World* world, const char* tag1, const ch
 }
 
 Collider* lovrColliderCreate(World* world, float x, float y, float z) {
-  Collider* collider = calloc(1, sizeof(Collider));
-  lovrAssert(collider, "Out of memory");
+  Collider* collider = lovrCalloc(sizeof(Collider));
   collider->ref = 1;
   collider->body = dBodyCreate(world->id);
   collider->world = world;
@@ -509,7 +507,7 @@ void lovrColliderDestroy(void* ref) {
   lovrColliderDestroyData(collider);
   arr_free(&collider->shapes);
   arr_free(&collider->joints);
-  free(collider);
+  lovrFree(collider);
 }
 
 void lovrColliderDestroyData(Collider* collider) {
@@ -889,7 +887,7 @@ void lovrColliderGetAABB(Collider* collider, float aabb[6]) {
 void lovrShapeDestroy(void* ref) {
   Shape* shape = ref;
   lovrShapeDestroyData(shape);
-  free(shape);
+  lovrFree(shape);
 }
 
 void lovrShapeDestroyData(Shape* shape) {
@@ -897,8 +895,8 @@ void lovrShapeDestroyData(Shape* shape) {
     if (shape->type == SHAPE_MESH) {
       dTriMeshDataID dataID = dGeomTriMeshGetData(shape->id);
       dGeomTriMeshDataDestroy(dataID);
-      free(shape->vertices);
-      free(shape->indices);
+      lovrFree(shape->vertices);
+      lovrFree(shape->indices);
     } else if (shape->type == SHAPE_TERRAIN) {
       dHeightfieldDataID dataID = dGeomHeightfieldGetHeightfieldData(shape->id);
       dGeomHeightfieldDataDestroy(dataID);
@@ -1039,8 +1037,7 @@ void lovrShapeGetAABB(Shape* shape, float aabb[6]) {
 
 SphereShape* lovrSphereShapeCreate(float radius) {
   lovrCheck(radius > 0.f, "SphereShape radius must be positive");
-  SphereShape* sphere = calloc(1, sizeof(SphereShape));
-  lovrAssert(sphere, "Out of memory");
+  SphereShape* sphere = lovrCalloc(sizeof(SphereShape));
   sphere->ref = 1;
   sphere->type = SHAPE_SPHERE;
   sphere->id = dCreateSphere(0, radius);
@@ -1058,8 +1055,7 @@ void lovrSphereShapeSetRadius(SphereShape* sphere, float radius) {
 }
 
 BoxShape* lovrBoxShapeCreate(float w, float h, float d) {
-  BoxShape* box = calloc(1, sizeof(BoxShape));
-  lovrAssert(box, "Out of memory");
+  BoxShape* box = lovrCalloc(sizeof(BoxShape));
   box->ref = 1;
   box->type = SHAPE_BOX;
   box->id = dCreateBox(0, w, h, d);
@@ -1082,8 +1078,7 @@ void lovrBoxShapeSetDimensions(BoxShape* box, float w, float h, float d) {
 
 CapsuleShape* lovrCapsuleShapeCreate(float radius, float length) {
   lovrCheck(radius > 0.f && length > 0.f, "CapsuleShape dimensions must be positive");
-  CapsuleShape* capsule = calloc(1, sizeof(CapsuleShape));
-  lovrAssert(capsule, "Out of memory");
+  CapsuleShape* capsule = lovrCalloc(sizeof(CapsuleShape));
   capsule->ref = 1;
   capsule->type = SHAPE_CAPSULE;
   capsule->id = dCreateCapsule(0, radius, length);
@@ -1115,8 +1110,7 @@ void lovrCapsuleShapeSetLength(CapsuleShape* capsule, float length) {
 
 CylinderShape* lovrCylinderShapeCreate(float radius, float length) {
   lovrCheck(radius > 0.f && length > 0.f, "CylinderShape dimensions must be positive");
-  CylinderShape* cylinder = calloc(1, sizeof(CylinderShape));
-  lovrAssert(cylinder, "Out of memory");
+  CylinderShape* cylinder = lovrCalloc(sizeof(CylinderShape));
   cylinder->ref = 1;
   cylinder->type = SHAPE_CYLINDER;
   cylinder->id = dCreateCylinder(0, radius, length);
@@ -1147,8 +1141,7 @@ void lovrCylinderShapeSetLength(CylinderShape* cylinder, float length) {
 }
 
 MeshShape* lovrMeshShapeCreate(int vertexCount, float* vertices, int indexCount, dTriIndex* indices) {
-  MeshShape* mesh = calloc(1, sizeof(MeshShape));
-  lovrAssert(mesh, "Out of memory");
+  MeshShape* mesh = lovrCalloc(sizeof(MeshShape));
   mesh->ref = 1;
   dTriMeshDataID dataID = dGeomTriMeshDataCreate();
   dGeomTriMeshDataBuildSingle(dataID, vertices, 3 * sizeof(float), vertexCount, indices, indexCount, 3 * sizeof(dTriIndex));
@@ -1163,8 +1156,7 @@ MeshShape* lovrMeshShapeCreate(int vertexCount, float* vertices, int indexCount,
 
 TerrainShape* lovrTerrainShapeCreate(float* vertices, uint32_t widthSamples, uint32_t depthSamples, float horizontalScale, float verticalScale) {
   const float thickness = 10.f;
-  TerrainShape* terrain = calloc(1, sizeof(TerrainShape));
-  lovrAssert(terrain, "Out of memory");
+  TerrainShape* terrain = lovrCalloc(sizeof(TerrainShape));
   terrain->ref = 1;
   dHeightfieldDataID dataID = dGeomHeightfieldDataCreate();
   dGeomHeightfieldDataBuildSingle(dataID, vertices, 1, horizontalScale, horizontalScale,
@@ -1178,7 +1170,7 @@ TerrainShape* lovrTerrainShapeCreate(float* vertices, uint32_t widthSamples, uin
 void lovrJointDestroy(void* ref) {
   Joint* joint = ref;
   lovrJointDestroyData(joint);
-  free(joint);
+  lovrFree(joint);
 }
 
 void lovrJointDestroyData(Joint* joint) {
@@ -1226,9 +1218,8 @@ void lovrJointSetEnabled(Joint* joint, bool enable) {
 }
 
 BallJoint* lovrBallJointCreate(Collider* a, Collider* b, float anchor[3]) {
-  lovrAssert(a->world == b->world, "Joint bodies must exist in same World");
-  BallJoint* joint = calloc(1, sizeof(BallJoint));
-  lovrAssert(joint, "Out of memory");
+  lovrCheck(a->world == b->world, "Joint bodies must exist in same World");
+  BallJoint* joint = lovrCalloc(sizeof(BallJoint));
   joint->ref = 1;
   joint->type = JOINT_BALL;
   joint->id = dJointCreateBall(a->world->id, 0);
@@ -1272,9 +1263,8 @@ void lovrBallJointSetTightness(Joint* joint, float tightness) {
 }
 
 DistanceJoint* lovrDistanceJointCreate(Collider* a, Collider* b, float anchor1[3], float anchor2[3]) {
-  lovrAssert(a->world == b->world, "Joint bodies must exist in same World");
-  DistanceJoint* joint = calloc(1, sizeof(DistanceJoint));
-  lovrAssert(joint, "Out of memory");
+  lovrCheck(a->world == b->world, "Joint bodies must exist in same World");
+  DistanceJoint* joint = lovrCalloc(sizeof(DistanceJoint));
   joint->ref = 1;
   joint->type = JOINT_DISTANCE;
   joint->id = dJointCreateDBall(a->world->id, 0);
@@ -1327,9 +1317,8 @@ void lovrDistanceJointSetTightness(Joint* joint, float tightness) {
 }
 
 HingeJoint* lovrHingeJointCreate(Collider* a, Collider* b, float anchor[3], float axis[3]) {
-  lovrAssert(a->world == b->world, "Joint bodies must exist in same World");
-  HingeJoint* joint = calloc(1, sizeof(HingeJoint));
-  lovrAssert(joint, "Out of memory");
+  lovrCheck(a->world == b->world, "Joint bodies must exist in same World");
+  HingeJoint* joint = lovrCalloc(sizeof(HingeJoint));
   joint->ref = 1;
   joint->type = JOINT_HINGE;
   joint->id = dJointCreateHinge(a->world->id, 0);
@@ -1390,9 +1379,8 @@ void lovrHingeJointSetUpperLimit(HingeJoint* joint, float limit) {
 }
 
 SliderJoint* lovrSliderJointCreate(Collider* a, Collider* b, float axis[3]) {
-  lovrAssert(a->world == b->world, "Joint bodies must exist in the same world");
-  SliderJoint* joint = calloc(1, sizeof(SliderJoint));
-  lovrAssert(joint, "Out of memory");
+  lovrCheck(a->world == b->world, "Joint bodies must exist in the same world");
+  SliderJoint* joint = lovrCalloc(sizeof(SliderJoint));
   joint->ref = 1;
   joint->type = JOINT_SLIDER;
   joint->id = dJointCreateSlider(a->world->id, 0);

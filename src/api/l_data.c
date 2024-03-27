@@ -77,21 +77,18 @@ static int l_lovrDataNewBlob(lua_State* L) {
   int type = lua_type(L, 1);
   if (type == LUA_TNUMBER) {
     int isize = lua_tonumber(L, 1);
-    lovrAssert(isize > 0, "Blob size must be positive");
+    lovrCheck(isize > 0, "Blob size must be positive");
     size = (size_t) isize;
-    data = calloc(1, size);
-    lovrAssert(data, "Out of memory");
+    data = lovrCalloc(size);
   } else if (type == LUA_TSTRING) {
     const char* str = luaL_checklstring(L, 1, &size);
-    data = malloc(size + 1);
-    lovrAssert(data, "Out of memory");
+    data = lovrMalloc(size + 1);
     memcpy(data, str, size);
     data[size] = '\0';
   } else {
     Blob* blob = luax_checktype(L, 1, Blob);
     size = blob->size;
-    data = malloc(size);
-    lovrAssert(data, "Out of memory");
+    data = lovrMalloc(size);
     memcpy(data, blob->data, size);
   }
   const char* name = luaL_optstring(L, 2, "");

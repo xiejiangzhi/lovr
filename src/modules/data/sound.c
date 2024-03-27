@@ -78,8 +78,7 @@ static uint32_t lovrSoundReadMp3(Sound* sound, uint32_t offset, uint32_t count, 
 // Sound
 
 Sound* lovrSoundCreateRaw(uint32_t frames, SampleFormat format, ChannelLayout layout, uint32_t sampleRate, Blob* blob) {
-  Sound* sound = calloc(1, sizeof(Sound));
-  lovrAssert(sound, "Out of memory");
+  Sound* sound = lovrCalloc(sizeof(Sound));
   sound->ref = 1;
   sound->frames = frames;
   sound->format = format;
@@ -87,8 +86,7 @@ Sound* lovrSoundCreateRaw(uint32_t frames, SampleFormat format, ChannelLayout la
   sound->sampleRate = sampleRate;
   sound->read = lovrSoundReadRaw;
   size_t size = frames * lovrSoundGetStride(sound);
-  void* data = calloc(1, size);
-  lovrAssert(data, "Out of memory");
+  void* data = lovrCalloc(size);
   sound->blob = lovrBlobCreate(data, size, "Sound");
 
   if (blob) {
@@ -99,19 +97,16 @@ Sound* lovrSoundCreateRaw(uint32_t frames, SampleFormat format, ChannelLayout la
 }
 
 Sound* lovrSoundCreateStream(uint32_t frames, SampleFormat format, ChannelLayout layout, uint32_t sampleRate) {
-  Sound* sound = calloc(1, sizeof(Sound));
-  lovrAssert(sound, "Out of memory");
+  Sound* sound = lovrCalloc(sizeof(Sound));
   sound->ref = 1;
   sound->frames = frames;
   sound->format = format;
   sound->layout = layout;
   sound->sampleRate = sampleRate;
   sound->read = lovrSoundReadStream;
-  sound->stream = malloc(sizeof(ma_pcm_rb));
-  lovrAssert(sound->stream, "Out of memory");
+  sound->stream = lovrMalloc(sizeof(ma_pcm_rb));
   size_t size = frames * lovrSoundGetStride(sound);
-  void* data = malloc(size);
-  lovrAssert(data, "Out of memory");
+  void* data = lovrMalloc(size);
   sound->blob = lovrBlobCreate(data, size, NULL);
   ma_result status = ma_pcm_rb_init(miniaudioFormats[format], lovrSoundGetChannelCount(sound), frames, data, NULL, sound->stream);
   lovrAssert(status == MA_SUCCESS, "Failed to create ring buffer for streamed Sound: %s (%d)", ma_result_description(status), status);
@@ -135,8 +130,7 @@ static bool loadOgg(Sound* sound, Blob* blob, bool decode) {
     uint32_t channels = lovrSoundGetChannelCount(sound);
     lovrAssert(sound->frames * channels <= INT_MAX, "Decoded OGG file has too many samples");
     size_t size = sound->frames * lovrSoundGetStride(sound);
-    void* data = calloc(1, size);
-    lovrAssert(data, "Out of memory");
+    void* data = lovrCalloc(size);
     sound->blob = lovrBlobCreate(data, size, "Sound");
     if (stb_vorbis_get_samples_float_interleaved(sound->decoder, channels, data, (int) size / sizeof(float)) < (int) sound->frames) {
       lovrThrow("Could not decode vorbis from '%s'", blob->name);
@@ -229,8 +223,7 @@ static bool loadWAV(Sound* sound, Blob* blob, bool decode) {
   // Conversion
   size_t samples = sound->frames * lovrSoundGetChannelCount(sound);
   size_t bytes = sound->frames * lovrSoundGetStride(sound);
-  void* raw = malloc(bytes);
-  lovrAssert(raw, "Out of memory");
+  void* raw = lovrMalloc(bytes);
   if (pcm && wav->sampleSize == 24) {
     float* out = raw;
     const uint8_t* in = (const uint8_t*) data;
@@ -296,10 +289,9 @@ static bool loadMP3(Sound* sound, Blob* blob, bool decode) {
     sound->read = lovrSoundReadRaw;
     return true;
   } else {
-    mp3dec_ex_t* decoder = sound->decoder = malloc(sizeof(mp3dec_ex_t));
-    lovrAssert(decoder, "Out of memory");
+    mp3dec_ex_t* decoder = sound->decoder = lovrMalloc(sizeof(mp3dec_ex_t));
     if (mp3dec_ex_open_buf(sound->decoder, blob->data, blob->size, MP3D_SEEK_TO_SAMPLE)) {
-      free(sound->decoder);
+      lovrFree(sound->decoder);
       lovrThrow("Could not load mp3 from '%s'", blob->name);
     }
     sound->format = SAMPLE_F32;
@@ -314,8 +306,7 @@ static bool loadMP3(Sound* sound, Blob* blob, bool decode) {
 }
 
 Sound* lovrSoundCreateFromFile(Blob* blob, bool decode) {
-  Sound* sound = calloc(1, sizeof(Sound));
-  lovrAssert(sound, "Out of memory");
+  Sound* sound = lovrCalloc(sizeof(Sound));
   sound->ref = 1;
 
   if (loadOgg(sound, blob, decode)) return sound;
@@ -326,8 +317,7 @@ Sound* lovrSoundCreateFromFile(Blob* blob, bool decode) {
 }
 
 Sound* lovrSoundCreateFromCallback(SoundCallback read, void *callbackMemo, SoundDestroyCallback callbackMemoDestroy, SampleFormat format, uint32_t sampleRate, ChannelLayout layout, uint32_t maxFrames) {
-  Sound* sound = calloc(1, sizeof(Sound));
-  lovrAssert(sound, "Out of memory");
+  Sound* sound = lovrCalloc(sizeof(Sound));
   sound->ref = 1;
   sound->read = read;
   sound->format = format;
@@ -344,10 +334,10 @@ void lovrSoundDestroy(void* ref) {
   if (sound->callbackMemoDestroy) sound->callbackMemoDestroy(sound);
   lovrRelease(sound->blob, lovrBlobDestroy);
   if (sound->read == lovrSoundReadOgg) stb_vorbis_close(sound->decoder);
-  if (sound->read == lovrSoundReadMp3) mp3dec_ex_close(sound->decoder), free(sound->decoder);
+  if (sound->read == lovrSoundReadMp3) mp3dec_ex_close(sound->decoder), lovrFree(sound->decoder);
   ma_pcm_rb_uninit(sound->stream);
-  free(sound->stream);
-  free(sound);
+  lovrFree(sound->stream);
+  lovrFree(sound);
 }
 
 Blob* lovrSoundGetBlob(Sound* sound) {
@@ -395,8 +385,8 @@ uint32_t lovrSoundRead(Sound* sound, uint32_t offset, uint32_t count, void* data
 }
 
 uint32_t lovrSoundWrite(Sound* sound, uint32_t offset, uint32_t count, const void* data) {
-  lovrAssert(!sound->decoder, "Compressed Sound can not be written to");
-  lovrAssert(sound->stream || sound->blob, "Live-generated sound can not be written to");
+  lovrCheck(!sound->decoder, "Compressed Sound can not be written to");
+  lovrCheck(sound->stream || sound->blob, "Live-generated sound can not be written to");
   size_t stride = lovrSoundGetStride(sound);
   uint32_t frames = 0;
 
@@ -422,11 +412,11 @@ uint32_t lovrSoundWrite(Sound* sound, uint32_t offset, uint32_t count, const voi
 }
 
 uint32_t lovrSoundCopy(Sound* src, Sound* dst, uint32_t count, uint32_t srcOffset, uint32_t dstOffset) {
-  lovrAssert(!dst->decoder, "Compressed Sound can not be written to");
-  lovrAssert(dst->stream || dst->blob, "Live-generated sound can not be written to");
-  lovrAssert(src != dst, "Can not copy a Sound to itself");
-  lovrAssert(src->format == dst->format, "Sound formats need to match");
-  lovrAssert(src->layout == dst->layout, "Sound channel layouts need to match");
+  lovrCheck(!dst->decoder, "Compressed Sound can not be written to");
+  lovrCheck(dst->stream || dst->blob, "Live-generated sound can not be written to");
+  lovrCheck(src != dst, "Can not copy a Sound to itself");
+  lovrCheck(src->format == dst->format, "Sound formats need to match");
+  lovrCheck(src->layout == dst->layout, "Sound channel layouts need to match");
   uint32_t frames = 0;
 
   if (dst->stream) {

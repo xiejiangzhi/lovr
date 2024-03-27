@@ -305,19 +305,14 @@ static void luax_writeshadercache(void) {
     return;
   }
 
-  void* data = malloc(size);
-
-  if (!data) {
-    return;
-  }
-
+  void* data = lovrMalloc(size);
   lovrGraphicsGetShaderCache(data, &size);
 
   if (size > 0) {
     luax_writefile(".lovrshadercache", data, size);
   }
 
-  free(data);
+  lovrFree(data);
 }
 
 static int l_lovrGraphicsInitialize(lua_State* L) {
@@ -366,7 +361,7 @@ static int l_lovrGraphicsInitialize(lua_State* L) {
     luax_atexit(L, luax_writeshadercache);
   }
 
-  free(config.cacheData);
+  lovrFree(config.cacheData);
   return 0;
 }
 
@@ -394,8 +389,7 @@ static int l_lovrGraphicsSubmit(lua_State* L) {
   uint32_t count = 0;
 
   Pass* stack[8];
-  Pass** passes = (size_t) length > COUNTOF(stack) ? malloc(length * sizeof(Pass*)) : stack;
-  lovrAssert(passes, "Out of memory");
+  Pass** passes = (size_t) length > COUNTOF(stack) ? lovrMalloc(length * sizeof(Pass*)) : stack;
 
   if (table) {
     for (int i = 0; i < length; i++) {
@@ -414,7 +408,7 @@ static int l_lovrGraphicsSubmit(lua_State* L) {
   }
 
   lovrGraphicsSubmit(passes, count);
-  if (passes != stack) free(passes);
+  if (passes != stack) lovrFree(passes);
   lua_pushboolean(L, true);
   return 1;
 }
@@ -750,8 +744,7 @@ static int l_lovrGraphicsNewTexture(lua_State* L) {
     info.mipmaps = 1;
   } else if (lua_istable(L, 1)) {
     info.imageCount = luax_len(L, index++);
-    images = info.imageCount > COUNTOF(stack) ? malloc(info.imageCount * sizeof(Image*)) : stack;
-    lovrAssert(images, "Out of memory");
+    images = info.imageCount > COUNTOF(stack) ? lovrMalloc(info.imageCount * sizeof(Image*)) : stack;
 
     if (info.imageCount == 0) {
       info.layers = 6;
@@ -767,7 +760,7 @@ static int l_lovrGraphicsNewTexture(lua_State* L) {
           lua_pushstring(L, altFaces[i]);
           lua_rawget(L, 1);
         }
-        lovrAssert(!lua_isnil(L, -1), "No array texture layers given and cubemap face '%s' missing", faces[i]);
+        lovrCheck(!lua_isnil(L, -1), "No array texture layers given and cubemap face '%s' missing", faces[i]);
         images[i] = luax_checkimage(L, -1);
       }
     } else {
@@ -802,11 +795,11 @@ static int l_lovrGraphicsNewTexture(lua_State* L) {
     bool mipmappable = lovrGraphicsGetFormatSupport(info.format, TEXTURE_FEATURE_BLIT) & (1 << info.srgb);
     info.mipmaps = (levels == 1 && mipmappable) ? ~0u : levels;
     for (uint32_t i = 1; i < info.imageCount; i++) {
-      lovrAssert(lovrImageGetWidth(images[0], 0) == lovrImageGetWidth(images[i], 0), "Image widths must match");
-      lovrAssert(lovrImageGetHeight(images[0], 0) == lovrImageGetHeight(images[i], 0), "Image heights must match");
-      lovrAssert(lovrImageGetFormat(images[0]) == lovrImageGetFormat(images[i]), "Image formats must match");
-      lovrAssert(lovrImageGetLevelCount(images[0]) == lovrImageGetLevelCount(images[i]), "Image mipmap counts must match");
-      lovrAssert(lovrImageGetLayerCount(images[i]) == 1, "When a list of images are provided, each must have a single layer");
+      lovrCheck(lovrImageGetWidth(images[0], 0) == lovrImageGetWidth(images[i], 0), "Image widths must match");
+      lovrCheck(lovrImageGetHeight(images[0], 0) == lovrImageGetHeight(images[i], 0), "Image heights must match");
+      lovrCheck(lovrImageGetFormat(images[0]) == lovrImageGetFormat(images[i]), "Image formats must match");
+      lovrCheck(lovrImageGetLevelCount(images[0]) == lovrImageGetLevelCount(images[i]), "Image mipmap counts must match");
+      lovrCheck(lovrImageGetLayerCount(images[i]) == 1, "When a list of images are provided, each must have a single layer");
     }
   }
 
@@ -870,7 +863,7 @@ static int l_lovrGraphicsNewTexture(lua_State* L) {
   }
 
   if (images != stack) {
-    free(images);
+    lovrFree(images);
   }
 
   luax_pushtype(L, Texture, texture);
@@ -968,7 +961,7 @@ static int l_lovrGraphicsNewSampler(lua_State* L) {
 
   lua_getfield(L, 1, "mipmaprange");
   if (!lua_isnil(L, -1)) {
-    lovrAssert(lua_istable(L, -1), "Sampler mipmap range must be nil or a table");
+    lovrCheck(lua_istable(L, -1), "Sampler mipmap range must be nil or a table");
     lua_rawgeti(L, -1, 1);
     lua_rawgeti(L, -2, 2);
     info.range[0] = luax_checkfloat(L, -2);
@@ -1035,7 +1028,7 @@ static int l_lovrGraphicsCompileShader(lua_State* L) {
   lovrGraphicsCompileShader(inputs, outputs, count, luax_readfile);
 
   for (uint32_t i = 0; i < count; i++) {
-    if (shouldFree[i] && outputs[i].code != inputs[i].code) free((void*) inputs[i].code);
+    if (shouldFree[i] && outputs[i].code != inputs[i].code) lovrFree((void*) inputs[i].code);
     Blob* blob = lovrBlobCreate((void*) outputs[i].code, outputs[i].size, "Shader code");
     luax_pushtype(L, Blob, blob);
     lovrRelease(blob, lovrBlobDestroy);
@@ -1106,8 +1099,8 @@ static int l_lovrGraphicsNewShader(lua_State* L) {
   lovrRelease(shader, lovrShaderDestroy);
 
   for (uint32_t i = 0; i < info.stageCount; i++) {
-    if (shouldFree[i]) free((void*) source[i].code);
-    if (source[i].code != compiled[i].code) free((void*) compiled[i].code);
+    if (shouldFree[i]) lovrFree((void*) source[i].code);
+    if (source[i].code != compiled[i].code) lovrFree((void*) compiled[i].code);
   }
 
   arr_free(&flags);

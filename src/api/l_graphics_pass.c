@@ -863,7 +863,7 @@ static int l_lovrPassSphere(lua_State* L) {
   int index = luax_readmat4(L, 2, transform, 1);
   uint32_t segmentsH = luax_optu32(L, index++, 48);
   uint32_t segmentsV = luax_optu32(L, index++, segmentsH / 2);
-  lovrAssert(segmentsH >= 2 && segmentsV >= 2, "Number of longitudes and latitudes must be >= 2");
+  lovrCheck(segmentsH >= 2 && segmentsV >= 2, "Sphere segment count must be >= 2");
   lovrPassSphere(pass, transform, segmentsH, segmentsV);
   return 0;
 }
@@ -946,7 +946,7 @@ static int l_lovrPassText(lua_State* L) {
   HorizontalAlign halign = luax_checkenum(L, index++, HorizontalAlign, "center");
   VerticalAlign valign = luax_checkenum(L, index++, VerticalAlign, "middle");
   lovrPassText(pass, strings, count, transform, wrap, halign, valign);
-  if (strings != &stack) free(strings);
+  if (strings != &stack) lovrFree(strings);
   return 0;
 }
 
