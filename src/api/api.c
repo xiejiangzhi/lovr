@@ -154,6 +154,10 @@ void _luax_registertype(lua_State* L, const char* name, const luaL_Reg* function
   lua_pushcfunction(L, luax_meta__gc);
   lua_setfield(L, -2, "__gc");
 
+  // m.__close = gc
+  lua_pushcfunction(L, luax_meta__gc);
+  lua_setfield(L, -2, "__close");
+
   // m.__tostring
   lua_pushcfunction(L, luax_meta__tostring);
   lua_setfield(L, -2, "__tostring");
@@ -513,18 +517,13 @@ void luax_optcolor(lua_State* L, int index, float color[4]) {
 
 int luax_readmesh(lua_State* L, int index, float** vertices, uint32_t* vertexCount, uint32_t** indices, uint32_t* indexCount, bool* shouldFree) {
   if (lua_istable(L, index)) {
-    luaL_checktype(L, index + 1, LUA_TTABLE);
     lua_rawgeti(L, index, 1);
     bool nested = lua_type(L, -1) == LUA_TTABLE;
     lua_pop(L, 1);
 
     *vertexCount = luax_len(L, index) / (nested ? 1 : 3);
-    *indexCount = luax_len(L, index + 1);
     lovrCheck(*vertexCount > 0, "Invalid mesh data: vertex count is zero");
-    lovrCheck(*indexCount > 0, "Invalid mesh data: index count is zero");
-    lovrCheck(*indexCount % 3 == 0, "Index count must be a multiple of 3");
     *vertices = lovrMalloc(sizeof(float) * *vertexCount * 3);
-    *indices = lovrMalloc(sizeof(uint32_t) * *indexCount);
     *shouldFree = true;
 
     if (nested) {
@@ -546,15 +545,31 @@ int luax_readmesh(lua_State* L, int index, float** vertices, uint32_t* vertexCou
       }
     }
 
-    for (uint32_t i = 0; i < *indexCount; i++) {
-      lua_rawgeti(L, index + 1, i + 1);
-      uint32_t index = luaL_checkinteger(L, -1) - 1;
-      lovrCheck(index < *vertexCount, "Invalid vertex index %d (expected [%d, %d])", index + 1, 1, *vertexCount);
-      (*indices)[i] = index;
-      lua_pop(L, 1);
+    if (indices) {
+      luaL_checktype(L, index + 1, LUA_TTABLE);
+      *indexCount = luax_len(L, index + 1);
+      lovrCheck(*indexCount > 0, "Invalid mesh data: index count is zero");
+      lovrCheck(*indexCount % 3 == 0, "Index count must be a multiple of 3");
+      *indices = lovrMalloc(sizeof(uint32_t) * *indexCount);
+
+      for (uint32_t i = 0; i < *indexCount; i++) {
+        lua_rawgeti(L, index + 1, i + 1);
+        uint32_t index = luaL_checkinteger(L, -1) - 1;
+        lovrCheck(index < *vertexCount, "Invalid vertex index %d (expected [%d, %d])", index + 1, 1, *vertexCount);
+        (*indices)[i] = index;
+        lua_pop(L, 1);
+      }
     }
 
     return index + 2;
+  }
+
+  ModelData* modelData = luax_totype(L, index, ModelData);
+
+  if (modelData) {
+    lovrModelDataGetTriangles(modelData, vertices, indices, vertexCount, indexCount);
+    *shouldFree = false;
+    return index + 1;
   }
 
 #ifndef LOVR_DISABLE_GRAPHICS
@@ -574,9 +589,11 @@ int luax_readmesh(lua_State* L, int index, float** vertices, uint32_t* vertexCou
     *shouldFree = true;
     return index + 1;
   }
-#endif
 
-  return luaL_argerror(L, index, "table, Mesh, or Model");
+  return luaL_argerror(L, index, "table, ModelData, Model, or Mesh expected");
+#else
+  return luaL_argerror(L, index, "table or ModelData expected");
+#endif
 }
 
 void luax_readobjarr(lua_State* L, int index, int n, float* out, const char* name) {

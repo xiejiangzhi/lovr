@@ -7,8 +7,10 @@ StringEntry lovrShapeType[] = {
   [SHAPE_BOX] = ENTRY("box"),
   [SHAPE_CAPSULE] = ENTRY("capsule"),
   [SHAPE_CYLINDER] = ENTRY("cylinder"),
+  [SHAPE_CONVEX] = ENTRY("convex"),
   [SHAPE_MESH] = ENTRY("mesh"),
   [SHAPE_TERRAIN] = ENTRY("terrain"),
+  [SHAPE_COMPOUND] = ENTRY("compound"),
   { 0 }
 };
 
@@ -21,28 +23,75 @@ StringEntry lovrJointType[] = {
 };
 
 static int l_lovrPhysicsNewWorld(lua_State* L) {
-  float xg = luax_optfloat(L, 1, 0.f);
-  float yg = luax_optfloat(L, 2, -9.81f);
-  float zg = luax_optfloat(L, 3, 0.f);
-  bool allowSleep = lua_gettop(L) < 4 || lua_toboolean(L, 4);
-  const char* tags[MAX_TAGS];
-  int tagCount;
-  if (lua_type(L, 5) == LUA_TTABLE) {
-    tagCount = luax_len(L, 5);
-    lovrCheck(tagCount <= MAX_TAGS, "Max number of world tags is %d", MAX_TAGS);
-    for (int i = 0; i < tagCount; i++) {
-      lua_rawgeti(L, -1, i + 1);
-      if (lua_isstring(L, -1)) {
-        tags[i] = lua_tostring(L, -1);
-      } else {
-        return luaL_error(L, "World tags must be a table of strings");
+  WorldInfo info = {
+    .maxColliders = 65536,
+    .maxColliderPairs = 65536,
+    .maxContacts = 16384,
+    .allowSleep = true
+  };
+
+  if (lua_istable(L, 1)) {
+    lua_getfield(L, 1, "maxColliders");
+    if (!lua_isnil(L, -1)) info.maxColliders = luax_checku32(L, -1);
+    lua_pop(L, 1);
+
+    lua_getfield(L, 1, "maxColliderPairs");
+    if (!lua_isnil(L, -1)) info.maxColliderPairs = luax_checku32(L, -1);
+    lua_pop(L, 1);
+
+    lua_getfield(L, 1, "maxContacts");
+    if (!lua_isnil(L, -1)) info.maxContacts = luax_checku32(L, -1);
+    lua_pop(L, 1);
+
+    lua_getfield(L, 1, "allowSleep");
+    if (!lua_isnil(L, -1)) info.allowSleep = lua_toboolean(L, -1);
+    lua_pop(L, 1);
+
+    lua_getfield(L, 1, "tags");
+    if (!lua_isnil(L, -1)) {
+      lovrCheck(lua_istable(L, -1), "World tag list should be a table");
+      lovrCheck(info.tagCount <= MAX_TAGS, "Max number of world tags is %d", MAX_TAGS);
+      info.tagCount = luax_len(L, 5);
+      for (uint32_t i = 0; i < info.tagCount; i++) {
+        lua_rawgeti(L, -1, (int) i + 1);
+        if (lua_isstring(L, -1)) {
+          info.tags[i] = lua_tostring(L, -1);
+        } else {
+          return luaL_error(L, "World tags must be a table of strings");
+        }
+        lua_pop(L, 1);
       }
-      lua_pop(L, 1);
     }
-  } else {
-    tagCount = 0;
+    lua_pop(L, 1);
+  } else { // Deprecated
+    info.allowSleep = lua_gettop(L) < 4 || lua_toboolean(L, 4);
+    if (lua_type(L, 5) == LUA_TTABLE) {
+      info.tagCount = luax_len(L, 5);
+      lovrCheck(info.tagCount <= MAX_TAGS, "Max number of world tags is %d", MAX_TAGS);
+      for (uint32_t i = 0; i < info.tagCount; i++) {
+        lua_rawgeti(L, -1, (int) i + 1);
+        if (lua_isstring(L, -1)) {
+          info.tags[i] = lua_tostring(L, -1);
+        } else {
+          return luaL_error(L, "World tags must be a table of strings");
+        }
+        lua_pop(L, 1);
+      }
+    } else {
+      info.tagCount = 0;
+    }
   }
-  World* world = lovrWorldCreate(xg, yg, zg, allowSleep, tags, tagCount);
+
+  World* world = lovrWorldCreate(&info);
+
+  if (!lua_istable(L, 1)) {
+    float gravity[3];
+    gravity[0] = luax_optfloat(L, 1, 0.f);
+    gravity[1] = luax_optfloat(L, 2, -9.81f);
+    gravity[2] = luax_optfloat(L, 3, 0.f);
+    lovrWorldSetGravity(world, gravity);
+  }
+
   luax_pushtype(L, World, world);
   lovrRelease(world, lovrWorldDestroy);
   return 1;
@@ -70,6 +119,13 @@ static int l_lovrPhysicsNewCapsuleShape(lua_State* L) {
   CapsuleShape* capsule = luax_newcapsuleshape(L, 1);
   luax_pushtype(L, CapsuleShape, capsule);
   lovrRelease(capsule, lovrShapeDestroy);
+  return 1;
+}
+
+static int l_lovrPhysicsNewConvexShape(lua_State* L) {
+  ConvexShape* convex = luax_newconvexshape(L, 1);
+  luax_pushtype(L, ConvexShape, convex);
+  lovrRelease(convex, lovrShapeDestroy);
   return 1;
 }
 
@@ -136,11 +192,19 @@ static int l_lovrPhysicsNewTerrainShape(lua_State* L) {
   return 1;
 }
 
+static int l_lovrPhysicsNewCompoundShape(lua_State* L) {
+  CompoundShape* shape = luax_newcompoundshape(L, 1);
+  luax_pushtype(L, CompoundShape, shape);
+  lovrRelease(shape, lovrShapeDestroy);
+  return 1;
+}
+
 static const luaL_Reg lovrPhysics[] = {
   { "newWorld", l_lovrPhysicsNewWorld },
   { "newBallJoint", l_lovrPhysicsNewBallJoint },
   { "newBoxShape", l_lovrPhysicsNewBoxShape },
   { "newCapsuleShape", l_lovrPhysicsNewCapsuleShape },
+  { "newConvexShape", l_lovrPhysicsNewConvexShape },
   { "newCylinderShape", l_lovrPhysicsNewCylinderShape },
   { "newDistanceJoint", l_lovrPhysicsNewDistanceJoint },
   { "newHingeJoint", l_lovrPhysicsNewHingeJoint },
@@ -148,6 +212,7 @@ static const luaL_Reg lovrPhysics[] = {
   { "newSliderJoint", l_lovrPhysicsNewSliderJoint },
   { "newSphereShape", l_lovrPhysicsNewSphereShape },
   { "newTerrainShape", l_lovrPhysicsNewTerrainShape },
+  { "newCompoundShape", l_lovrPhysicsNewCompoundShape },
   { NULL, NULL }
 };
 
@@ -161,8 +226,10 @@ extern const luaL_Reg lovrSphereShape[];
 extern const luaL_Reg lovrBoxShape[];
 extern const luaL_Reg lovrCapsuleShape[];
 extern const luaL_Reg lovrCylinderShape[];
+extern const luaL_Reg lovrConvexShape[];
 extern const luaL_Reg lovrMeshShape[];
 extern const luaL_Reg lovrTerrainShape[];
+extern const luaL_Reg lovrCompoundShape[];
 
 int luaopen_lovr_physics(lua_State* L) {
   lua_newtable(L);
@@ -177,8 +244,10 @@ int luaopen_lovr_physics(lua_State* L) {
   luax_registertype(L, BoxShape);
   luax_registertype(L, CapsuleShape);
   luax_registertype(L, CylinderShape);
+  luax_registertype(L, ConvexShape);
   luax_registertype(L, MeshShape);
   luax_registertype(L, TerrainShape);
+  luax_registertype(L, CompoundShape);
   lovrPhysicsInit();
   luax_atexit(L, lovrPhysicsDestroy);
   return 1;
