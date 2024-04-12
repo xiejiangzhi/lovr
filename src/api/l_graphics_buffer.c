@@ -687,6 +687,7 @@ static void luax_checkfield(lua_State* L, const DataField* field, int idx, char*
   case LUA_TTABLE:
     lovrCheck(luax_len(L, idx) == n, "Table length for key '%s' must be %d", field->name, n);
     luax_checkfieldt(L, idx, field->type, data + field->offset);
+    break;
   default:
     lovrThrow("Invalid data type %s for field '%s'", lua_typename(L, lua_type(L, idx)), field->name);
   }
