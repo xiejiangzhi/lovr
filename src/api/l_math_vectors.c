@@ -1696,6 +1696,7 @@ static int l_lovrMat4GetPosition(lua_State* L) {
   return 3;
 }
 
+
 static int l_lovrMat4GetOrientation(lua_State* L) {
   mat4 m = luax_checkvector(L, 1, V_MAT4, NULL);
   float angle, ax, ay, az;
@@ -1730,6 +1731,15 @@ static int l_lovrMat4GetPose(lua_State* L) {
   lua_pushnumber(L, ay);
   lua_pushnumber(L, az);
   return 7;
+}
+
+static int l_lovrMat4SetPosition(lua_State* L) {
+  mat4 m = luax_checkvector(L, 1, V_MAT4, NULL);
+  float position[3];
+  luax_readvec3(L, 2, position, "nil, number, vec3, or mat4");
+  mat4_setPosition(m, position);
+  lua_settop(L, 1);
+  return 1;
 }
 
 int l_lovrMat4Set(lua_State* L) {
@@ -2039,6 +2049,7 @@ const luaL_Reg lovrMat4[] = {
   { "getOrientation", l_lovrMat4GetOrientation },
   { "getScale", l_lovrMat4GetScale },
   { "getPose", l_lovrMat4GetPose },
+  { "setPosition", l_lovrMat4SetPosition },
   { "set", l_lovrMat4Set },
   { "mul", l_lovrMat4Mul },
   { "identity", l_lovrMat4Identity },
