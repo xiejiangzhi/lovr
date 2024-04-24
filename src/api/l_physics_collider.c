@@ -496,6 +496,34 @@ static int l_lovrColliderSetTag(lua_State* L) {
   return 0;
 }
 
+// addLinearVelocity(x, y, z, should_update_kinematic)
+static int l_lovrColliderAddLinearVelocity(lua_State* L) {
+  Collider* collider = luax_checktype(L, 1, Collider);
+  float velocity[3];
+  int index = luax_readvec3(L, 2, velocity, NULL);
+  // default update dynamic body only
+  bool update_kinematic = lua_toboolean(L, index);
+  float x, y, z;
+  lovrColliderGetLinearVelocity(collider, &x, &y, &z);
+
+  if (update_kinematic || !lovrColliderIsKinematic(collider)) {
+    x += velocity[0];
+    y += velocity[1];
+    z += velocity[2];
+    lovrColliderSetLinearVelocity(collider, x, y, z);
+    lua_pushnumber(L, x);
+    lua_pushnumber(L, y);
+    lua_pushnumber(L, z);
+    lua_pushboolean(L, true);
+    return 4;
+  } else {
+    lua_pushnumber(L, x);
+    lua_pushnumber(L, y);
+    lua_pushnumber(L, z);
+    return 3;
+  }
+}
+
 const luaL_Reg lovrCollider[] = {
   { "destroy", l_lovrColliderDestroy },
   { "isDestroyed", l_lovrColliderIsDestroyed },
@@ -548,5 +576,6 @@ const luaL_Reg lovrCollider[] = {
   { "setRestitution", l_lovrColliderSetRestitution },
   { "getTag", l_lovrColliderGetTag },
   { "setTag", l_lovrColliderSetTag },
+  { "addLinearVelocity", l_lovrColliderAddLinearVelocity },
   { NULL, NULL }
 };
