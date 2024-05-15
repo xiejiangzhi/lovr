@@ -2041,6 +2041,8 @@ int l_lovrMat4__metaindex(lua_State* L) {
   return 0; // No properties currently, 'identity' is already taken
 }
 
+#include "myext/l_math_vector.c"
+
 const luaL_Reg lovrMat4[] = {
   { "type", l_lovrMat4Type },
   { "equals", l_lovrMat4Equals },
@@ -2049,6 +2051,7 @@ const luaL_Reg lovrMat4[] = {
   { "getOrientation", l_lovrMat4GetOrientation },
   { "getScale", l_lovrMat4GetScale },
   { "getPose", l_lovrMat4GetPose },
+  { "setPosition", l_lovrMat4SetPosition },
   { "set", l_lovrMat4Set },
   { "mul", l_lovrMat4Mul },
   { "identity", l_lovrMat4Identity },

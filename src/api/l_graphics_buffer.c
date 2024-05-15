@@ -590,6 +590,8 @@ static int l_lovrBufferClear(lua_State* L) {
   return 0;
 }
 
+#include "myext/l_graphics_buffer.c"
+
 const luaL_Reg lovrBuffer[] = {
   { "getSize", l_lovrBufferGetSize },
   { "getLength", l_lovrBufferGetLength },
@@ -598,6 +600,7 @@ const luaL_Reg lovrBuffer[] = {
   { "newReadback", l_lovrBufferNewReadback },
   { "getData", l_lovrBufferGetData },
   { "setData", l_lovrBufferSetData },
+  { "setDataEx", l_lovrBufferSetDataEx },
   { "mapData", l_lovrBufferMapData },
   { "clear", l_lovrBufferClear },
   { NULL, NULL }

@@ -925,3 +925,5 @@ MAF mat4 mat4_reflect(mat4 m, vec3 p, vec3 n) {
   m[15] = 1.f;
   return m;
 }
+
+#include "myext/maf.h"

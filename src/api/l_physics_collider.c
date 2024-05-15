@@ -632,6 +632,8 @@ static int l_lovrColliderSetGravityIgnored(lua_State* L) {
   return 0;
 }
 
+#include "myext/l_physics_collider.c"
+
 const luaL_Reg lovrCollider[] = {
   { "destroy", l_lovrColliderDestroy },
   { "isDestroyed", l_lovrColliderIsDestroyed },
@@ -703,5 +705,6 @@ const luaL_Reg lovrCollider[] = {
   { "isGravityIgnored", l_lovrColliderIsGravityIgnored },
   { "setGravityIgnored", l_lovrColliderSetGravityIgnored },
 
+  { "addLinearVelocity", l_lovrColliderAddLinearVelocity },
   { NULL, NULL }
 };
