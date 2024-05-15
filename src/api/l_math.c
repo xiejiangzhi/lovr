@@ -34,88 +34,51 @@ extern const luaL_Reg lovrMat4[];
 static LOVR_THREAD_LOCAL Pool* pool;
 static LOVR_THREAD_LOCAL int metaref[MAX_VECTOR_TYPES];
 
-static struct {
-  const char* name;
-  lua_CFunction constructor, indexer;
-  const luaL_Reg* api;
-  int components;
-} lovrVectorInfo[] = {
-  [V_VEC2] = { "vec2", l_lovrMathVec2, l_lovrVec2__metaindex, lovrVec2, 2 },
-  [V_VEC3] = { "vec3", l_lovrMathVec3, l_lovrVec3__metaindex, lovrVec3, 3 },
-  [V_VEC4] = { "vec4", l_lovrMathVec4, l_lovrVec4__metaindex, lovrVec4, 4 },
-  [V_QUAT] = { "quat", l_lovrMathQuat, l_lovrQuat__metaindex, lovrQuat, 4 },
-  [V_MAT4] = { "mat4", l_lovrMathMat4, l_lovrMat4__metaindex, lovrMat4, 16 }
+static struct { const char* name; lua_CFunction constructor, indexer; const luaL_Reg* api; } lovrVectorInfo[] = {
+  [V_VEC2] = { "vec2", l_lovrMathVec2, l_lovrVec2__metaindex, lovrVec2 },
+  [V_VEC3] = { "vec3", l_lovrMathVec3, l_lovrVec3__metaindex, lovrVec3 },
+  [V_VEC4] = { "vec4", l_lovrMathVec4, l_lovrVec4__metaindex, lovrVec4 },
+  [V_QUAT] = { "quat", l_lovrMathQuat, l_lovrQuat__metaindex, lovrQuat },
+  [V_MAT4] = { "mat4", l_lovrMathMat4, l_lovrMat4__metaindex, lovrMat4 }
 };
+
+#include "myext/l_math.c"
 
 static void luax_destroypool(void) {
   lovrRelease(pool, lovrPoolDestroy);
 }
 
 float* luax_tovector(lua_State* L, int index, VectorType* type) {
-  if (lua_istable(L, index)) {
-    lua_rawgeti(L, index, 1);
-    bool is_num = lua_isnumber(L, -1);
-    lua_pop(L, 1);
-    if (!is_num) {
-      type = V_NONE;
-      return NULL;
-    }
+  void* p = lua_touserdata(L, index);
 
-    VectorType vtype;
-    switch(luax_len(L, index)) {
-    case 2: vtype = V_VEC2; break;
-    case 3: vtype = V_VEC3; break;
-    case 4: vtype = V_VEC4; break;
-    case 5: vtype = V_QUAT; break; // bad way to detect quat
-    case 16: vtype = V_MAT4; break;
-    default:
-      if (type) *type = V_NONE;
-      return NULL;
-    }
-    float* p;
-    lovrPoolAllocate(pool, vtype, &p);
-    luax_readobjarr(L, index, lovrVectorInfo[vtype].components, p, lovrVectorInfo[vtype].name);
-    if (type) *type = vtype;
-    return p;
-  } else {
-    void* p = lua_touserdata(L, index);
-
-    if (p) {
-      if (lua_type(L, index) == LUA_TLIGHTUSERDATA) {
-        Vector v = { .pointer = p };
-        if (v.handle.type > V_NONE && v.handle.type < MAX_VECTOR_TYPES) {
-          if (type) *type = v.handle.type;
-          return lovrPoolResolve(pool, v);
-        }
-      } else {
-        VectorType* t = p;
-        if (*t > V_NONE && *t < MAX_VECTOR_TYPES) {
-          if (type) *type = *t;
-          return (float*) (t + 1);
-        }
+  if (p) {
+    if (lua_type(L, index) == LUA_TLIGHTUSERDATA) {
+      Vector v = { .pointer = p };
+      if (v.handle.type > V_NONE && v.handle.type < MAX_VECTOR_TYPES) {
+        if (type) *type = v.handle.type;
+        return lovrPoolResolve(pool, v);
+      }
+    } else {
+      VectorType* t = p;
+      if (*t > V_NONE && *t < MAX_VECTOR_TYPES) {
+        if (type) *type = *t;
+        return (float*) (t + 1);
       }
     }
-    if (type) *type = V_NONE;
-    return NULL;
   }
+
+  if (type) *type = V_NONE;
+  return NULL;
 }
+#define luax_tovector myext_luax_tovector
 
 float* luax_checkvector(lua_State* L, int index, VectorType type, const char* expected) {
   VectorType t;
-  float* p;
-  if (lua_istable(L, index)) {
-    lovrPoolAllocate(pool, type, &p);
-    luax_readobjarr(L, index, lovrVectorInfo[type].components, p, lovrVectorInfo[type].name);
-    return p;
-  } else {
-    p = luax_tovector(L, index, &t);
-  }
-
-  if (!p || t != type) {
-    luax_typeerror(L, index, expected ? expected : lovrVectorInfo[type].name);
-  }
+  float* p = luax_tovector(L, index, &t);
+  if (!p || t != type) luax_typeerror(L, index, expected ? expected : lovrVectorInfo[type].name);
   return p;
 }
+#define luax_checkvector myext_luax_checkvector
 
 static float* luax_newvector(lua_State* L, VectorType type, size_t components) {
   VectorType* p = lua_newuserdata(L, sizeof(VectorType) + components * sizeof(float));
@@ -318,6 +281,7 @@ static int l_lovrMathDrain(lua_State* L) {
   lovrPoolDrain(pool);
   return 0;
 }
+
 
 static const luaL_Reg lovrMath[] = {
   { "newCurve", l_lovrMathNewCurve },
