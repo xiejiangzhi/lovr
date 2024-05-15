@@ -450,7 +450,8 @@ static int l_lovrVec2__newindex(lua_State* L) {
   lua_getglobal(L, "tostring");
   lua_pushvalue(L, 2);
   lua_call(L, 1, 1);
-  return luaL_error(L, "attempt to assign property %s of vec2 (invalid property)", lua_tostring(L, -1));
+  luaL_error(L, "attempt to assign property %s of vec2 (invalid property)", lua_tostring(L, -1));
+  return 0;
 }
 
 static int l_lovrVec2__index(lua_State* L) {
@@ -504,7 +505,8 @@ static int l_lovrVec2__index(lua_State* L) {
   lua_getglobal(L, "tostring");
   lua_pushvalue(L, 2);
   lua_call(L, 1, 1);
-  return luaL_error(L, "attempt to index field %s of vec2 (invalid property)", lua_tostring(L, -1));
+  luaL_error(L, "attempt to index field %s of vec2 (invalid property)", lua_tostring(L, -1));
+  return 0;
 }
 
 int l_lovrVec2__metaindex(lua_State* L) {
@@ -842,7 +844,8 @@ static int l_lovrVec3__newindex(lua_State* L) {
   lua_getglobal(L, "tostring");
   lua_pushvalue(L, 2);
   lua_call(L, 1, 1);
-  return luaL_error(L, "attempt to assign property %s of vec3 (invalid property)", lua_tostring(L, -1));
+  luaL_error(L, "attempt to assign property %s of vec3 (invalid property)", lua_tostring(L, -1));
+  return 0;
 }
 
 static int l_lovrVec3__index(lua_State* L) {
@@ -896,7 +899,8 @@ static int l_lovrVec3__index(lua_State* L) {
   lua_getglobal(L, "tostring");
   lua_pushvalue(L, 2);
   lua_call(L, 1, 1);
-  return luaL_error(L, "attempt to index field %s of vec3 (invalid property)", lua_tostring(L, -1));
+  luaL_error(L, "attempt to index field %s of vec3 (invalid property)", lua_tostring(L, -1));
+  return 0;
 }
 
 int l_lovrVec3__metaindex(lua_State* L) {
@@ -1238,7 +1242,8 @@ static int l_lovrVec4__newindex(lua_State* L) {
   lua_getglobal(L, "tostring");
   lua_pushvalue(L, 2);
   lua_call(L, 1, 1);
-  return luaL_error(L, "attempt to assign property %s of vec4 (invalid property)", lua_tostring(L, -1));
+  luaL_error(L, "attempt to assign property %s of vec4 (invalid property)", lua_tostring(L, -1));
+  return 0;
 }
 
 static int l_lovrVec4__index(lua_State* L) {
@@ -1292,7 +1297,8 @@ static int l_lovrVec4__index(lua_State* L) {
   lua_getglobal(L, "tostring");
   lua_pushvalue(L, 2);
   lua_call(L, 1, 1);
-  return luaL_error(L, "attempt to index field %s of vec4 (invalid property)", lua_tostring(L, -1));
+  luaL_error(L, "attempt to index field %s of vec4 (invalid property)", lua_tostring(L, -1));
+  return 0;
 }
 
 int l_lovrVec4__metaindex(lua_State* L) {
@@ -1553,7 +1559,8 @@ static int l_lovrQuat__newindex(lua_State* L) {
   lua_getglobal(L, "tostring");
   lua_pushvalue(L, 2);
   lua_call(L, 1, 1);
-  return luaL_error(L, "attempt to assign property %s of quat (invalid property)", lua_tostring(L, -1));
+  luaL_error(L, "attempt to assign property %s of quat (invalid property)", lua_tostring(L, -1));
+  return 0;
 }
 
 static int l_lovrQuat__index(lua_State* L) {
@@ -1588,7 +1595,8 @@ static int l_lovrQuat__index(lua_State* L) {
   lua_getglobal(L, "tostring");
   lua_pushvalue(L, 2);
   lua_call(L, 1, 1);
-  return luaL_error(L, "attempt to index field %s of quat (invalid property)", lua_tostring(L, -1));
+  luaL_error(L, "attempt to index field %s of quat (invalid property)", lua_tostring(L, -1));
+  return 0;
 }
 
 int l_lovrQuat__metaindex(lua_State* L) {
@@ -1998,7 +2006,8 @@ static int l_lovrMat4__newindex(lua_State* L) {
   lua_getglobal(L, "tostring");
   lua_pushvalue(L, 2);
   lua_call(L, 1, 1);
-  return luaL_error(L, "attempt to assign property %s of mat4 (invalid property)", lua_tostring(L, -1));
+  luaL_error(L, "attempt to assign property %s of mat4 (invalid property)", lua_tostring(L, -1));
+  return 0;
 }
 
 static int l_lovrMat4__index(lua_State* L) {
@@ -2024,7 +2033,8 @@ static int l_lovrMat4__index(lua_State* L) {
   lua_getglobal(L, "tostring");
   lua_pushvalue(L, 2);
   lua_call(L, 1, 1);
-  return luaL_error(L, "attempt to index field %s of mat4 (invalid property)", lua_tostring(L, -1));
+  luaL_error(L, "attempt to index field %s of mat4 (invalid property)", lua_tostring(L, -1));
+  return 0;
 }
 
 int l_lovrMat4__metaindex(lua_State* L) {

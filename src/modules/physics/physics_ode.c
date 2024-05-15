@@ -45,96 +45,97 @@ struct Joint {
   dJointID id;
 };
 
-static void defaultNearCallback(void* data, dGeomID a, dGeomID b) {
-  lovrWorldCollide((World*) data, dGeomGetData(a), dGeomGetData(b), -1, -1);
-}
-
-static void customNearCallback(void* data, dGeomID a, dGeomID b) {
+static void defaultNearCallback(void* data, dGeomID ga, dGeomID gb) {
   World* world = data;
-  Shape* shapeA = dGeomGetData(a);
-  Shape* shapeB = dGeomGetData(b);
-  Collider* colliderA = shapeA->collider;
-  Collider* colliderB = shapeB->collider;
-  uint32_t i = colliderA->tag;
-  uint32_t j = colliderB->tag;
+  Collider* a = dBodyGetData(dGeomGetBody(ga));
+  Collider* b = dBodyGetData(dGeomGetBody(gb));
+
+  if (!a || !b) {
+    return;
+  }
+
+  uint32_t i = a->tag;
+  uint32_t j = b->tag;
+
   if (i != NO_TAG && j != NO_TAG && !((world->masks[i] & (1 << j)) && (world->masks[j] & (1 << i)))) {
     return;
   }
-  arr_push(&world->overlaps, shapeA);
-  arr_push(&world->overlaps, shapeB);
+
+  float friction = sqrtf(a->friction * b->friction);
+  float restitution = MAX(a->restitution, b->restitution);
+
+  dContact contacts[MAX_CONTACTS];
+  for (int c = 0; c < MAX_CONTACTS; c++) {
+    contacts[c].surface.mode = 0;
+    contacts[c].surface.mu = friction;
+    contacts[c].surface.bounce = restitution;
+
+    if (restitution > 0) {
+      contacts[c].surface.mode |= dContactBounce;
+    }
+  }
+
+  int contactCount = dCollide(ga, gb, MAX_CONTACTS, &contacts[0].geom, sizeof(dContact));
+
+  if (!a->sensor && !b->sensor) {
+    for (int c = 0; c < contactCount; c++) {
+      dJointID joint = dJointCreateContact(world->id, world->contactGroup, &contacts[c]);
+      dJointAttach(joint, a->body, b->body);
+    }
+  }
 }
 
 typedef struct {
-  RaycastCallback callback;
+  CastCallback* callback;
   void* userdata;
   bool shouldStop;
-  uint32_t tag;
 } RaycastData;
 
 static void raycastCallback(void* d, dGeomID a, dGeomID b) {
+  if (a == b) return;
   RaycastData* data = d;
   if (data->shouldStop) return;
-  RaycastCallback callback = data->callback;
-  void* userdata = data->userdata;
   Shape* shape = dGeomGetData(b);
   Collider* collider = dBodyGetData(dGeomGetBody(b));
 
   if (!shape || !collider) {
     return;
-  }
-  if (data->tag != NO_TAG) {
-    Collider* collider = shape->collider;
-    uint32_t i = data->tag;
-    uint32_t j = collider->tag;
-    World* world = collider->world;
-
-    if (j != NO_TAG && !((world->masks[i] & (1 << j)) && (world->masks[j] & (1 << i)))) {
-      return;
-    }
   }
 
   dContact contact[MAX_CONTACTS];
   int count = dCollide(a, b, MAX_CONTACTS, &contact->geom, sizeof(dContact));
   for (int i = 0; i < count; i++) {
-    dContactGeom g = contact[i].geom;
-    data->shouldStop = callback(collider, g.pos, g.normal, 0, userdata);
+    CastResult hit;
+    hit.collider = collider;
+    hit.shape = collider->shape;
+    vec3_init(hit.position, contact[i].geom.pos);
+    vec3_init(hit.normal, contact[i].geom.normal);
+    hit.fraction = 0.f;
+
+    data->shouldStop = data->callback(data->userdata, &hit);
+    if (data->shouldStop) break;
   }
 }
 
 typedef struct {
-  QueryCallback callback;
+  QueryCallback* callback;
   void* userdata;
   bool called;
-  bool shouldStop;
-  uint32_t tag;
 } QueryData;
 
 static void queryCallback(void* d, dGeomID a, dGeomID b) {
   QueryData* data = d;
-  if (data->shouldStop) return;
 
   Shape* shape = dGeomGetData(b);
   Collider* collider = dBodyGetData(dGeomGetBody(b));
   if (!shape || !collider) {
     return;
   }
-  if (shape->collider && data->tag != NO_TAG) {
-    Collider* collider = shape->collider;
-    uint32_t i = data->tag;
-    uint32_t j = collider->tag;
-    World* world = collider->world;
-
-    if (j != NO_TAG && !((world->masks[i] & (1 << j)) && (world->masks[j] & (1 << i)))) {
-      return;
-    }
-  }
 
   dContactGeom contact;
   if (dCollide(a, b, 1 | CONTACTS_UNIMPORTANT, &contact, sizeof(contact))) {
     if (data->callback) {
-      data->shouldStop = data->callback(collider, 0, data->userdata);
-    } else {
-      data->shouldStop = true;
+      data->callback(collider, data->userdata);
     }
     data->called = true;
   }
@@ -200,21 +201,13 @@ World* lovrWorldCreate(WorldInfo* info) {
     world->tags[i] = lovrMalloc(size);
     memcpy(world->tags[i], info->tags[i], size);
   }
-  memset(world->masks, 0xffff, sizeof(world->masks));
+  memset(world->masks, 0xff, sizeof(world->masks));
   return world;
 }
 
 void lovrWorldDestroy(void* ref) {
   World* world = ref;
-  lovrWorldDestroyData(world);
-  arr_free(&world->overlaps);
-  for (uint32_t i = 0; i < MAX_TAGS && world->tags[i]; i++) {
-    lovrFree(world->tags[i]);
-  }
-  lovrFree(world);
-}
 
-void lovrWorldDestroyData(World* world) {
   while (world->head) {
     Collider* next = world->head->next;
     lovrColliderDestroyData(world->head);
@@ -235,6 +228,12 @@ void lovrWorldDestroyData(World* world) {
     dWorldDestroy(world->id);
     world->id = NULL;
   }
+
+  arr_free(&world->overlaps);
+  for (uint32_t i = 0; i < MAX_TAGS && world->tags[i]; i++) {
+    lovrFree(world->tags[i]);
+  }
+  lovrFree(world);
 }
 
 uint32_t lovrWorldGetColliderCount(World* world) {
@@ -259,12 +258,8 @@ Joint* lovrWorldGetJoints(World* world, Joint* joint) {
   return NULL;
 }
 
-void lovrWorldUpdate(World* world, float dt, CollisionResolver resolver, void* userdata) {
-  if (resolver) {
-    resolver(world, userdata);
-  } else {
-    dSpaceCollide(world->space, world, defaultNearCallback);
-  }
+void lovrWorldUpdate(World* world, float dt) {
+  dSpaceCollide(world->space, world, defaultNearCallback);
 
   if (dt > 0) {
     dWorldQuickStep(world->id, dt);
@@ -281,99 +276,33 @@ void lovrWorldSetStepCount(World* world, int iterations) {
   dWorldSetQuickStepNumIterations(world->id, iterations);
 }
 
-void lovrWorldComputeOverlaps(World* world) {
-  arr_clear(&world->overlaps);
-  dSpaceCollide(world->space, world, customNearCallback);
+bool lovrWorldRaycast(World* world, float start[3], float end[3], uint32_t filter, CastCallback* callback, void* userdata) {
+  if (callback) {
+    RaycastData data = { .callback = callback, .userdata = userdata, .shouldStop = false };
+    float dx = start[0] - end[0];
+    float dy = start[1] - end[1];
+    float dz = start[2] - end[2];
+    float length = sqrtf(dx * dx + dy * dy + dz * dz);
+    dGeomID ray = dCreateRay(world->space, length);
+    dGeomRaySet(ray, start[0], start[1], start[2], end[0], end[1], end[2]);
+    dSpaceCollide2(ray, (dGeomID) world->space, &data, raycastCallback);
+    dGeomDestroy(ray);
+    return true;
+  }
+
+  return false;
 }
 
-int lovrWorldGetNextOverlap(World* world, Shape** a, Shape** b) {
-  if (world->overlaps.length == 0) {
-    *a = *b = NULL;
-    return 0;
-  }
-
-  *a = arr_pop(&world->overlaps);
-  *b = arr_pop(&world->overlaps);
-  return 1;
+bool lovrWorldShapecast(World* world, Shape* shape, float pose[7], float scale, float end[3], uint32_t filter, CastCallback* callback, void* userdata) {
+  return false;
 }
 
-int lovrWorldCollide(World* world, Shape* a, Shape* b, float friction, float restitution) {
-  if (!a || !b) {
-    return false;
-  }
-
-  Collider* colliderA = a->collider;
-  Collider* colliderB = b->collider;
-  uint32_t i = colliderA->tag;
-  uint32_t j = colliderB->tag;
-
-  if (i != NO_TAG && j != NO_TAG && !((world->masks[i] & (1 << j)) && (world->masks[j] & (1 << i)))) {
-    return false;
-  }
-
-  if (friction < 0.f) {
-    friction = sqrtf(colliderA->friction * colliderB->friction);
-  }
-
-  if (restitution < 0.f) {
-    restitution = MAX(colliderA->restitution, colliderB->restitution);
-  }
-
-  dContact contacts[MAX_CONTACTS];
-  for (int c = 0; c < MAX_CONTACTS; c++) {
-    contacts[c].surface.mode = 0;
-    contacts[c].surface.mu = friction;
-    contacts[c].surface.bounce = restitution;
-
-    if (restitution > 0) {
-      contacts[c].surface.mode |= dContactBounce;
-    }
-  }
-
-  int contactCount = dCollide(a->id, b->id, MAX_CONTACTS, &contacts[0].geom, sizeof(dContact));
-
-  if (!colliderA->sensor && !colliderB->sensor) {
-    for (int c = 0; c < contactCount; c++) {
-      dJointID joint = dJointCreateContact(world->id, world->contactGroup, &contacts[c]);
-      dJointAttach(joint, colliderA->body, colliderB->body);
-    }
-  }
-
-  return contactCount;
+bool lovrWorldCollideShape(World* world, Shape* shape, float pose[7], float scale, uint32_t filter, CollideCallback* callback, void* userdata) {
+  return false;
 }
 
-void lovrWorldGetContacts(World* world, Shape* a, Shape* b, Contact contacts[MAX_CONTACTS], uint32_t* count) {
-  dContactGeom info[MAX_CONTACTS];
-  int c = *count = dCollide(a->id, b->id, MAX_CONTACTS, info, sizeof(info[0]));
-  for (int i = 0; i < c; i++) {
-    contacts[i] = (Contact) {
-      .x = info[i].pos[0],
-      .y = info[i].pos[1],
-      .z = info[i].pos[2],
-      .nx = info[i].normal[0],
-      .ny = info[i].normal[1],
-      .nz = info[i].normal[2],
-      .depth = info[i].depth
-    };
-  }
-}
-
-void lovrWorldRaycast(World* world, float start[3], float end[3], const char* tag, RaycastCallback callback, void* userdata) {
-  RaycastData data = { .callback = callback, .userdata = userdata, .shouldStop = false, .tag = findTag(world, tag) };
-  float dx = end[0] - start[0];
-  float dy = end[1] - start[1];
-  float dz = end[2] - start[2];
-  float length = sqrtf(dx * dx + dy * dy + dz * dz);
-  dGeomID ray = dCreateRay(world->space, length);
-  dGeomRaySet(ray, start[0], start[1], start[2], dx, dy, dz);
-  dSpaceCollide2(ray, (dGeomID) world->space, &data, raycastCallback);
-  dGeomDestroy(ray);
-}
-
-bool lovrWorldQueryBox(World* world, float position[3], float size[3], const char* tag, QueryCallback callback, void* userdata) {
-  QueryData data = {
-    .callback = callback, .userdata = userdata, .called = false,.shouldStop = false, .tag = findTag(world, tag)
-  };
+bool lovrWorldQueryBox(World* world, float position[3], float size[3], uint32_t filter, QueryCallback* callback, void* userdata) {
+  QueryData data = { .callback = callback, .userdata = userdata, .called = false };
   dGeomID box = dCreateBox(world->space, fabsf(size[0]), fabsf(size[1]), fabsf(size[2]));
   dGeomSetPosition(box, position[0], position[1], position[2]);
   dSpaceCollide2(box, (dGeomID) world->space, &data, queryCallback);
@@ -381,10 +310,8 @@ bool lovrWorldQueryBox(World* world, float position[3], float size[3], const cha
   return data.called;
 }
 
-bool lovrWorldQuerySphere(World* world, float position[3], float radius, const char* tag, QueryCallback callback, void* userdata) {
-  QueryData data = {
-    .callback = callback, .userdata = userdata, .called = false, .shouldStop = false, .tag = findTag(world, tag)
-  };
+bool lovrWorldQuerySphere(World* world, float position[3], float radius, uint32_t filter, QueryCallback* callback, void* userdata) {
+  QueryData data = { .callback = callback, .userdata = userdata, .called = false };
   dGeomID sphere = dCreateSphere(world->space, fabsf(radius));
   dGeomSetPosition(sphere, position[0], position[1], position[2]);
   dSpaceCollide2(sphere, (dGeomID) world->space, &data, queryCallback);
@@ -448,8 +375,13 @@ void lovrWorldSetSleepingAllowed(World* world, bool allowed) {
   dWorldSetAutoDisableFlag(world->id, allowed);
 }
 
-const char* lovrWorldGetTagName(World* world, uint32_t tag) {
-  return (tag == NO_TAG) ? NULL : world->tags[tag];
+char** lovrWorldGetTags(World* world, uint32_t* count) {
+  *count = 0;
+  return world->tags;
+}
+
+uint32_t lovrWorldGetTagMask(World* world, const char* string, size_t length) {
+  return 0;
 }
 
 void lovrWorldDisableCollisionBetween(World* world, const char* tag1, const char* tag2) {
@@ -489,7 +421,11 @@ bool lovrWorldIsCollisionEnabledBetween(World* world, const char* tag1, const ch
   return (world->masks[i] & (1 << j)) && (world->masks[j] & (1 << i));
 }
 
-Collider* lovrColliderCreate(World* world, Shape* shape, float position[3]) {
+void lovrWorldSetCallbacks(World* world, WorldCallbacks* callbacks) {
+  //
+}
+
+Collider* lovrColliderCreate(World* world, float position[3], Shape* shape) {
   Collider* collider = lovrCalloc(sizeof(Collider));
   collider->ref = 1;
   collider->body = dBodyCreate(world->id);
@@ -561,19 +497,11 @@ void lovrColliderSetEnabled(Collider* collider, bool enable) {
   //
 }
 
-void lovrColliderInitInertia(Collider* collider, Shape* shape) {
-  // compute inertia matrix for default density
-  const float density = 1.0f;
-  float centerOfMass[3], mass, inertia[6];
-  lovrShapeGetMass(shape, density, centerOfMass, &mass, inertia);
-  lovrColliderSetMassData(collider, centerOfMass, mass, inertia);
-}
-
 World* lovrColliderGetWorld(Collider* collider) {
   return collider->world;
 }
 
-Shape* lovrColliderGetShape(Collider* collider, uint32_t child) {
+Shape* lovrColliderGetShape(Collider* collider) {
   return collider->shape;
 }
 
@@ -600,25 +528,6 @@ void lovrColliderSetShape(Collider* collider, Shape* shape) {
   }
 }
 
-void lovrColliderGetShapeOffset(Collider* collider, float position[3], float orientation[4]) {
-  const dReal* p = dGeomGetOffsetPosition(collider->shape->id);
-  position[0] = p[0];
-  position[1] = p[1];
-  position[2] = p[2];
-  dReal q[4];
-  dGeomGetOffsetQuaternion(collider->shape->id, q);
-  orientation[0] = q[1];
-  orientation[1] = q[2];
-  orientation[2] = q[3];
-  orientation[3] = q[0];
-}
-
-void lovrColliderSetShapeOffset(Collider* collider, float position[3], float orientation[4]) {
-  dGeomSetOffsetPosition(collider->shape->id, position[0], position[1], position[2]);
-  dReal q[4] = { orientation[3], orientation[0], orientation[1], orientation[2] };
-  dGeomSetOffsetQuaternion(collider->shape->id, q);
-}
-
 Joint* lovrColliderGetJoints(Collider* collider, Joint* joint) {
   if (joint == NULL) {
     return collider->joints.length ? NULL : collider->joints.data[0];
@@ -634,17 +543,16 @@ Joint* lovrColliderGetJoints(Collider* collider, Joint* joint) {
 }
 
 const char* lovrColliderGetTag(Collider* collider) {
-  return lovrWorldGetTagName(collider->world, collider->tag);
+  return collider->tag == NO_TAG ? NULL : collider->world->tags[collider->tag];
 }
 
-bool lovrColliderSetTag(Collider* collider, const char* tag) {
+void lovrColliderSetTag(Collider* collider, const char* tag) {
   if (!tag) {
     collider->tag = NO_TAG;
-    return true;
+    return;
   }
 
   collider->tag = findTag(collider->world, tag);
-  return collider->tag != NO_TAG;
 }
 
 float lovrColliderGetFriction(Collider* collider) {
@@ -725,35 +633,39 @@ float lovrColliderGetMass(Collider* collider) {
   return m.mass;
 }
 
-void lovrColliderSetMass(Collider* collider, float mass) {
+void lovrColliderSetMass(Collider* collider, float* mass) {
   dMass m;
   dBodyGetMass(collider->body, &m);
-  dMassAdjust(&m, mass);
+  dMassAdjust(&m, *mass);
   dBodySetMass(collider->body, &m);
 }
 
-void lovrColliderGetMassData(Collider* collider, float centerOfMass[3], float* mass, float inertia[6]) {
-  dMass m;
-  dBodyGetMass(collider->body, &m);
-  vec3_set(centerOfMass, m.c[0], m.c[1], m.c[2]);
-  *mass = m.mass;
-
-  // Diagonal
-  inertia[0] = m.I[0];
-  inertia[1] = m.I[5];
-  inertia[2] = m.I[10];
-
-  // Lower triangular
-  inertia[3] = m.I[4];
-  inertia[4] = m.I[8];
-  inertia[5] = m.I[9];
+void lovrColliderGetInertia(Collider* collider, float diagonal[3], float rotation[4]) {
+  //
 }
 
-void lovrColliderSetMassData(Collider* collider, float centerOfMass[3], float mass, float inertia[6]) {
-  dMass m;
-  dBodyGetMass(collider->body, &m);
-  dMassSetParameters(&m, mass, centerOfMass[0], centerOfMass[1], centerOfMass[2], inertia[0], inertia[1], inertia[2], inertia[3], inertia[4], inertia[5]);
-  dBodySetMass(collider->body, &m);
+void lovrColliderSetInertia(Collider* collider, float diagonal[3], float rotation[4]) {
+  //
+}
+
+void lovrColliderGetCenterOfMass(Collider* collider, float center[3]) {
+  //
+}
+
+void lovrColliderSetCenterOfMass(Collider* collider, float center[3]) {
+  //
+}
+
+void lovrColliderResetMassData(Collider* collider) {
+  //
+}
+
+void lovrColliderGetEnabledAxes(Collider* collider, bool translation[3], bool rotation[3]) {
+  lovrThrow("NYI");
+}
+
+void lovrColliderSetEnabledAxes(Collider* collider, bool translation[3], bool rotation[3]) {
+  lovrThrow("NYI");
 }
 
 void lovrColliderGetPosition(Collider* collider, float position[3]) {
@@ -773,6 +685,14 @@ void lovrColliderGetOrientation(Collider* collider, float orientation[4]) {
 void lovrColliderSetOrientation(Collider* collider, float* orientation) {
   dReal q[4] = { orientation[3], orientation[0], orientation[1], orientation[2] };
   dBodySetQuaternion(collider->body, q);
+}
+
+void lovrColliderGetRawPosition(Collider* collider, float position[3]) {
+  lovrColliderGetPosition(collider, position);
+}
+
+void lovrColliderGetRawOrientation(Collider* collider, float orientation[4]) {
+  lovrColliderGetOrientation(collider, orientation);
 }
 
 void lovrColliderGetLinearVelocity(Collider* collider, float velocity[3]) {
@@ -848,6 +768,10 @@ void lovrColliderGetLocalCenter(Collider* collider, float center[3]) {
   vec3_set(center, m.c[0], m.c[1], m.c[2]);
 }
 
+void lovrColliderGetWorldCenter(Collider* collider, float center[3]) {
+  //
+}
+
 void lovrColliderGetLocalPoint(Collider* collider, float world[3], float local[3]) {
   dReal point[4];
   dBodyGetPosRelPoint(collider->body, world[0], world[1], world[2], point);
@@ -906,100 +830,123 @@ void lovrColliderGetAABB(Collider* collider, float aabb[6]) {
   }
 }
 
-void lovrShapeDestroy(void* ref) {
-  Shape* shape = ref;
-  lovrShapeDestroyData(shape);
-  lovrFree(shape);
+Collider* lovrContactGetColliderA(Contact* contact) {
+  return NULL;
 }
 
-void lovrShapeDestroyData(Shape* shape) {
-  if (shape->id) {
-    if (shape->type == SHAPE_MESH) {
-      dTriMeshDataID dataID = dGeomTriMeshGetData(shape->id);
-      dGeomTriMeshDataDestroy(dataID);
-      lovrFree(shape->vertices);
-      lovrFree(shape->indices);
-    } else if (shape->type == SHAPE_TERRAIN) {
-      dHeightfieldDataID dataID = dGeomHeightfieldGetHeightfieldData(shape->id);
-      dGeomHeightfieldDataDestroy(dataID);
-    }
-    dGeomDestroy(shape->id);
-    shape->id = NULL;
+Collider* lovrContactGetColliderB(Contact* contact) {
+  return NULL;
+}
+
+Shape* lovrContactGetShapeA(Contact* contact) {
+  return NULL;
+}
+
+Shape* lovrContactGetShapeB(Contact* contact) {
+  return NULL;
+}
+
+void lovrContactGetNormal(Contact* contact, float normal[3]) {
+  //
+}
+
+float lovrContactGetPenetration(Contact* contact) {
+  return 0.f;
+}
+
+uint32_t lovrContactGetPointCount(Contact* contact) {
+  return 0;
+}
+
+void lovrContactGetPoint(Contact* contact, uint32_t index, float point[3]) {
+  //
+}
+
+float lovrContactGetFriction(Contact* contact) {
+  return 0.f;
+}
+
+void lovrContactSetFriction(Contact* contact, float friction) {
+  //
+}
+
+float lovrContactGetRestitution(Contact* contact) {
+  return 0.f;
+}
+
+void lovrContactSetRestitution(Contact* contact, float restitution) {
+  //
+}
+
+bool lovrContactIsEnabled(Contact* contact) {
+  return true;
+}
+
+void lovrContactSetEnabled(Contact* contact, bool enable) {
+  //
+}
+
+void lovrContactGetSurfaceVelocity(Contact* contact, float velocity[3]) {
+  //
+}
+
+void lovrContactSetSurfaceVelocity(Contact* contact, float velocity[3]) {
+  //
+}
+
+void lovrContactDestroy(void* ref) {
+  //
+}
+
+void lovrShapeDestroy(void* ref) {
+  Shape* shape = ref;
+  if (shape->type == SHAPE_MESH) {
+    dTriMeshDataID dataID = dGeomTriMeshGetData(shape->id);
+    dGeomTriMeshDataDestroy(dataID);
+    lovrFree(shape->vertices);
+    lovrFree(shape->indices);
+  } else if (shape->type == SHAPE_TERRAIN) {
+    dHeightfieldDataID dataID = dGeomHeightfieldGetHeightfieldData(shape->id);
+    dGeomHeightfieldDataDestroy(dataID);
   }
+  dGeomDestroy(shape->id);
+  lovrFree(shape);
 }
 
 ShapeType lovrShapeGetType(Shape* shape) {
   return shape->type;
 }
 
+float lovrShapeGetVolume(Shape* shape) {
+  return 0.f;
+}
+
+float lovrShapeGetDensity(Shape* shape) {
+  return 0.f;
+}
+
+void lovrShapeSetDensity(Shape* shape, float density) {
+  //
+}
+
 Collider* lovrShapeGetCollider(Shape* shape) {
   return shape->collider;
 }
 
-void lovrShapeGetMass(Shape* shape, float density, float centerOfMass[3], float* mass, float inertia[6]) {
-  dMass m;
-  dMassSetZero(&m);
-  switch (shape->type) {
-    case SHAPE_SPHERE: {
-      dMassSetSphere(&m, density, dGeomSphereGetRadius(shape->id));
-      break;
-    }
+float lovrShapeGetMass(Shape* shape) {
+  return 0.f;
+}
 
-    case SHAPE_BOX: {
-      dReal lengths[4];
-      dGeomBoxGetLengths(shape->id, lengths);
-      dMassSetBox(&m, density, lengths[0], lengths[1], lengths[2]);
-      break;
-    }
+void lovrShapeGetInertia(Shape* shape, float diagonal[3], float rotation[4]) {
+  //
+}
 
-    case SHAPE_CAPSULE: {
-      dReal radius, length;
-      dGeomCapsuleGetParams(shape->id, &radius, &length);
-      dMassSetCapsule(&m, density, 3, radius, length);
-      break;
-    }
+void lovrShapeGetCenterOfMass(Shape* shape, float center[3]) {
+  //
+}
 
-    case SHAPE_CYLINDER: {
-      dReal radius, length;
-      dGeomCylinderGetParams(shape->id, &radius, &length);
-      dMassSetCylinder(&m, density, 3, radius, length);
-      break;
-    }
-
-    case SHAPE_MESH: {
-      dMassSetTrimesh(&m, density, shape->id);
-      dGeomSetPosition(shape->id, -m.c[0], -m.c[1], -m.c[2]);
-      dMassTranslate(&m, -m.c[0], -m.c[1], -m.c[2]);
-      break;
-    }
-
-    case SHAPE_TERRAIN: {
-      break;
-    }
-
-    default: break;
-  }
-
-  const dReal* position = dGeomGetOffsetPosition(shape->id);
-  dMassTranslate(&m, position[0], position[1], position[2]);
-  const dReal* rotation = dGeomGetOffsetRotation(shape->id);
-  dMassRotate(&m, rotation);
-
-  centerOfMass[0] = m.c[0];
-  centerOfMass[1] = m.c[1];
-  centerOfMass[2] = m.c[2];
-  *mass = m.mass;
-
-  // Diagonal
-  inertia[0] = m.I[0];
-  inertia[1] = m.I[5];
-  inertia[2] = m.I[10];
-
-  // Lower triangular
-
-  inertia[3] = m.I[4];
-  inertia[4] = m.I[8];
-  inertia[5] = m.I[9];
+void lovrShapeGetMassData(Shape* shape, float* mass, float inertia[9], float center[3]) {
+  //
 }
 
 void lovrShapeGetAABB(Shape* shape, float position[3], float orientation[4], float aabb[6]) {
@@ -1086,6 +1033,22 @@ float lovrCylinderShapeGetLength(CylinderShape* cylinder) {
 
 ConvexShape* lovrConvexShapeCreate(float positions[], uint32_t count) {
   lovrThrow("ODE does not support ConvexShape");
+}
+
+uint32_t lovrConvexShapeGetPointCount(ConvexShape* convex) {
+  return 0;
+}
+
+void lovrConvexShapeGetPoint(ConvexShape* shape, uint32_t index, float point[3]) {
+  //
+}
+
+uint32_t lovrConvexShapeGetFaceCount(ConvexShape* convex) {
+  return 0;
+}
+
+uint32_t lovrConvexShapeGetFace(ConvexShape* shape, uint32_t index, uint32_t* pointIndices, uint32_t capacity) {
+  return 0;
 }
 
 MeshShape* lovrMeshShapeCreate(int vertexCount, float* vertices, int indexCount, dTriIndex* indices) {
@@ -1181,6 +1144,14 @@ Collider* lovrJointGetColliderB(Joint* joint) {
   return bodyB ? dBodyGetData(bodyB) : NULL;
 }
 
+uint32_t lovrJointGetPriority(Joint* joint) {
+  return 0;
+}
+
+void lovrJointSetPriority(Joint* joint, uint32_t priority) {
+  //
+}
+
 bool lovrJointIsEnabled(Joint* joint) {
   return dJointIsEnabled(joint->id);
 }
@@ -1193,6 +1164,22 @@ void lovrJointSetEnabled(Joint* joint, bool enable) {
   }
 }
 
+float lovrJointGetForce(Joint* joint) {
+  return 0.f;
+}
+
+float lovrJointGetTorque(Joint* joint) {
+  return 0.f;
+}
+
+BallJoint* lovrWeldJointCreate(Collider* a, Collider* b, float anchor[3]) {
+  lovrThrow("NYI");
+}
+
+void lovrWeldJointGetAnchors(WeldJoint* joint, float anchor1[3], float anchor2[3]) {
+  //
+}
+
 BallJoint* lovrBallJointCreate(Collider* a, Collider* b, float anchor[3]) {
   lovrCheck(a->world == b->world, "Joint bodies must exist in same World");
   BallJoint* joint = lovrCalloc(sizeof(BallJoint));
@@ -1201,7 +1188,7 @@ BallJoint* lovrBallJointCreate(Collider* a, Collider* b, float anchor[3]) {
   joint->id = dJointCreateBall(a->world->id, 0);
   dJointSetData(joint->id, joint);
   dJointAttach(joint->id, a->body, b->body);
-  lovrBallJointSetAnchor(joint, anchor);
+  dJointSetBallAnchor(joint->id, anchor[0], anchor[1], anchor[2]);
   lovrRetain(joint);
   return joint;
 }
@@ -1218,24 +1205,24 @@ void lovrBallJointGetAnchors(BallJoint* joint, float anchor1[3], float anchor2[3
   anchor2[2] = anchor[2];
 }
 
-void lovrBallJointSetAnchor(BallJoint* joint, float anchor[3]) {
-  dJointSetBallAnchor(joint->id, anchor[0], anchor[1], anchor[2]);
+ConeJoint* lovrConeJointCreate(Collider* a, Collider* b, float anchor[3], float axis[3]) {
+  lovrThrow("NYI");
 }
 
-float lovrBallJointGetResponseTime(Joint* joint) {
-  return dJointGetBallParam(joint->id, dParamCFM);
+void lovrConeJointGetAnchors(ConeJoint* joint, float anchor1[3], float anchor2[3]) {
+  //
 }
 
-void lovrBallJointSetResponseTime(Joint* joint, float responseTime) {
-  dJointSetBallParam(joint->id, dParamCFM, responseTime);
+void lovrConeJointGetAxis(ConeJoint* joint, float axis[3]) {
+  //
 }
 
-float lovrBallJointGetTightness(Joint* joint) {
-  return dJointGetBallParam(joint->id, dParamERP);
+float lovrConeJointGetLimit(ConeJoint* joint) {
+  return 0.f;
 }
 
-void lovrBallJointSetTightness(Joint* joint, float tightness) {
-  dJointSetBallParam(joint->id, dParamERP, tightness);
+void lovrConeJointSetLimit(ConeJoint* joint, float angle) {
+  //
 }
 
 DistanceJoint* lovrDistanceJointCreate(Collider* a, Collider* b, float anchor1[3], float anchor2[3]) {
@@ -1246,7 +1233,8 @@ DistanceJoint* lovrDistanceJointCreate(Collider* a, Collider* b, float anchor1[3
   joint->id = dJointCreateDBall(a->world->id, 0);
   dJointSetData(joint->id, joint);
   dJointAttach(joint->id, a->body, b->body);
-  lovrDistanceJointSetAnchors(joint, anchor1, anchor2);
+  dJointSetDBallAnchor1(joint->id, anchor1[0], anchor1[1], anchor1[2]);
+  dJointSetDBallAnchor2(joint->id, anchor2[0], anchor2[1], anchor2[2]);
   lovrRetain(joint);
   return joint;
 }
@@ -1263,33 +1251,21 @@ void lovrDistanceJointGetAnchors(DistanceJoint* joint, float anchor1[3], float a
   anchor2[2] = anchor[2];
 }
 
-void lovrDistanceJointSetAnchors(DistanceJoint* joint, float anchor1[3], float anchor2[3]) {
-  dJointSetDBallAnchor1(joint->id, anchor1[0], anchor1[1], anchor1[2]);
-  dJointSetDBallAnchor2(joint->id, anchor2[0], anchor2[1], anchor2[2]);
+void lovrDistanceJointGetLimits(DistanceJoint* joint, float* min, float* max) {
+  *min = dJointGetDBallDistance(joint->id);
+  *max = dJointGetDBallDistance(joint->id);
 }
 
-float lovrDistanceJointGetDistance(DistanceJoint* joint) {
-  return dJointGetDBallDistance(joint->id);
+void lovrDistanceJointSetLimits(DistanceJoint* joint, float min, float max) {
+  dJointSetDBallDistance(joint->id, max);
 }
 
-void lovrDistanceJointSetDistance(DistanceJoint* joint, float distance) {
-  dJointSetDBallDistance(joint->id, distance);
+void lovrDistanceJointGetSpring(DistanceJoint* joint, float* frequency, float* damping) {
+  // TODO
 }
 
-float lovrDistanceJointGetResponseTime(Joint* joint) {
-  return dJointGetDBallParam(joint->id, dParamCFM);
-}
-
-void lovrDistanceJointSetResponseTime(Joint* joint, float responseTime) {
-  dJointSetDBallParam(joint->id, dParamCFM, responseTime);
-}
-
-float lovrDistanceJointGetTightness(Joint* joint) {
-  return dJointGetDBallParam(joint->id, dParamERP);
-}
-
-void lovrDistanceJointSetTightness(Joint* joint, float tightness) {
-  dJointSetDBallParam(joint->id, dParamERP, tightness);
+void lovrDistanceJointSetSpring(DistanceJoint* joint, float frequency, float damping) {
+  // TODO
 }
 
 HingeJoint* lovrHingeJointCreate(Collider* a, Collider* b, float anchor[3], float axis[3]) {
@@ -1300,8 +1276,8 @@ HingeJoint* lovrHingeJointCreate(Collider* a, Collider* b, float anchor[3], floa
   joint->id = dJointCreateHinge(a->world->id, 0);
   dJointSetData(joint->id, joint);
   dJointAttach(joint->id, a->body, b->body);
-  lovrHingeJointSetAnchor(joint, anchor);
-  lovrHingeJointSetAxis(joint, axis);
+  dJointSetHingeAnchor(joint->id, anchor[0], anchor[1], anchor[2]);
+  dJointSetHingeAxis(joint->id, axis[0], axis[1], axis[2]);
   lovrRetain(joint);
   return joint;
 }
@@ -1318,10 +1294,6 @@ void lovrHingeJointGetAnchors(HingeJoint* joint, float anchor1[3], float anchor2
   anchor2[2] = anchor[2];
 }
 
-void lovrHingeJointSetAnchor(HingeJoint* joint, float anchor[3]) {
-  dJointSetHingeAnchor(joint->id, anchor[0], anchor[1], anchor[2]);
-}
-
 void lovrHingeJointGetAxis(HingeJoint* joint, float axis[3]) {
   dReal daxis[4];
   dJointGetHingeAxis(joint->id, daxis);
@@ -1330,28 +1302,62 @@ void lovrHingeJointGetAxis(HingeJoint* joint, float axis[3]) {
   axis[2] = daxis[2];
 }
 
-void lovrHingeJointSetAxis(HingeJoint* joint, float axis[3]) {
-  dJointSetHingeAxis(joint->id, axis[0], axis[1], axis[2]);
-}
-
 float lovrHingeJointGetAngle(HingeJoint* joint) {
   return dJointGetHingeAngle(joint->id);
 }
 
-float lovrHingeJointGetLowerLimit(HingeJoint* joint) {
-  return dJointGetHingeParam(joint->id, dParamLoStop);
+void lovrHingeJointGetLimits(HingeJoint* joint, float* min, float* max) {
+  *min = dJointGetHingeParam(joint->id, dParamLoStop);
+  *max = dJointGetHingeParam(joint->id, dParamHiStop);
 }
 
-void lovrHingeJointSetLowerLimit(HingeJoint* joint, float limit) {
-  dJointSetHingeParam(joint->id, dParamLoStop, limit);
+void lovrHingeJointSetLimits(HingeJoint* joint, float min, float max) {
+  dJointSetHingeParam(joint->id, dParamLoStop, min);
+  dJointSetHingeParam(joint->id, dParamHiStop, max);
 }
 
-float lovrHingeJointGetUpperLimit(HingeJoint* joint) {
-  return dJointGetHingeParam(joint->id, dParamHiStop);
+float lovrHingeJointGetFriction(HingeJoint* joint) {
+  return 0.f;
 }
 
-void lovrHingeJointSetUpperLimit(HingeJoint* joint, float limit) {
-  dJointSetHingeParam(joint->id, dParamHiStop, limit);
+void lovrHingeJointSetFriction(HingeJoint* joint, float friction) {
+  //
+}
+
+void lovrHingeJointGetMotorTarget(HingeJoint* joint, TargetType* type, float* value) {
+  //
+}
+
+void lovrHingeJointSetMotorTarget(HingeJoint* joint, TargetType type, float value) {
+  //
+}
+
+void lovrHingeJointGetMotorSpring(HingeJoint* joint, float* frequency, float* damping) {
+  //
+}
+
+void lovrHingeJointSetMotorSpring(HingeJoint* joint, float frequency, float damping) {
+  //
+}
+
+void lovrHingeJointGetMaxMotorForce(HingeJoint* joint, float* positive, float* negative) {
+  //
+}
+
+void lovrHingeJointSetMaxMotorForce(HingeJoint* joint, float positive, float negative) {
+  //
+}
+
+float lovrHingeJointGetMotorForce(HingeJoint* joint) {
+  return 0.f;
+}
+
+void lovrHingeJointGetSpring(HingeJoint* joint, float* frequency, float* damping) {
+  //
+}
+
+void lovrHingeJointSetSpring(HingeJoint* joint, float frequency, float damping) {
+  //
 }
 
 SliderJoint* lovrSliderJointCreate(Collider* a, Collider* b, float axis[3]) {
@@ -1362,9 +1368,13 @@ SliderJoint* lovrSliderJointCreate(Collider* a, Collider* b, float axis[3]) {
   joint->id = dJointCreateSlider(a->world->id, 0);
   dJointSetData(joint->id, joint);
   dJointAttach(joint->id, a->body, b->body);
-  lovrSliderJointSetAxis(joint, axis);
+  dJointSetSliderAxis(joint->id, axis[0], axis[1], axis[2]);
   lovrRetain(joint);
   return joint;
+}
+
+void lovrSliderJointGetAnchors(SliderJoint* joint, float anchor1[3], float anchor2[3]) {
+  //
 }
 
 void lovrSliderJointGetAxis(SliderJoint* joint, float axis[3]) {
@@ -1375,28 +1385,62 @@ void lovrSliderJointGetAxis(SliderJoint* joint, float axis[3]) {
   axis[2] = daxis[2];
 }
 
-void lovrSliderJointSetAxis(SliderJoint* joint, float axis[3]) {
-  dJointSetSliderAxis(joint->id, axis[0], axis[1], axis[2]);
-}
-
 float lovrSliderJointGetPosition(SliderJoint* joint) {
   return dJointGetSliderPosition(joint->id);
 }
 
-float lovrSliderJointGetLowerLimit(SliderJoint* joint) {
-  return dJointGetSliderParam(joint->id, dParamLoStop);
+void lovrSliderJointGetLimits(SliderJoint* joint, float* min, float* max) {
+  *min = dJointGetSliderParam(joint->id, dParamLoStop);
+  *min = dJointGetSliderParam(joint->id, dParamHiStop);
 }
 
-void lovrSliderJointSetLowerLimit(SliderJoint* joint, float limit) {
-  dJointSetSliderParam(joint->id, dParamLoStop, limit);
+void lovrSliderJointSetLimits(SliderJoint* joint, float min, float max) {
+  dJointSetSliderParam(joint->id, dParamLoStop, min);
+  dJointSetSliderParam(joint->id, dParamHiStop, max);
 }
 
-float lovrSliderJointGetUpperLimit(SliderJoint* joint) {
-  return dJointGetSliderParam(joint->id, dParamHiStop);
+float lovrSliderJointGetFriction(SliderJoint* joint) {
+  return 0.f;
 }
 
-void lovrSliderJointSetUpperLimit(SliderJoint* joint, float limit) {
-  dJointSetSliderParam(joint->id, dParamHiStop, limit);
+void lovrSliderJointSetFriction(SliderJoint* joint, float friction) {
+  //
+}
+
+void lovrSliderJointGetMotorTarget(SliderJoint* joint, TargetType* type, float* value) {
+  //
+}
+
+void lovrSliderJointSetMotorTarget(SliderJoint* joint, TargetType type, float value) {
+  //
+}
+
+void lovrSliderJointGetMotorSpring(SliderJoint* joint, float* frequency, float* damping) {
+  //
+}
+
+void lovrSliderJointSetMotorSpring(SliderJoint* joint, float frequency, float damping) {
+  //
+}
+
+void lovrSliderJointGetMaxMotorForce(SliderJoint* joint, float* positive, float* negative) {
+  //
+}
+
+void lovrSliderJointSetMaxMotorForce(SliderJoint* joint, float positive, float negative) {
+  //
+}
+
+float lovrSliderJointGetMotorForce(SliderJoint* joint) {
+  return 0.f;
+}
+
+void lovrSliderJointGetSpring(SliderJoint* joint, float* frequency, float* damping) {
+  //
+}
+
+void lovrSliderJointSetSpring(SliderJoint* joint, float frequency, float damping) {
+  //
 }
 
 #include "myext/physics.c"

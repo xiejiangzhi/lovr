@@ -8,8 +8,8 @@
 
 void luax_pushshape(lua_State* L, Shape* shape) {
   switch (lovrShapeGetType(shape)) {
-    case SHAPE_SPHERE: luax_pushtype(L, SphereShape, shape); break;
     case SHAPE_BOX: luax_pushtype(L, BoxShape, shape); break;
+    case SHAPE_SPHERE: luax_pushtype(L, SphereShape, shape); break;
     case SHAPE_CAPSULE: luax_pushtype(L, CapsuleShape, shape); break;
     case SHAPE_CYLINDER: luax_pushtype(L, CylinderShape, shape); break;
     case SHAPE_CONVEX: luax_pushtype(L, ConvexShape, shape); break;
@@ -25,8 +25,8 @@ Shape* luax_checkshape(lua_State* L, int index) {
 
   if (p) {
     const uint64_t hashes[] = {
-      hash64("SphereShape", strlen("SphereShape")),
       hash64("BoxShape", strlen("BoxShape")),
+      hash64("SphereShape", strlen("SphereShape")),
       hash64("CapsuleShape", strlen("CapsuleShape")),
       hash64("CylinderShape", strlen("CylinderShape")),
       hash64("ConvexShape", strlen("ConvexShape")),
@@ -46,15 +46,15 @@ Shape* luax_checkshape(lua_State* L, int index) {
   return NULL;
 }
 
-Shape* luax_newsphereshape(lua_State* L, int index) {
-  float radius = luax_optfloat(L, index, 1.f);
-  return lovrSphereShapeCreate(radius);
-}
-
 Shape* luax_newboxshape(lua_State* L, int index) {
   float size[3];
   luax_readscale(L, index, size, 3, NULL);
   return lovrBoxShapeCreate(size);
+}
+
+Shape* luax_newsphereshape(lua_State* L, int index) {
+  float radius = luax_optfloat(L, index, 1.f);
+  return lovrSphereShapeCreate(radius);
 }
 
 Shape* luax_newcapsuleshape(lua_State* L, int index) {
@@ -108,14 +108,14 @@ Shape* luax_newterrainshape(lua_State* L, int index) {
   float scaleXZ = luax_checkfloat(L, index++);
   int type = lua_type(L, index);
   if (type == LUA_TNIL || type == LUA_TNONE) {
-    float vertices[4] = { 0.f };
-    return lovrTerrainShapeCreate(vertices, 2, scaleXZ, 1.f);
+    float vertices[9] = { 0.f };
+    return lovrTerrainShapeCreate(vertices, 3, scaleXZ, 1.f);
   } else if (type == LUA_TFUNCTION) {
     uint32_t n = luax_optu32(L, index + 1, 100);
     float* vertices = lovrMalloc(sizeof(float) * n * n);
     for (uint32_t i = 0; i < n * n; i++) {
-      float x = scaleXZ * (-.5f + ((float) (i % n)) / n);
-      float z = scaleXZ * (-.5f + ((float) (i / n)) / n);
+      float x = scaleXZ * (-.5f + ((float) (i % n)) / (n - 1));
+      float z = scaleXZ * (-.5f + ((float) (i / n)) / (n - 1));
       lua_pushvalue(L, index);
       lua_pushnumber(L, x);
       lua_pushnumber(L, z);
@@ -144,7 +144,7 @@ Shape* luax_newterrainshape(lua_State* L, int index) {
     lovrFree(vertices);
     return shape;
   } else {
-    luax_typeerror(L, index, "Image, number, or function");
+    luax_typeerror(L, index, "nil, Image, or function");
     return NULL;
   }
 }
@@ -228,68 +228,80 @@ Shape* luax_newcompoundshape(lua_State* L, int index) {
   return shape;
 }
 
-static int l_lovrShapeDestroy(lua_State* L) {
-  Shape* shape = luax_checkshape(L, 1);
-  lovrShapeDestroyData(shape);
-  return 0;
-}
-
 static int l_lovrShapeGetType(lua_State* L) {
   Shape* shape = luax_checkshape(L, 1);
   luax_pushenum(L, ShapeType, lovrShapeGetType(shape));
   return 1;
 }
 
-static void luax_pushshapestash(lua_State* L) {
-  lua_getfield(L, LUA_REGISTRYINDEX, "_lovrshapestash");
-
-  if (lua_isnil(L, -1)) {
-    lua_newtable(L);
-    lua_replace(L, -2);
-
-    // metatable
-    lua_newtable(L);
-    lua_pushliteral(L, "k");
-    lua_setfield(L, -2, "__mode");
-    lua_setmetatable(L, -2);
-
-    lua_pushvalue(L, -1);
-    lua_setfield(L, LUA_REGISTRYINDEX, "_lovrshapestash");
-  }
-}
-
 static int l_lovrShapeGetUserData(lua_State* L) {
-  luax_checktype(L, 1, Shape);
-  luax_pushshapestash(L);
+  luax_checkshape(L, 1);
+  luax_pushstash(L, "lovr.shape.userdata");
   lua_pushvalue(L, 1);
   lua_rawget(L, -2);
   return 1;
 }
 
 static int l_lovrShapeSetUserData(lua_State* L) {
-  luax_checktype(L, 1, Shape);
-  luax_pushshapestash(L);
+  luax_checkshape(L, 1);
+  lua_settop(L, 2);
+  luax_pushstash(L, "lovr.shape.userdata");
   lua_pushvalue(L, 1);
   lua_pushvalue(L, 2);
   lua_rawset(L, -3);
   return 0;
 }
 
-static int l_lovrShapeGetMass(lua_State* L) {
+static int l_lovrShapeGetVolume(lua_State* L) {
+  Shape* shape = luax_checkshape(L, 1);
+  float volume = lovrShapeGetVolume(shape);
+  lua_pushnumber(L, volume);
+  return 1;
+}
+
+static int l_lovrShapeGetDensity(lua_State* L) {
+  Shape* shape = luax_checkshape(L, 1);
+  float density = lovrShapeGetDensity(shape);
+  lua_pushnumber(L, density);
+  return 1;
+}
+
+static int l_lovrShapeSetDensity(lua_State* L) {
   Shape* shape = luax_checkshape(L, 1);
   float density = luax_checkfloat(L, 2);
-  float centerOfMass[3], mass, inertia[6];
-  lovrShapeGetMass(shape, density, centerOfMass, &mass, inertia);
-  lua_pushnumber(L, centerOfMass[0]);
-  lua_pushnumber(L, centerOfMass[1]);
-  lua_pushnumber(L, centerOfMass[2]);
+  lovrShapeSetDensity(shape, density);
+  return 0;
+}
+
+static int l_lovrShapeGetMass(lua_State* L) {
+  Shape* shape = luax_checkshape(L, 1);
+  float mass = lovrShapeGetMass(shape);
   lua_pushnumber(L, mass);
-  lua_newtable(L);
-  for (int i = 0; i < 6; i++) {
-    lua_pushnumber(L, inertia[i]);
-    lua_rawseti(L, -2, i + 1);
-  }
-  return 5;
+  return 1;
+}
+
+static int l_lovrShapeGetInertia(lua_State* L) {
+  Shape* shape = luax_checkshape(L, 1);
+  float diagonal[3], rotation[4];
+  lovrShapeGetInertia(shape, diagonal, rotation);
+  lua_pushnumber(L, diagonal[0]);
+  lua_pushnumber(L, diagonal[1]);
+  lua_pushnumber(L, diagonal[2]);
+  lua_pushnumber(L, rotation[0]);
+  lua_pushnumber(L, rotation[1]);
+  lua_pushnumber(L, rotation[2]);
+  lua_pushnumber(L, rotation[3]);
+  return 7;
+}
+
+static int l_lovrShapeGetCenterOfMass(lua_State* L) {
+  Shape* shape = luax_checkshape(L, 1);
+  float center[3];
+  lovrShapeGetCenterOfMass(shape, center);
+  lua_pushnumber(L, center[0]);
+  lua_pushnumber(L, center[1]);
+  lua_pushnumber(L, center[2]);
+  return 3;
 }
 
 static int l_lovrShapeGetAABB(lua_State* L) {
@@ -309,28 +321,19 @@ static int l_lovrShapeGetAABB(lua_State* L) {
   return 6;
 }
 
-#include "myext/l_physics_shape.c"
+// #include "myext/l_physics_shape.c"
 
 #define lovrShape \
-  { "destroy", l_lovrShapeDestroy }, \
   { "getType", l_lovrShapeGetType }, \
   { "getUserData", l_lovrShapeGetUserData }, \
   { "setUserData", l_lovrShapeSetUserData }, \
+  { "getVolume", l_lovrShapeGetVolume }, \
+  { "getDensity", l_lovrShapeGetDensity }, \
+  { "setDensity", l_lovrShapeSetDensity }, \
   { "getMass", l_lovrShapeGetMass }, \
-  { "getAABB", l_lovrShapeGetAABB }, \
-  { "queryOverlapping", l_lovrShapeQueryOverlapping }
-
-static int l_lovrSphereShapeGetRadius(lua_State* L) {
-  SphereShape* sphere = luax_checktype(L, 1, SphereShape);
-  lua_pushnumber(L, lovrSphereShapeGetRadius(sphere));
-  return 1;
-}
-
-const luaL_Reg lovrSphereShape[] = {
-  lovrShape,
-  { "getRadius", l_lovrSphereShapeGetRadius },
-  { NULL, NULL }
-};
+  { "getInertia", l_lovrShapeGetInertia }, \
+  { "getCenterOfMass", l_lovrShapeGetCenterOfMass }, \
+  { "getAABB", l_lovrShapeGetAABB }
 
 static int l_lovrBoxShapeGetDimensions(lua_State* L) {
   BoxShape* box = luax_checktype(L, 1, BoxShape);
@@ -345,6 +348,18 @@ static int l_lovrBoxShapeGetDimensions(lua_State* L) {
 const luaL_Reg lovrBoxShape[] = {
   lovrShape,
   { "getDimensions", l_lovrBoxShapeGetDimensions },
+  { NULL, NULL }
+};
+
+static int l_lovrSphereShapeGetRadius(lua_State* L) {
+  SphereShape* sphere = luax_checktype(L, 1, SphereShape);
+  lua_pushnumber(L, lovrSphereShapeGetRadius(sphere));
+  return 1;
+}
+
+const luaL_Reg lovrSphereShape[] = {
+  lovrShape,
+  { "getRadius", l_lovrSphereShapeGetRadius },
   { NULL, NULL }
 };
 
@@ -386,8 +401,55 @@ const luaL_Reg lovrCylinderShape[] = {
   { NULL, NULL }
 };
 
+static int l_lovrConvexShapeGetPointCount(lua_State* L) {
+  ConvexShape* convex = luax_checktype(L, 1, ConvexShape);
+  uint32_t count = lovrConvexShapeGetPointCount(convex);
+  lua_pushinteger(L, count);
+  return 1;
+}
+
+static int l_lovrConvexShapeGetPoint(lua_State* L) {
+  ConvexShape* convex = luax_checktype(L, 1, ConvexShape);
+  uint32_t index = luax_checku32(L, 2) - 1;
+  float point[3];
+  lovrConvexShapeGetPoint(convex, index, point);
+  lua_pushnumber(L, point[0]);
+  lua_pushnumber(L, point[1]);
+  lua_pushnumber(L, point[2]);
+  return 3;
+}
+
+static int l_lovrConvexShapeGetFaceCount(lua_State* L) {
+  ConvexShape* convex = luax_checktype(L, 1, ConvexShape);
+  uint32_t count = lovrConvexShapeGetFaceCount(convex);
+  lua_pushinteger(L, count);
+  return 1;
+}
+
+static int l_lovrConvexShapeGetFace(lua_State* L) {
+  ConvexShape* convex = luax_checktype(L, 1, ConvexShape);
+  uint32_t index = luax_checku32(L, 2) - 1;
+  uint32_t count = lovrConvexShapeGetFace(convex, index, NULL, 0);
+  lua_createtable(L, (int) count, 0);
+  uint32_t stack[8];
+  uint32_t* indices = count > COUNTOF(stack) ? lovrMalloc(count * sizeof(uint32_t)) : stack;
+  lovrConvexShapeGetFace(convex, index, indices, count);
+  for (uint32_t i = 0; i < count; i++) {
+    lua_pushinteger(L, indices[i]);
+    lua_rawseti(L, -2, i + 1);
+  }
+  if (indices != stack) {
+    lovrFree(indices);
+  }
+  return 1;
+}
+
 const luaL_Reg lovrConvexShape[] = {
   lovrShape,
+  { "getPointCount", l_lovrConvexShapeGetPointCount },
+  { "getPoint", l_lovrConvexShapeGetPoint },
+  { "getFaceCount", l_lovrConvexShapeGetFaceCount },
+  { "getFace", l_lovrConvexShapeGetFace },
   { NULL, NULL }
 };
 

@@ -33,6 +33,13 @@ static int l_lovrShaderClone(lua_State* L) {
   return 1;
 }
 
+static int l_lovrShaderGetLabel(lua_State* L) {
+  Shader* shader = luax_checktype(L, 1, Shader);
+  const ShaderInfo* info = lovrShaderGetInfo(shader);
+  lua_pushstring(L, info->label);
+  return 1;
+}
+
 static int l_lovrShaderGetType(lua_State* L) {
   Shader* shader = luax_checktype(L, 1, Shader);
   const ShaderInfo* info = lovrShaderGetInfo(shader);
@@ -96,10 +103,10 @@ static int l_lovrShaderGetBufferFormat(lua_State* L) {
   lua_pushinteger(L, format->stride);
   lua_setfield(L, -2, "stride");
 
-  if (format->length == ~0u) {
+  if (format->length == 0 || format->length == ~0u) {
     lua_pushnil(L);
   } else {
-    lua_pushinteger(L, MAX(format->length, 1));
+    lua_pushinteger(L, format->length);
   }
 
   return 2;
@@ -107,6 +114,7 @@ static int l_lovrShaderGetBufferFormat(lua_State* L) {
 
 const luaL_Reg lovrShader[] = {
   { "clone", l_lovrShaderClone },
+  { "getLabel", l_lovrShaderGetLabel },
   { "getType", l_lovrShaderGetType },
   { "hasStage", l_lovrShaderHasStage },
   { "hasAttribute", l_lovrShaderHasAttribute },

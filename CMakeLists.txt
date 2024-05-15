@@ -29,7 +29,9 @@ option(LOVR_USE_WEBXR "Enable the WebXR backend for the headset module" OFF)
 option(LOVR_USE_SIMULATOR "Enable the keyboard/mouse backend for the headset module" ON)
 option(LOVR_USE_STEAM_AUDIO "Enable the Steam Audio spatializer (be sure to also set LOVR_STEAM_AUDIO_PATH)" OFF)
 option(LOVR_USE_OCULUS_AUDIO "Enable the Oculus Audio spatializer (be sure to also set LOVR_OCULUS_AUDIO_PATH)" OFF)
+
 option(LOVR_SANITIZE "Enable Address Sanitizer" OFF)
+option(LOVR_PROFILE "Enable Tracy integration" OFF)
 
 option(LOVR_SYSTEM_GLFW "Use the system-provided glfw" OFF)
 option(LOVR_SYSTEM_LUA "Use the system-provided Lua" OFF)
@@ -186,6 +188,7 @@ if(LOVR_ENABLE_PHYSICS)
       set(LOVR_PHYSICS_LIB ode)
     endif()
   elseif(LOVR_PHYSICS_LIBRARY STREQUAL "JOLT")
+    set(BUILD_SHARED_LIBS OFF)
     set(DEBUG_RENDERER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "")
     set(PROFILER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "")
     add_subdirectory(deps/jolt-physics-sharp jolt)
@@ -360,6 +363,17 @@ if(LOVR_SANITIZE)
   set(LOVR_SANITIZE_FLAGS "-fsanitize=address,undefined" "-O1" "-fno-omit-frame-pointer")
   target_compile_options(lovr PRIVATE ${LOVR_SANITIZE_FLAGS})
   target_link_options(lovr PRIVATE ${LOVR_SANITIZE_FLAGS})
+endif()
+
+if(LOVR_PROFILE)
+  if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    message(FATAL_ERROR "You probably want to build in release mode when Tracy is enabled")
+  endif()
+  option(TRACY_ENABLE "" ON)
+  add_subdirectory(deps/tracy)
+  target_compile_definitions(lovr PRIVATE LOVR_PROFILE)
+  target_link_libraries(lovr Tracy::TracyClient)
+  target_include_directories(lovr PRIVATE deps/tracy/public/tracy)
 endif()
 
 if(LOVR_ENABLE_AUDIO OR LOVR_ENABLE_DATA)
@@ -547,6 +561,7 @@ if(LOVR_ENABLE_PHYSICS)
   target_sources(lovr PRIVATE
     src/api/l_physics.c
     src/api/l_physics_collider.c
+    src/api/l_physics_contact.c
     src/api/l_physics_joints.c
     src/api/l_physics_shapes.c
     src/api/l_physics_world.c

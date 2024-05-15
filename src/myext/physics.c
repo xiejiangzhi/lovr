@@ -1,8 +1,7 @@
 
 bool lovrShapeQueryOverlapping(Shape* shape, QueryCallback callback, void* userdata) {
   QueryData data = {
-    .callback = callback, .userdata = userdata, .called = false, .shouldStop = false,
-    .tag = shape->collider ? shape->collider->tag : NO_TAG
+    .callback = callback, .userdata = userdata, .called = false
   };
   dSpaceCollide2(shape->id, (dGeomID)shape->collider->world->space, &data, queryCallback);
   return data.called;
@@ -10,7 +9,7 @@ bool lovrShapeQueryOverlapping(Shape* shape, QueryCallback callback, void* userd
 
 bool lovrWorldQueryTriangle(World* world, float vertices[9], const char* tag, QueryCallback callback, void* userdata) {
   QueryData data = {
-    .callback = callback, .userdata = userdata, .called = false, .shouldStop = false, .tag = findTag(world, tag)
+    .callback = callback, .userdata = userdata, .called = false
   };
 
   dTriIndex indices[3] = { 0, 1, 2 };
@@ -30,7 +29,7 @@ bool lovrWorldQueryShape(
   const char* tag, QueryCallback callback, void* userdata
 ) {
   QueryData data = {
-    .callback = callback, .userdata = userdata, .called = false, .shouldStop = false, .tag = findTag(world, tag)
+    .callback = callback, .userdata = userdata, .called = false
   };
   dSpaceAdd(world->space, shape->id);
   dGeomSetPosition(shape->id, position[0], position[1], position[2]);
