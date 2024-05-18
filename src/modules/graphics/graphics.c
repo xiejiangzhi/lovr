@@ -8014,3 +8014,5 @@ static void onMessage(void* context, const char* message, bool severe) {
     lovrLog(LOG_DEBUG, "GPU", message);
   }
 }
+
+#include "myext/graphics.c"
