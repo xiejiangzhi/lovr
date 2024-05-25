@@ -7,9 +7,6 @@
 [submodule "deps/msdfgen"]
 	path = deps/msdfgen
 	url = https://github.com/bjornbytes/msdfgen
-[submodule "deps/ode"]
-	path = deps/ode
-	url = https://github.com/bjornbytes/ode
 [submodule "deps/luajit"]
 	path = deps/luajit
 	url = https://github.com/WohlSoft/LuaJIT
@@ -18,7 +15,7 @@
 	url = https://github.com/khronosgroup/openxr-sdk
 [submodule "deps/glslang"]
 	path = deps/glslang
-	url = https://github.com/bjornbytes/glslang
+	url = https://github.com/KhronosGroup/glslang
 [submodule "deps/vulkan-headers"]
 	path = deps/vulkan-headers
 	url = https://github.com/KhronosGroup/Vulkan-Headers

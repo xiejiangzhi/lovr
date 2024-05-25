@@ -573,6 +573,7 @@ typedef struct {
 static struct {
   uint32_t ref;
   bool active;
+  bool resized;
   bool shouldPresent;
   bool timingEnabled;
   GraphicsConfig config;
@@ -2107,6 +2108,11 @@ Texture* lovrGraphicsGetWindowTexture(void) {
   if (state.window && !state.window->gpu) {
     beginFrame();
 
+    if (state.resized) {
+      gpu_surface_resize(state.window->info.width, state.window->info.height);
+      state.resized = false;
+    }
+
     state.window->gpu = gpu_surface_acquire();
     state.window->renderView = state.window->gpu;
 
@@ -2651,14 +2657,25 @@ void lovrGraphicsCompileShader(ShaderSource* stages, ShaderSource* outputs, uint
       source->code
     };
 
-    lovrCheck(source->size <= INT_MAX, "Shader is way too big");
-
-    int lengths[] = {
-      -1,
+    size_t lengths[] = {
+      strlen(strings[0]),
       etc_shaders_lovr_glsl_len,
-      -1,
-      (int) source->size
+      strlen(strings[2]),
+      source->size
     };
+
+    size_t totalLength = 0;
+    for (size_t i = 0; i < COUNTOF(strings); i++) {
+      totalLength += lengths[i];
+    }
+
+    size_t cursor = 0;
+    char* code = tempAlloc(&state.allocator, totalLength + 1);
+    for (size_t i = 0; i < COUNTOF(strings); i++) {
+      memcpy(code + cursor, strings[i], lengths[i]);
+      cursor += lengths[i];
+    }
+    code[cursor] = '\0';
 
     const glslang_resource_t* resource = glslang_default_resource();
 
@@ -2669,9 +2686,7 @@ void lovrGraphicsCompileShader(ShaderSource* stages, ShaderSource* outputs, uint
       .client_version = GLSLANG_TARGET_VULKAN_1_1,
       .target_language = GLSLANG_TARGET_SPV,
       .target_language_version = GLSLANG_TARGET_SPV_1_3,
-      .strings = strings,
-      .lengths = lengths,
-      .string_count = COUNTOF(strings),
+      .code = code,
       .default_version = 460,
       .default_profile = GLSLANG_NO_PROFILE,
       .forward_compatible = true,
@@ -7986,8 +8001,7 @@ static void onResize(uint32_t width, uint32_t height) {
 
   state.window->info.width = width;
   state.window->info.height = height;
-
-  gpu_surface_resize(width, height);
+  state.resized = true;
 
   lovrEventPush((Event) {
     .type = EVENT_RESIZE,

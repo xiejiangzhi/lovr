@@ -8,7 +8,6 @@ config = {
   glfw = true,
   luajit = false,
   glslang = true,
-  physics = 'ode',
   utf8 = true,
   modules = {
     audio = true,
@@ -275,7 +274,9 @@ if config.modules.graphics and config.glslang then
   glslang_src += 'deps/glslang/SPIRV/CInterface/spirv_c_interface.cpp'
   glslang_src += 'deps/glslang/glslang/ResourceLimits/resource_limits_c.cpp'
   glslang_src += 'deps/glslang/glslang/ResourceLimits/ResourceLimits.cpp'
+  glslang_src.extra_inputs = '.obj/glslang/build_info.h'
 
+  tup.rule('deps/glslang/build_info.h.tmpl', 'python3 deps/glslang/build_info.py deps/glslang -i %f -o %o', '.obj/glslang/build_info.h')
   tup.foreach_rule(glslang_src, '^ CC glslang/%b^ $(cc) $(flags) $(glslang_cflags) -c %f -o %o', '.obj/glslang/%B.o')
   tup.rule('.obj/glslang/*.o', '^ LD %o^ $(cxx) $(flags) -o %o %f $(glslang_lflags)', lib('glslang'))
 end
@@ -293,65 +294,7 @@ if config.modules.data then
 end
 
 if config.modules.physics then
-  cflags += '-Ideps/ode/include'
-  lflags += '-lode'
-
-  -- ou
-  ode_cflags += '-DMAC_OS_X_VERSION=1030'
-  ode_cflags += '-D_OU_NAMESPACE=odeou'
-  ode_cflags += '-D_OU_FEATURE_SET=_OU_FEATURE_SET_TLS'
-  ode_cflags += '-DdATOMICS_ENABLED=1'
-  ode_cflags += '-Ideps/ode/ou/include'
-  ode_src += 'deps/ode/ou/src/ou/*.cpp'
-
-  -- ccd
-  ode_cflags += '-Ideps/ode/libccd/src'
-  ode_cflags += '-Ideps/ode/libccd/src/custom'
-  ode_cflags += {
-    '-DdLIBCCD_ENABLED',
-    '-DdLIBCCD_INTERNAL',
-    '-DdLIBCCD_BOX_CYL',
-    '-DdLIBCCD_CYL_CYL',
-    '-DdLIBCCD_CAP_CYL',
-    '-DdLIBCCD_CONVEX_BOX',
-    '-DdLIBCCD_CONVEX_CAP',
-    '-DdLIBCCD_CONVEX_CYL',
-    '-DdLIBCCD_CONVEX_SPHERE',
-    '-DdLIBCCD_CONVEX_CONVEX'
-  }
-  ode_c_src += 'deps/ode/libccd/src/*.c'
-
-  -- OPCODE
-  ode_cflags += '-Ideps/ode/OPCODE'
-  ode_src += 'deps/ode/OPCODE/*.cpp'
-  ode_src += 'deps/ode/OPCODE/Ice/*.cpp'
-
-  -- ode
-  ode_cflags += '-fPIC'
-  ode_cflags += config.optimize and '-DdNODEBUG' or ''
-  ode_cflags += '-Wno-implicit-float-conversion'
-  ode_cflags += '-Wno-array-bounds'
-  ode_cflags += '-Wno-undefined-var-template'
-  ode_cflags += '-Wno-undefined-bool-conversion'
-  ode_cflags += '-Wno-unused-value'
-  ode_cflags += '-Wno-null-dereference'
-  ode_cflags += '-Ideps/ode/include'
-  ode_cflags += '-Ideps/ode/ode/src'
-  ode_c_src += 'deps/ode/ode/src/*.c'
-  ode_src += {
-    'deps/ode/ode/src/*.cpp',
-    'deps/ode/ode/src/joints/*.cpp'
-  }
-
-  for i = #ode_src, 1, -1 do
-    if ode_src[i]:match('gimpact') or ode_src[i]:match('dif') then
-      table.remove(ode_src, i)
-    end
-  end
-
-  tup.foreach_rule(ode_c_src, '^ CC ode/%b^ $(cc) $(flags) $(ode_cflags) -c %f -o %o', '.obj/ode/%B.o')
-  tup.foreach_rule(ode_src, '^ CC ode/%b^ $(cxx) $(flags) $(ode_cflags) -c %f -o %o', '.obj/ode/%B.o')
-  tup.rule('.obj/ode/*.o', '^ LD %o^ $(cxx) $(flags) -shared -o %o %f', lib('ode'))
+  error('Compiling Jolt is not supported yet')
 end
 
 if config.headsets.openxr then
@@ -408,8 +351,7 @@ for module, enabled in pairs(config.modules) do
   if enabled then
     override = {
       audio = 'src/modules/audio/audio.c',
-      headset = 'src/modules/headset/headset.c',
-      physics = ('src/modules/physics/physics_%s.c'):format(config.physics)
+      headset = 'src/modules/headset/headset.c'
     }
     src += override[module] or ('src/modules/%s/*.c'):format(module)
     src += ('src/api/l_%s*.c'):format(module)

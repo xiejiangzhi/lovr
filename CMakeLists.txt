@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.5.0)
 cmake_policy(SET CMP0063 NEW)
 cmake_policy(SET CMP0079 NEW)
+cmake_policy(SET CMP0091 NEW)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS deployment version")
 project(lovr)
 
@@ -35,16 +36,12 @@ option(LOVR_PROFILE "Enable Tracy integration" OFF)
 
 option(LOVR_SYSTEM_GLFW "Use the system-provided glfw" OFF)
 option(LOVR_SYSTEM_LUA "Use the system-provided Lua" OFF)
-option(LOVR_SYSTEM_ODE "Use the system-provided ODE" OFF)
 option(LOVR_SYSTEM_OPENXR "Use the system-provided OpenXR" OFF)
 
 option(LOVR_BUILD_EXE "Build an executable (or an apk on Android)" ON)
 option(LOVR_BUILD_SHARED "Build a shared library (takes precedence over LOVR_BUILD_EXE)" OFF)
 option(LOVR_BUILD_BUNDLE "On macOS, build a .app bundle instead of a raw program" OFF)
 option(LOVR_BUILD_WITH_SYMBOLS "Build with C function symbols exposed" OFF)
-
-set(LOVR_PHYSICS_LIBRARY "ODE" CACHE STRING "Physics library to use")
-set_property(CACHE LOVR_PHYSICS_LIBRARY PROPERTY STRINGS ODE JOLT)
 
 # Setup
 if(EMSCRIPTEN)
@@ -70,6 +67,7 @@ if(EMSCRIPTEN)
   set(LOVR_USE_VULKAN OFF)
 elseif(MSVC)
   add_compile_options(/MP)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 elseif(ANDROID)
   find_package(Java REQUIRED)
   set(LOVR_USE_SIMULATOR OFF)
@@ -161,39 +159,16 @@ if(LOVR_ENABLE_DATA)
   endif()
 endif()
 
-# ODE
+# Jolt
 if(LOVR_ENABLE_PHYSICS)
-  if(LOVR_PHYSICS_LIBRARY STREQUAL "ODE")
-    if(LOVR_SYSTEM_ODE)
-      pkg_search_module(ODE REQUIRED ode)
-      pkg_search_module(CCD REQUIRED ccd)
-      include_directories(${ODE_INCLUDE_DIRS} ${CCD_INCLUDE_DIRS})
-      set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -lstdc++")
-      set(LOVR_PHYSICS_LIB ode ccd)
-    else()
-      if(EMSCRIPTEN)
-        set(ODE_BUILD_SHARED OFF CACHE BOOL "")
-      else()
-        set(ODE_BUILD_SHARED ON CACHE BOOL "")
-      endif()
-      add_subdirectory(deps/ode ode)
-      target_compile_definitions(ode PRIVATE dNODEBUG)
-      if(MSVC)
-        set_target_properties(ode PROPERTIES COMPILE_FLAGS "/wd4244 /wd4267")
-        target_compile_definitions(ode PRIVATE _CRT_SECURE_NO_WARNINGS)
-      else()
-        set_target_properties(ode PROPERTIES COMPILE_FLAGS "-Wno-unused-volatile-lvalue -Wno-array-bounds -Wno-undefined-var-template")
-      endif()
-      include_directories(deps/ode/include "${CMAKE_CURRENT_BINARY_DIR}/ode/include")
-      set(LOVR_PHYSICS_LIB ode)
-    endif()
-  elseif(LOVR_PHYSICS_LIBRARY STREQUAL "JOLT")
-    set(BUILD_SHARED_LIBS OFF)
-    set(DEBUG_RENDERER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "")
-    set(PROFILER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "")
-    add_subdirectory(deps/jolt-physics-sharp jolt)
-    set(LOVR_PHYSICS_LIB joltc)
-  endif()
+  set(BUILD_SHARED_LIBS OFF)
+  set(DEBUG_RENDERER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "")
+  set(PROFILER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "")
+  set(ENABLE_OBJECT_STREAM OFF CACHE BOOL "")
+  add_subdirectory(deps/jolt-physics-sharp jolt)
+  set_target_properties(Jolt PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+  set_target_properties(joltc PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+  set(LOVR_JOLT joltc)
 endif()
 
 # glslang
@@ -205,6 +180,7 @@ if(LOVR_USE_GLSLANG)
   set(ENABLE_CTEST OFF CACHE BOOL "")
   set(BUILD_EXTERNAL OFF CACHE BOOL "")
   set(BUILD_SHARED_LIBS OFF)
+  set(OVERRIDE_MSVCCRT OFF CACHE BOOL "")
   if(NOT EMSCRIPTEN)
     set(ENABLE_GLSLANG_BINARIES ON CACHE BOOL "")
   endif()
@@ -351,7 +327,7 @@ target_link_libraries(lovr
   ${LOVR_GLFW}
   ${LOVR_LUA}
   ${LOVR_MSDF}
-  ${LOVR_PHYSICS_LIB}
+  ${LOVR_JOLT}
   ${LOVR_GLSLANG}
   ${LOVR_OPENXR}
   ${LOVR_OCULUS_AUDIO}
@@ -559,6 +535,7 @@ endif()
 
 if(LOVR_ENABLE_PHYSICS)
   target_sources(lovr PRIVATE
+    src/modules/physics/physics.c
     src/api/l_physics.c
     src/api/l_physics_collider.c
     src/api/l_physics_contact.c
@@ -566,11 +543,6 @@ if(LOVR_ENABLE_PHYSICS)
     src/api/l_physics_shapes.c
     src/api/l_physics_world.c
   )
-  if(LOVR_PHYSICS_LIBRARY STREQUAL "ODE")
-    target_sources(lovr PRIVATE src/modules/physics/physics_ode.c)
-  elseif(LOVR_PHYSICS_LIBRARY STREQUAL "JOLT")
-    target_sources(lovr PRIVATE src/modules/physics/physics_jolt.c)
-  endif()
 else()
   target_compile_definitions(lovr PRIVATE LOVR_DISABLE_PHYSICS)
 endif()
@@ -730,7 +702,7 @@ if(WIN32)
 
   move_dll(${LOVR_GLFW})
   move_dll(${LOVR_LUA})
-  move_dll(${LOVR_PHYSICS_LIB})
+  move_dll(${LOVR_JOLT})
   move_dll(${LOVR_MSDF})
   move_dll(${LOVR_OCULUS_AUDIO})
   move_dll(${LOVR_PHONON})
@@ -781,7 +753,7 @@ elseif(APPLE)
   endfunction()
   move_lib(${LOVR_GLFW})
   move_lib(${LOVR_LUA})
-  move_lib(${LOVR_PHYSICS_LIB})
+  move_lib(${LOVR_JOLT})
   move_lib(${LOVR_MSDF})
   move_lib(${LOVR_OCULUS_AUDIO})
   move_lib(${LOVR_PHONON})
@@ -809,7 +781,7 @@ elseif(ANDROID)
   # Dynamically linked targets output libraries in raw/lib/<ABI> for easy including in apk with aapt
   set_target_properties(
     lovr
-    ${LOVR_PHYSICS_LIB}
+    ${LOVR_JOLT}
     ${LOVR_MSDF}
     PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/raw/lib/${ANDROID_ABI}"
   )
@@ -932,7 +904,7 @@ elseif(UNIX)
   endfunction()
   move_lib(${LOVR_GLFW})
   move_lib(${LOVR_LUA})
-  move_lib(${LOVR_PHYSICS_LIB})
+  move_lib(${LOVR_JOLT})
   move_lib(${LOVR_MSDF})
   move_lib(${LOVR_OPENXR})
   move_lib(${LOVR_OCULUS_AUDIO})
