@@ -2,6 +2,7 @@
 #include "event/event.h"
 #include "thread/thread.h"
 #include "util.h"
+#include <threads.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -22,11 +23,12 @@ StringEntry lovrEventType[] = {
 #ifndef LOVR_DISABLE_THREAD
   [EVENT_THREAD_ERROR] = ENTRY("threaderror"),
 #endif
+  [EVENT_FILECHANGED] = ENTRY("filechanged"),
   [EVENT_PERMISSION] = ENTRY("permission"),
   { 0 }
 };
 
-static LOVR_THREAD_LOCAL int pollRef;
+static thread_local int pollRef;
 
 void luax_checkvariant(lua_State* L, int index, Variant* variant) {
   int type = lua_type(L, index);
@@ -206,6 +208,14 @@ static int nextEvent(lua_State* L) {
       lovrFree(event.data.thread.error);
       return 3;
 #endif
+
+    case EVENT_FILECHANGED:
+      lua_pushstring(L, event.data.file.path);
+      luax_pushenum(L, FileAction, event.data.file.action);
+      lua_pushstring(L, event.data.file.oldpath);
+      free(event.data.file.path);
+      free(event.data.file.oldpath);
+      return 4;
 
     case EVENT_PERMISSION:
       luax_pushenum(L, Permission, event.data.permission.permission);

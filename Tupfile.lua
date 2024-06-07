@@ -142,7 +142,11 @@ if target == 'linux' then
   cflags += '-D_DEFAULT_SOURCE'
   lflags += '-lm -lpthread -ldl'
   lflags += '-Wl,-rpath,\\$ORIGIN'
-  lflags += '-lX11 -lxcb -lX11-xcb'
+  if config.glfw then
+    lflags += '-lX11 -lxcb -lX11-xcb'
+  else
+    lflags += '-lxcb -lxcb-xinput -lxcb-xkb -lxkbcommon -lxkbcommon-x11'
+  end
 end
 
 if target == 'wasm' then
@@ -259,6 +263,7 @@ if config.modules.graphics and config.glslang then
   glslang_cflags += '-fno-exceptions'
   glslang_cflags += '-fno-rtti'
   glslang_cflags += '-Ideps/glslang'
+  glslang_cflags += '-I.obj'
   glslang_lflags += '-shared'
   glslang_src += 'deps/glslang/glslang/CInterface/*.cpp'
   glslang_src += 'deps/glslang/glslang/MachineIndependent/*.cpp'
@@ -392,6 +397,7 @@ src += 'src/lib/miniz/*.c'
 src += (config.modules.audio or config.modules.data) and 'src/lib/miniaudio/*.c' or nil
 src += config.modules.data and 'src/lib/jsmn/*.c' or nil
 src += config.modules.data and 'src/lib/minimp3/*.c' or nil
+src += config.modules.filesystem and 'src/lib/dmon/*.c' or nil
 src += config.modules.math and 'src/lib/noise/*.c' or nil
 src += config.modules.thread and 'src/core/job.c' or nil
 

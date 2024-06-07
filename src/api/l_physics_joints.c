@@ -79,6 +79,19 @@ static int l_lovrJointGetColliders(lua_State* L) {
   return 2;
 }
 
+static int l_lovrJointGetAnchors(lua_State* L) {
+  Joint* joint = luax_checkjoint(L, 1);
+  float anchor1[3], anchor2[3];
+  lovrJointGetAnchors(joint, anchor1, anchor2);
+  lua_pushnumber(L, anchor1[0]);
+  lua_pushnumber(L, anchor1[1]);
+  lua_pushnumber(L, anchor1[2]);
+  lua_pushnumber(L, anchor2[0]);
+  lua_pushnumber(L, anchor2[1]);
+  lua_pushnumber(L, anchor2[2]);
+  return 6;
+}
+
 static int l_lovrJointGetUserData(lua_State* L) {
   luax_checkjoint(L, 1);
   luax_pushstash(L, "lovr.joint.userdata");
@@ -143,6 +156,7 @@ static int l_lovrJointGetTorque(lua_State* L) {
   { "isDestroyed", l_lovrJointIsDestroyed }, \
   { "getType", l_lovrJointGetType }, \
   { "getColliders", l_lovrJointGetColliders }, \
+  { "getAnchors", l_lovrJointGetAnchors }, \
   { "getUserData", l_lovrJointGetUserData }, \
   { "setUserData", l_lovrJointSetUserData }, \
   { "getPriority", l_lovrJointGetPriority }, \
@@ -152,56 +166,15 @@ static int l_lovrJointGetTorque(lua_State* L) {
   { "getForce", l_lovrJointGetForce }, \
   { "getTorque", l_lovrJointGetTorque }
 
-static int l_lovrWeldJointGetAnchors(lua_State* L) {
-  WeldJoint* joint = luax_checktype(L, 1, WeldJoint);
-  float anchor1[3], anchor2[3];
-  lovrWeldJointGetAnchors(joint, anchor1, anchor2);
-  lua_pushnumber(L, anchor1[0]);
-  lua_pushnumber(L, anchor1[1]);
-  lua_pushnumber(L, anchor1[2]);
-  lua_pushnumber(L, anchor2[0]);
-  lua_pushnumber(L, anchor2[1]);
-  lua_pushnumber(L, anchor2[2]);
-  return 6;
-}
-
 const luaL_Reg lovrWeldJoint[] = {
   lovrJoint,
-  { "getAnchors", l_lovrWeldJointGetAnchors },
   { NULL, NULL }
 };
-
-static int l_lovrBallJointGetAnchors(lua_State* L) {
-  BallJoint* joint = luax_checktype(L, 1, BallJoint);
-  float anchor1[3], anchor2[3];
-  lovrBallJointGetAnchors(joint, anchor1, anchor2);
-  lua_pushnumber(L, anchor1[0]);
-  lua_pushnumber(L, anchor1[1]);
-  lua_pushnumber(L, anchor1[2]);
-  lua_pushnumber(L, anchor2[0]);
-  lua_pushnumber(L, anchor2[1]);
-  lua_pushnumber(L, anchor2[2]);
-  return 6;
-}
 
 const luaL_Reg lovrBallJoint[] = {
   lovrJoint,
-  { "getAnchors", l_lovrBallJointGetAnchors },
   { NULL, NULL }
 };
-
-static int l_lovrConeJointGetAnchors(lua_State* L) {
-  ConeJoint* joint = luax_checktype(L, 1, ConeJoint);
-  float anchor1[3], anchor2[3];
-  lovrConeJointGetAnchors(joint, anchor1, anchor2);
-  lua_pushnumber(L, anchor1[0]);
-  lua_pushnumber(L, anchor1[1]);
-  lua_pushnumber(L, anchor1[2]);
-  lua_pushnumber(L, anchor2[0]);
-  lua_pushnumber(L, anchor2[1]);
-  lua_pushnumber(L, anchor2[2]);
-  return 6;
-}
 
 static int l_lovrConeJointGetAxis(lua_State* L) {
   ConeJoint* joint = luax_checktype(L, 1, ConeJoint);
@@ -229,25 +202,11 @@ static int l_lovrConeJointSetLimit(lua_State* L) {
 
 const luaL_Reg lovrConeJoint[] = {
   lovrJoint,
-  { "getAnchors", l_lovrConeJointGetAnchors },
   { "getAxis", l_lovrConeJointGetAxis },
   { "getLimit", l_lovrConeJointGetLimit },
   { "setLimit", l_lovrConeJointSetLimit },
   { NULL, NULL }
 };
-
-static int l_lovrDistanceJointGetAnchors(lua_State* L) {
-  DistanceJoint* joint = luax_checktype(L, 1, DistanceJoint);
-  float anchor1[3], anchor2[3];
-  lovrDistanceJointGetAnchors(joint, anchor1, anchor2);
-  lua_pushnumber(L, anchor1[0]);
-  lua_pushnumber(L, anchor1[1]);
-  lua_pushnumber(L, anchor1[2]);
-  lua_pushnumber(L, anchor2[0]);
-  lua_pushnumber(L, anchor2[1]);
-  lua_pushnumber(L, anchor2[2]);
-  return 6;
-}
 
 static int l_lovrDistanceJointGetLimits(lua_State* L) {
   DistanceJoint* joint = luax_checktype(L, 1, DistanceJoint);
@@ -277,34 +236,20 @@ static int l_lovrDistanceJointGetSpring(lua_State* L) {
 
 static int l_lovrDistanceJointSetSpring(lua_State* L) {
   DistanceJoint* joint = luax_checktype(L, 1, DistanceJoint);
-  float frequency = luax_checkfloat(L, 2);
-  float damping = luax_checkfloat(L, 3);
+  float frequency = luax_optfloat(L, 2, 0.f);
+  float damping = luax_optfloat(L, 3, 1.f);
   lovrDistanceJointSetSpring(joint, frequency, damping);
   return 0;
 }
 
 const luaL_Reg lovrDistanceJoint[] = {
   lovrJoint,
-  { "getAnchors", l_lovrDistanceJointGetAnchors },
   { "getLimits", l_lovrDistanceJointGetLimits },
   { "setLimits", l_lovrDistanceJointSetLimits },
   { "getSpring", l_lovrDistanceJointGetSpring },
   { "setSpring", l_lovrDistanceJointSetSpring },
   { NULL, NULL }
 };
-
-static int l_lovrHingeJointGetAnchors(lua_State* L) {
-  HingeJoint* joint = luax_checktype(L, 1, HingeJoint);
-  float anchor1[3], anchor2[3];
-  lovrHingeJointGetAnchors(joint, anchor1, anchor2);
-  lua_pushnumber(L, anchor1[0]);
-  lua_pushnumber(L, anchor1[1]);
-  lua_pushnumber(L, anchor1[2]);
-  lua_pushnumber(L, anchor2[0]);
-  lua_pushnumber(L, anchor2[1]);
-  lua_pushnumber(L, anchor2[2]);
-  return 6;
-}
 
 static int l_lovrHingeJointGetAxis(lua_State* L) {
   HingeJoint* joint = luax_checktype(L, 1, HingeJoint);
@@ -357,30 +302,35 @@ static int l_lovrHingeJointSetFriction(lua_State* L) {
   return 0;
 }
 
+static int l_lovrHingeJointGetMotorMode(lua_State* L) {
+  HingeJoint* joint = luax_checktype(L, 1, HingeJoint);
+  MotorMode mode = lovrHingeJointGetMotorMode(joint);
+  if (mode == MOTOR_OFF) {
+    lua_pushnil(L);
+  } else {
+    luax_pushenum(L, MotorMode, mode);
+  }
+  return 1;
+}
+
+static int l_lovrHingeJointSetMotorMode(lua_State* L) {
+  HingeJoint* joint = luax_checktype(L, 1, HingeJoint);
+  MotorMode mode = luax_checkenum(L, 2, MotorMode, "off");
+  lovrHingeJointSetMotorMode(joint, mode);
+  return 0;
+}
+
 static int l_lovrHingeJointGetMotorTarget(lua_State* L) {
   HingeJoint* joint = luax_checktype(L, 1, HingeJoint);
-  TargetType type;
-  float value;
-  lovrHingeJointGetMotorTarget(joint, &type, &value);
-  if (type == TARGET_NONE) {
-    lua_pushnil(L);
-    return 1;
-  } else {
-    luax_pushenum(L, TargetType, type);
-    lua_pushnumber(L, value);
-    return 2;
-  }
+  float target = lovrHingeJointGetMotorTarget(joint);
+  lua_pushnumber(L, target);
+  return 1;
 }
 
 static int l_lovrHingeJointSetMotorTarget(lua_State* L) {
   HingeJoint* joint = luax_checktype(L, 1, HingeJoint);
-  if (lua_isnoneornil(L, 2)) {
-    lovrHingeJointSetMotorTarget(joint, TARGET_NONE, 0.f);
-  } else {
-    TargetType type = luax_checkenum(L, 2, TargetType, NULL);
-    float value = luax_checkfloat(L, 3);
-    lovrHingeJointSetMotorTarget(joint, type, value);
-  }
+  float target = luax_checkfloat(L, 2);
+  lovrHingeJointSetMotorTarget(joint, target);
   return 0;
 }
 
@@ -395,36 +345,36 @@ static int l_lovrHingeJointGetMotorSpring(lua_State* L) {
 
 static int l_lovrHingeJointSetMotorSpring(lua_State* L) {
   HingeJoint* joint = luax_checktype(L, 1, HingeJoint);
-  float frequency = luax_checkfloat(L, 2);
-  float damping = luax_checkfloat(L, 3);
+  float frequency = luax_optfloat(L, 2, 0.f);
+  float damping = luax_optfloat(L, 3, 1.f);
   lovrHingeJointSetMotorSpring(joint, frequency, damping);
   return 0;
 }
 
-static int l_lovrHingeJointGetMaxMotorForce(lua_State* L) {
+static int l_lovrHingeJointGetMaxMotorTorque(lua_State* L) {
   HingeJoint* joint = luax_checktype(L, 1, HingeJoint);
   float positive, negative;
-  lovrHingeJointGetMaxMotorForce(joint, &positive, &negative);
+  lovrHingeJointGetMaxMotorTorque(joint, &positive, &negative);
   lua_pushnumber(L, positive);
   lua_pushnumber(L, negative);
   return 2;
 }
 
-static int l_lovrHingeJointSetMaxMotorForce(lua_State* L) {
+static int l_lovrHingeJointSetMaxMotorTorque(lua_State* L) {
   HingeJoint* joint = luax_checktype(L, 1, HingeJoint);
   if (lua_isnoneornil(L, 2)) {
-    lovrHingeJointSetMaxMotorForce(joint, HUGE_VALF, HUGE_VALF);
+    lovrHingeJointSetMaxMotorTorque(joint, HUGE_VALF, HUGE_VALF);
   } else {
     float positive = luax_checkfloat(L, 2);
     float negative = luax_optfloat(L, 3, positive);
-    lovrHingeJointSetMaxMotorForce(joint, positive, negative);
+    lovrHingeJointSetMaxMotorTorque(joint, positive, negative);
   }
   return 0;
 }
 
-static int l_lovrHingeJointGetMotorForce(lua_State* L) {
+static int l_lovrHingeJointGetMotorTorque(lua_State* L) {
   HingeJoint* joint = luax_checktype(L, 1, HingeJoint);
-  float force = lovrHingeJointGetMotorForce(joint);
+  float force = lovrHingeJointGetMotorTorque(joint);
   lua_pushnumber(L, force);
   return 1;
 }
@@ -440,45 +390,33 @@ static int l_lovrHingeJointGetSpring(lua_State* L) {
 
 static int l_lovrHingeJointSetSpring(lua_State* L) {
   HingeJoint* joint = luax_checktype(L, 1, HingeJoint);
-  float frequency = luax_checkfloat(L, 2);
-  float damping = luax_checkfloat(L, 3);
+  float frequency = luax_optfloat(L, 2, 0.f);
+  float damping = luax_optfloat(L, 3, 1.f);
   lovrHingeJointSetSpring(joint, frequency, damping);
   return 0;
 }
 
 const luaL_Reg lovrHingeJoint[] = {
   lovrJoint,
-  { "getAnchors", l_lovrHingeJointGetAnchors },
   { "getAxis", l_lovrHingeJointGetAxis },
   { "getAngle", l_lovrHingeJointGetAngle },
   { "getLimits", l_lovrHingeJointGetLimits },
   { "setLimits", l_lovrHingeJointSetLimits },
   { "getFriction", l_lovrHingeJointGetFriction },
   { "setFriction", l_lovrHingeJointSetFriction },
+  { "getMotorMode", l_lovrHingeJointGetMotorMode },
+  { "setMotorMode", l_lovrHingeJointSetMotorMode },
   { "getMotorTarget", l_lovrHingeJointGetMotorTarget },
   { "setMotorTarget", l_lovrHingeJointSetMotorTarget },
   { "getMotorSpring", l_lovrHingeJointGetMotorSpring },
   { "setMotorSpring", l_lovrHingeJointSetMotorSpring },
-  { "getMaxMotorForce", l_lovrHingeJointGetMaxMotorForce },
-  { "setMaxMotorForce", l_lovrHingeJointSetMaxMotorForce },
-  { "getMotorForce", l_lovrHingeJointGetMotorForce },
+  { "getMaxMotorTorque", l_lovrHingeJointGetMaxMotorTorque },
+  { "setMaxMotorTorque", l_lovrHingeJointSetMaxMotorTorque },
+  { "getMotorTorque", l_lovrHingeJointGetMotorTorque },
   { "getSpring", l_lovrHingeJointGetSpring },
   { "setSpring", l_lovrHingeJointSetSpring },
   { NULL, NULL }
 };
-
-static int l_lovrSliderJointGetAnchors(lua_State* L) {
-  SliderJoint* joint = luax_checktype(L, 1, SliderJoint);
-  float anchor1[3], anchor2[3];
-  lovrSliderJointGetAnchors(joint, anchor1, anchor2);
-  lua_pushnumber(L, anchor1[0]);
-  lua_pushnumber(L, anchor1[1]);
-  lua_pushnumber(L, anchor1[2]);
-  lua_pushnumber(L, anchor2[0]);
-  lua_pushnumber(L, anchor2[1]);
-  lua_pushnumber(L, anchor2[2]);
-  return 6;
-}
 
 static int l_lovrSliderJointGetAxis(lua_State* L) {
   SliderJoint* joint = luax_checktype(L, 1, SliderJoint);
@@ -531,30 +469,35 @@ static int l_lovrSliderJointSetFriction(lua_State* L) {
   return 0;
 }
 
+static int l_lovrSliderJointGetMotorMode(lua_State* L) {
+  SliderJoint* joint = luax_checktype(L, 1, SliderJoint);
+  MotorMode mode = lovrSliderJointGetMotorMode(joint);
+  if (mode == MOTOR_OFF) {
+    lua_pushnil(L);
+  } else {
+    luax_pushenum(L, MotorMode, mode);
+  }
+  return 1;
+}
+
+static int l_lovrSliderJointSetMotorMode(lua_State* L) {
+  SliderJoint* joint = luax_checktype(L, 1, SliderJoint);
+  MotorMode mode = luax_checkenum(L, 2, MotorMode, "off");
+  lovrSliderJointSetMotorMode(joint, mode);
+  return 0;
+}
+
 static int l_lovrSliderJointGetMotorTarget(lua_State* L) {
   SliderJoint* joint = luax_checktype(L, 1, SliderJoint);
-  TargetType type;
-  float value;
-  lovrSliderJointGetMotorTarget(joint, &type, &value);
-  if (type == TARGET_NONE) {
-    lua_pushnil(L);
-    return 1;
-  } else {
-    luax_pushenum(L, TargetType, type);
-    lua_pushnumber(L, value);
-    return 2;
-  }
+  float target = lovrSliderJointGetMotorTarget(joint);
+  lua_pushnumber(L, target);
+  return 1;
 }
 
 static int l_lovrSliderJointSetMotorTarget(lua_State* L) {
   SliderJoint* joint = luax_checktype(L, 1, SliderJoint);
-  if (lua_isnoneornil(L, 2)) {
-    lovrSliderJointSetMotorTarget(joint, TARGET_NONE, 0.f);
-  } else {
-    TargetType type = luax_checkenum(L, 2, TargetType, NULL);
-    float value = luax_checkfloat(L, 3);
-    lovrSliderJointSetMotorTarget(joint, type, value);
-  }
+  float target = luax_checkfloat(L, 2);
+  lovrSliderJointSetMotorTarget(joint, target);
   return 0;
 }
 
@@ -569,8 +512,8 @@ static int l_lovrSliderJointGetMotorSpring(lua_State* L) {
 
 static int l_lovrSliderJointSetMotorSpring(lua_State* L) {
   SliderJoint* joint = luax_checktype(L, 1, SliderJoint);
-  float frequency = luax_checkfloat(L, 2);
-  float damping = luax_checkfloat(L, 3);
+  float frequency = luax_optfloat(L, 2, 0.f);
+  float damping = luax_optfloat(L, 3, 1.f);
   lovrSliderJointSetMotorSpring(joint, frequency, damping);
   return 0;
 }
@@ -614,21 +557,22 @@ static int l_lovrSliderJointGetSpring(lua_State* L) {
 
 static int l_lovrSliderJointSetSpring(lua_State* L) {
   SliderJoint* joint = luax_checktype(L, 1, SliderJoint);
-  float frequency = luax_checkfloat(L, 2);
-  float damping = luax_checkfloat(L, 3);
+  float frequency = luax_optfloat(L, 2, 0.f);
+  float damping = luax_optfloat(L, 3, 1.f);
   lovrSliderJointSetSpring(joint, frequency, damping);
   return 0;
 }
 
 const luaL_Reg lovrSliderJoint[] = {
   lovrJoint,
-  { "getAnchors", l_lovrSliderJointGetAnchors },
   { "getAxis", l_lovrSliderJointGetAxis },
   { "getPosition", l_lovrSliderJointGetPosition },
   { "getLimits", l_lovrSliderJointGetLimits },
   { "setLimits", l_lovrSliderJointSetLimits },
   { "getFriction", l_lovrSliderJointGetFriction },
   { "setFriction", l_lovrSliderJointSetFriction },
+  { "getMotorMode", l_lovrSliderJointGetMotorMode },
+  { "setMotorMode", l_lovrSliderJointSetMotorMode },
   { "getMotorTarget", l_lovrSliderJointGetMotorTarget },
   { "setMotorTarget", l_lovrSliderJointSetMotorTarget },
   { "getMotorSpring", l_lovrSliderJointGetMotorSpring },

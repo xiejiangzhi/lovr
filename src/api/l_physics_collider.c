@@ -207,15 +207,16 @@ static int l_lovrColliderSetMass(lua_State* L) {
 
 static int l_lovrColliderGetInertia(lua_State* L) {
   Collider* collider = luax_checkcollider(L, 1);
-  float diagonal[3], rotation[4];
+  float diagonal[3], rotation[4], angle, ax, ay, az;
   lovrColliderGetInertia(collider, diagonal, rotation);
+  quat_getAngleAxis(rotation, &angle, &ax, &ay, &az);
   lua_pushnumber(L, diagonal[0]);
   lua_pushnumber(L, diagonal[1]);
   lua_pushnumber(L, diagonal[2]);
-  lua_pushnumber(L, rotation[0]);
-  lua_pushnumber(L, rotation[1]);
-  lua_pushnumber(L, rotation[2]);
-  lua_pushnumber(L, rotation[3]);
+  lua_pushnumber(L, angle);
+  lua_pushnumber(L, ax);
+  lua_pushnumber(L, ay);
+  lua_pushnumber(L, az);
   return 7;
 }
 
@@ -266,11 +267,11 @@ static int l_lovrColliderResetMassData(lua_State* L) {
   return 0;
 }
 
-static int l_lovrColliderGetEnabledAxes(lua_State* L) {
+static int l_lovrColliderGetDegreesOfFreedom(lua_State* L) {
   Collider* collider = luax_checkcollider(L, 1);
   bool translation[3];
   bool rotation[3];
-  lovrColliderGetEnabledAxes(collider, translation, rotation);
+  lovrColliderGetDegreesOfFreedom(collider, translation, rotation);
 
   char string[3];
   size_t length;
@@ -294,7 +295,7 @@ static int l_lovrColliderGetEnabledAxes(lua_State* L) {
   return 2;
 }
 
-static int l_lovrColliderSetEnabledAxes(lua_State* L) {
+static int l_lovrColliderSetDegreesOfFreedom(lua_State* L) {
   Collider* collider = luax_checkcollider(L, 1);
   bool translation[3] = { false, false, false };
   bool rotation[3] = { false, false, false };
@@ -315,7 +316,7 @@ static int l_lovrColliderSetEnabledAxes(lua_State* L) {
     }
   }
 
-  lovrColliderSetEnabledAxes(collider, translation, rotation);
+  lovrColliderSetDegreesOfFreedom(collider, translation, rotation);
   return 0;
 }
 
@@ -360,8 +361,7 @@ static int l_lovrColliderSetOrientation(lua_State* L) {
 static int l_lovrColliderGetPose(lua_State* L) {
   Collider* collider = luax_checkcollider(L, 1);
   float position[3], orientation[4], angle, ax, ay, az;
-  lovrColliderGetPosition(collider, position);
-  lovrColliderGetOrientation(collider, orientation);
+  lovrColliderGetPose(collider, position, orientation);
   quat_getAngleAxis(orientation, &angle, &ax, &ay, &az);
   lua_pushnumber(L, position[0]);
   lua_pushnumber(L, position[1]);
@@ -402,6 +402,22 @@ static int l_lovrColliderGetRawOrientation(lua_State* L) {
   lua_pushnumber(L, y);
   lua_pushnumber(L, z);
   return 4;
+}
+
+static int l_lovrColliderGetRawPose(lua_State* L) {
+  Collider* collider = luax_checkcollider(L, 1);
+  float position[3], orientation[4], angle, ax, ay, az;
+  lovrColliderGetRawPosition(collider, position);
+  lovrColliderGetRawOrientation(collider, orientation);
+  quat_getAngleAxis(orientation, &angle, &ax, &ay, &az);
+  lua_pushnumber(L, position[0]);
+  lua_pushnumber(L, position[1]);
+  lua_pushnumber(L, position[2]);
+  lua_pushnumber(L, angle);
+  lua_pushnumber(L, ax);
+  lua_pushnumber(L, ay);
+  lua_pushnumber(L, az);
+  return 7;
 }
 
 static int l_lovrColliderGetLinearVelocity(lua_State* L) {
@@ -679,8 +695,8 @@ const luaL_Reg lovrCollider[] = {
   { "getAutomaticMass", l_lovrColliderGetAutomaticMass },
   { "setAutomaticMass", l_lovrColliderSetAutomaticMass },
   { "resetMassData", l_lovrColliderResetMassData },
-  { "getEnabledAxes", l_lovrColliderGetEnabledAxes },
-  { "setEnabledAxes", l_lovrColliderSetEnabledAxes },
+  { "getDegreesOfFreedom", l_lovrColliderGetDegreesOfFreedom },
+  { "setDegreesOfFreedom", l_lovrColliderSetDegreesOfFreedom },
   { "getPosition", l_lovrColliderGetPosition },
   { "setPosition", l_lovrColliderSetPosition },
   { "getOrientation", l_lovrColliderGetOrientation },
@@ -689,6 +705,7 @@ const luaL_Reg lovrCollider[] = {
   { "setPose", l_lovrColliderSetPose },
   { "getRawPosition", l_lovrColliderGetRawPosition },
   { "getRawOrientation", l_lovrColliderGetRawOrientation },
+  { "getRawPose", l_lovrColliderGetRawPose },
   { "getLinearVelocity", l_lovrColliderGetLinearVelocity },
   { "setLinearVelocity", l_lovrColliderSetLinearVelocity },
   { "getAngularVelocity", l_lovrColliderGetAngularVelocity },

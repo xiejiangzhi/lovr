@@ -421,8 +421,16 @@ if(LOVR_ENABLE_FILESYSTEM)
     src/modules/filesystem/filesystem.c
     src/api/l_filesystem.c
     src/api/l_filesystem_file.c
+    src/lib/dmon/dmon.c
     src/lib/miniz/miniz_tinfl.c
   )
+
+  # dmon
+  if(APPLE)
+    find_library(CORE_FOUNDATION CoreFoundation)
+    find_library(CORE_SERVICES CoreServices)
+    target_link_libraries(lovr "${CORE_FOUNDATION}" "${CORE_SERVICES}")
+  endif()
 else()
   target_compile_definitions(lovr PRIVATE LOVR_DISABLE_FILESYSTEM)
 endif()
@@ -783,6 +791,7 @@ elseif(ANDROID)
     lovr
     ${LOVR_JOLT}
     ${LOVR_MSDF}
+    ${LOVR_LUA}
     PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/raw/lib/${ANDROID_ABI}"
   )
 
@@ -878,7 +887,11 @@ elseif(ANDROID)
   endif()
 elseif(UNIX)
   target_sources(lovr PRIVATE src/core/os_linux.c)
-  target_link_libraries(lovr X11 xcb X11-xcb)
+  if(LOVR_USE_GLFW)
+    target_link_libraries(lovr X11 xcb X11-xcb)
+  else()
+    target_link_libraries(lovr xcb xcb-xinput xcb-xkb xkbcommon xkbcommon-x11)
+  endif()
   set_target_properties(lovr PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     BUILD_WITH_INSTALL_RPATH TRUE

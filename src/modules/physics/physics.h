@@ -148,14 +148,15 @@ void lovrColliderSetCenterOfMass(Collider* collider, float center[3]);
 bool lovrColliderGetAutomaticMass(Collider* collider);
 void lovrColliderSetAutomaticMass(Collider* collider, bool enable);
 void lovrColliderResetMassData(Collider* collider);
-void lovrColliderGetEnabledAxes(Collider* collider, bool translation[3], bool rotation[3]);
-void lovrColliderSetEnabledAxes(Collider* collider, bool translation[3], bool rotation[3]);
+void lovrColliderGetDegreesOfFreedom(Collider* collider, bool translation[3], bool rotation[3]);
+void lovrColliderSetDegreesOfFreedom(Collider* collider, bool translation[3], bool rotation[3]);
 void lovrColliderGetPosition(Collider* collider, float position[3]);
 void lovrColliderSetPosition(Collider* collider, float position[3]);
 void lovrColliderGetOrientation(Collider* collider, float orientation[4]);
 void lovrColliderSetOrientation(Collider* collider, float orientation[4]);
 void lovrColliderGetRawPosition(Collider* collider, float position[3]);
 void lovrColliderGetRawOrientation(Collider* collider, float orientation[4]);
+void lovrColliderGetPose(Collider* collider, float position[3], float orientation[4]);
 void lovrColliderSetPose(Collider* collider, float position[3], float orientation[4]);
 void lovrColliderGetLinearVelocity(Collider* collider, float velocity[3]);
 void lovrColliderSetLinearVelocity(Collider* collider, float velocity[3]);
@@ -187,7 +188,7 @@ Collider* lovrContactGetColliderB(Contact* contact);
 Shape* lovrContactGetShapeA(Contact* contact);
 Shape* lovrContactGetShapeB(Contact* contact);
 void lovrContactGetNormal(Contact* contact, float normal[3]);
-float lovrContactGetPenetration(Contact* contact);
+float lovrContactGetOverlap(Contact* contact);
 uint32_t lovrContactGetPointCount(Contact* contact);
 void lovrContactGetPoint(Contact* contact, uint32_t index, float point[3]);
 float lovrContactGetFriction(Contact* contact);
@@ -280,10 +281,10 @@ typedef enum {
 } JointType;
 
 typedef enum {
-  TARGET_NONE,
-  TARGET_VELOCITY,
-  TARGET_POSITION
-} TargetType;
+  MOTOR_OFF,
+  MOTOR_VELOCITY,
+  MOTOR_POSITION
+} MotorMode;
 
 void lovrJointDestroy(void* ref);
 void lovrJointDestruct(Joint* joint);
@@ -292,6 +293,7 @@ JointType lovrJointGetType(Joint* joint);
 Collider* lovrJointGetColliderA(Joint* joint);
 Collider* lovrJointGetColliderB(Joint* joint);
 Joint* lovrJointGetNext(Joint* joint, Collider* collider);
+void lovrJointGetAnchors(Joint* joint, float anchor1[3], float anchor2[3]);
 uint32_t lovrJointGetPriority(Joint* joint);
 void lovrJointSetPriority(Joint* joint, uint32_t priority);
 bool lovrJointIsEnabled(Joint* joint);
@@ -300,52 +302,50 @@ float lovrJointGetForce(Joint* joint);
 float lovrJointGetTorque(Joint* joint);
 
 WeldJoint* lovrWeldJointCreate(Collider* a, Collider* b, float anchor[3]);
-void lovrWeldJointGetAnchors(WeldJoint* joint, float anchor1[3], float anchor2[3]);
 
 BallJoint* lovrBallJointCreate(Collider* a, Collider* b, float anchor[3]);
-void lovrBallJointGetAnchors(BallJoint* joint, float anchor1[3], float anchor2[3]);
 
 ConeJoint* lovrConeJointCreate(Collider* a, Collider* b, float anchor[3], float axis[3]);
-void lovrConeJointGetAnchors(ConeJoint* joint, float anchor1[3], float anchor2[3]);
 void lovrConeJointGetAxis(ConeJoint* joint, float axis[3]);
 float lovrConeJointGetLimit(ConeJoint* joint);
 void lovrConeJointSetLimit(ConeJoint* joint, float angle);
 
 DistanceJoint* lovrDistanceJointCreate(Collider* a, Collider* b, float anchor1[3], float anchor2[3]);
-void lovrDistanceJointGetAnchors(DistanceJoint* joint, float anchor1[3], float anchor2[3]);
 void lovrDistanceJointGetLimits(DistanceJoint* joint, float* min, float* max);
 void lovrDistanceJointSetLimits(DistanceJoint* joint, float min, float max);
 void lovrDistanceJointGetSpring(DistanceJoint* joint, float* frequency, float* damping);
 void lovrDistanceJointSetSpring(DistanceJoint* joint, float frequency, float damping);
 
 HingeJoint* lovrHingeJointCreate(Collider* a, Collider* b, float anchor[3], float axis[3]);
-void lovrHingeJointGetAnchors(HingeJoint* joint, float anchor1[3], float anchor2[3]);
 void lovrHingeJointGetAxis(HingeJoint* joint, float axis[3]);
 float lovrHingeJointGetAngle(HingeJoint* joint);
 void lovrHingeJointGetLimits(HingeJoint* joint, float* min, float* max);
 void lovrHingeJointSetLimits(HingeJoint* joint, float min, float max);
 float lovrHingeJointGetFriction(HingeJoint* joint);
 void lovrHingeJointSetFriction(HingeJoint* joint, float friction);
-void lovrHingeJointGetMotorTarget(HingeJoint* joint, TargetType* type, float* value);
-void lovrHingeJointSetMotorTarget(HingeJoint* joint, TargetType type, float value);
+MotorMode lovrHingeJointGetMotorMode(HingeJoint* joint);
+void lovrHingeJointSetMotorMode(HingeJoint* joint, MotorMode mode);
+float lovrHingeJointGetMotorTarget(HingeJoint* joint);
+void lovrHingeJointSetMotorTarget(HingeJoint* joint, float target);
 void lovrHingeJointGetMotorSpring(HingeJoint* joint, float* frequency, float* damping);
 void lovrHingeJointSetMotorSpring(HingeJoint* joint, float frequency, float damping);
-void lovrHingeJointGetMaxMotorForce(HingeJoint* joint, float* positive, float* negative);
-void lovrHingeJointSetMaxMotorForce(HingeJoint* joint, float positive, float negative);
-float lovrHingeJointGetMotorForce(HingeJoint* joint);
+void lovrHingeJointGetMaxMotorTorque(HingeJoint* joint, float* positive, float* negative);
+void lovrHingeJointSetMaxMotorTorque(HingeJoint* joint, float positive, float negative);
+float lovrHingeJointGetMotorTorque(HingeJoint* joint);
 void lovrHingeJointGetSpring(HingeJoint* joint, float* frequency, float* damping);
 void lovrHingeJointSetSpring(HingeJoint* joint, float frequency, float damping);
 
 SliderJoint* lovrSliderJointCreate(Collider* a, Collider* b, float axis[3]);
-void lovrSliderJointGetAnchors(SliderJoint* joint, float anchor1[3], float anchor2[3]);
 void lovrSliderJointGetAxis(SliderJoint* joint, float axis[3]);
 float lovrSliderJointGetPosition(SliderJoint* joint);
 void lovrSliderJointGetLimits(SliderJoint* joint, float* min, float* max);
 void lovrSliderJointSetLimits(SliderJoint* joint, float min, float max);
 float lovrSliderJointGetFriction(SliderJoint* joint);
 void lovrSliderJointSetFriction(SliderJoint* joint, float friction);
-void lovrSliderJointGetMotorTarget(SliderJoint* joint, TargetType* type, float* value);
-void lovrSliderJointSetMotorTarget(SliderJoint* joint, TargetType type, float value);
+MotorMode lovrSliderJointGetMotorMode(SliderJoint* joint);
+void lovrSliderJointSetMotorMode(SliderJoint* joint, MotorMode mode);
+float lovrSliderJointGetMotorTarget(SliderJoint* joint);
+void lovrSliderJointSetMotorTarget(SliderJoint* joint, float target);
 void lovrSliderJointGetMotorSpring(SliderJoint* joint, float* frequency, float* damping);
 void lovrSliderJointSetMotorSpring(SliderJoint* joint, float frequency, float damping);
 void lovrSliderJointGetMaxMotorForce(SliderJoint* joint, float* positive, float* negative);
