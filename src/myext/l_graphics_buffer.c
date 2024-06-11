@@ -4,15 +4,15 @@ static void luax_checkfield(lua_State* L, const DataField* field, int idx, char*
   switch (lua_type(L, idx)) {
   case LUA_TNUMBER:
     lovrCheck(n == 1, "Cannot set field '%s' by number", field->name);
-    luax_checkfieldn(L, idx, &field->type, data);
+    luax_checkfieldn(L, idx, field, data);
     break;
   case LUA_TUSERDATA:
   case LUA_TLIGHTUSERDATA:
-    luax_checkfieldv(L, idx, &field->type, data);
+    luax_checkfieldv(L, idx, field, data);
     break;
   case LUA_TTABLE:
     lovrCheck(luax_len(L, idx) == n, "Table length for key '%s' must be %d", field->name, n);
-    luax_checkfieldt(L, idx, &field->type, data + field->offset);
+    luax_checkfieldt(L, idx, field, data + field->offset);
     break;
   default:
     lovrThrow("Invalid data type %s for field '%s'", lua_typename(L, lua_type(L, idx)), field->name);
