@@ -6,6 +6,7 @@
 #include <joltc.h>
 
 struct Contact {
+  uint32_t ref;
   Collider* colliderA;
   Collider* colliderB;
   const JPH_ContactManifold* manifold;
@@ -1625,6 +1626,10 @@ void lovrColliderGetAABB(Collider* collider, float aabb[6]) {
 
 void lovrContactDestroy(void* ref) {
   // Contact is a temporary object owned by the World
+}
+
+bool lovrContactIsValid(Contact* contact) {
+  return thread.locked;
 }
 
 Collider* lovrContactGetColliderA(Contact* contact) {
