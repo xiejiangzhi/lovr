@@ -1,5 +1,5 @@
 
-int myext_luax_readvec2(lua_State* L, int index, vec2 v, const char* expected) {
+int luax_readvec2(lua_State* L, int index, vec2 v, const char* expected) {
   switch (lua_type(L, index)) {
     case LUA_TNIL:
     case LUA_TNONE:
@@ -18,7 +18,7 @@ int myext_luax_readvec2(lua_State* L, int index, vec2 v, const char* expected) {
   }
 }
 
-int myext_luax_readvec3(lua_State* L, int index, vec3 v, const char* expected) {
+int luax_readvec3(lua_State* L, int index, vec3 v, const char* expected) {
   switch (lua_type(L, index)) {
     case LUA_TNIL:
     case LUA_TNONE:
@@ -38,7 +38,33 @@ int myext_luax_readvec3(lua_State* L, int index, vec3 v, const char* expected) {
   }
 }
 
-int myext_luax_readvec4(lua_State* L, int index, vec4 v, const char* expected) {
+int l_lovrVec3Set(lua_State* L) {
+  vec3 v = luax_checkvector(L, 1, V_VEC3, NULL);
+  if (lua_isnoneornil(L, 2) || lua_type(L, 2) == LUA_TNUMBER) {
+    float x = luax_optfloat(L, 2, 0.f);
+    vec3_set(v, x, luax_optfloat(L, 3, x), luax_optfloat(L, 4, x));
+  } else if (lua_istable(L, 2)) {
+    float p[3];
+    luax_readobjarr(L, 2, 3, p, "vec3");
+    vec3_set(v, p[0], p[1], p[2]);
+  } else {
+    VectorType t;
+    float* p = luax_tovector(L, 2, &t);
+    if (p && t == V_VEC3) {
+      vec3_init(v, p);
+    } else if (p && t == V_MAT4) {
+      vec3_set(v, p[12], p[13], p[14]);
+    } else if (p && t == V_QUAT) {
+      quat_getDirection(p, v);
+    } else{
+      luax_typeerror(L, 2, "vec3, quat, mat4, or number");
+    }
+  }
+  lua_settop(L, 1);
+  return 1;
+}
+
+int luax_readvec4(lua_State* L, int index, vec4 v, const char* expected) {
   switch (lua_type(L, index)) {
     case LUA_TNIL:
     case LUA_TNONE:
@@ -59,7 +85,7 @@ int myext_luax_readvec4(lua_State* L, int index, vec4 v, const char* expected) {
   }
 }
 
-int myext_luax_readscale(lua_State* L, int index, vec3 v, int components, const char* expected) {
+int luax_readscale(lua_State* L, int index, vec3 v, int components, const char* expected) {
   int tlen;
   switch (lua_type(L, index)) {
     case LUA_TNIL:
@@ -107,7 +133,7 @@ int myext_luax_readscale(lua_State* L, int index, vec3 v, int components, const 
   }
 }
 
-int myext_luax_readquat(lua_State* L, int index, quat q, const char* expected) {
+int luax_readquat(lua_State* L, int index, quat q, const char* expected) {
   float angle, ax, ay, az;
   switch (lua_type(L, index)) {
     case LUA_TNIL:
@@ -130,7 +156,7 @@ int myext_luax_readquat(lua_State* L, int index, quat q, const char* expected) {
   }
 }
 
-int myext_luax_readmat4(lua_State* L, int index, mat4 m, int scaleComponents) {
+int luax_readmat4(lua_State* L, int index, mat4 m, int scaleComponents) {
   switch (lua_type(L, index)) {
     case LUA_TNIL:
     case LUA_TNONE:

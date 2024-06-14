@@ -71,7 +71,7 @@ static void queryCallback(void* userdata, Collider* collider) {
   lua_State* L = userdata;
   lua_pushvalue(L, -1);
   luax_pushtype(L, Collider, collider);
-  lua_call(L, 2, 0);
+  lua_call(L, 1, 0);
 }
 
 static void queryNoCallback(void* userdata, Collider* collider) {
@@ -96,7 +96,7 @@ static bool filterCallback(void* userdata, World* world, Collider* a, Collider* 
   return true;
 }
 
-static void enterCallback(void* userdata, World* world, Collider* a, Collider* b) {
+static void enterCallback(void* userdata, World* world, Collider* a, Collider* b, Contact* contact) {
   lua_State* L = userdata;
   luax_pushstash(L, "lovr.world.enter");
   luax_pushtype(L, World, world);
@@ -104,7 +104,8 @@ static void enterCallback(void* userdata, World* world, Collider* a, Collider* b
   lua_remove(L, -2);
   luax_pushtype(L, Collider, a);
   luax_pushtype(L, Collider, b);
-  if (lua_pcall(L, 2, 0, 0)) {
+  luax_pushtype(L, Contact, contact);
+  if (lua_pcall(L, 3, 0, 0)) {
     lua_settop(L, 3); // Only keep first error
   }
 }
@@ -654,7 +655,7 @@ const luaL_Reg lovrWorld[] = {
   { "overlapShape", l_lovrWorldOverlapShape },
   { "queryBox", l_lovrWorldQueryBox },
   { "querySphere", l_lovrWorldQuerySphere },
-  // { "queryTriangle", l_lovrWorldQueryTriangle },
+  { "queryTriangle", l_lovrWorldQueryTriangle },
   // { "queryShape", l_lovrWorldQueryShape },
   { "getGravity", l_lovrWorldGetGravity },
   { "setGravity", l_lovrWorldSetGravity },

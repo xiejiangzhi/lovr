@@ -17,3 +17,24 @@
 //   lua_pushboolean(L, any);
 //   return 1;
 // }
+
+// static int l_lovrShapeQueryOverlaps(lua_State* L) {
+//   Shape* shape = luax_checkshape(L, 1);
+//   Collider* collider = lovrShapeGetCollider(shape);
+//   lovrAssert(collider != NULL, "Shape must be attached to collider");
+//   float pose[7];
+//   lovrShapeGetPose(shape, pose, pose + 3);
+//   uint32_t filter = ~0u; // TODO gen filter by collider->tag
+//   World* world = lovrColliderGetWorld(collider);
+//   if (lua_isnoneornil(L, 2)) {
+//     OverlapResult hit;
+//     if (lovrWorldOverlapShape(world, shape, pose, filter, overlapFirstCallback, &hit)) {
+//       return luax_pushoverlapresult(L, &hit);
+//     }
+//   } else {
+//     luaL_checktype(L, 2, LUA_TFUNCTION);
+//     lua_settop(L, 2);
+//     lovrWorldOverlapShape(world, shape, pose, filter, overlapCallback, L);
+//   }
+//   return 0;
+// }

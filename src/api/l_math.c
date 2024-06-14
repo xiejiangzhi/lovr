@@ -49,7 +49,7 @@ static void luax_destroypool(void) {
   lovrRelease(pool, lovrPoolDestroy);
 }
 
-float* luax_tovector(lua_State* L, int index, VectorType* type) {
+float* x_luax_tovector(lua_State* L, int index, VectorType* type) {
   void* p = lua_touserdata(L, index);
 
   if (p) {
@@ -71,15 +71,13 @@ float* luax_tovector(lua_State* L, int index, VectorType* type) {
   if (type) *type = V_NONE;
   return NULL;
 }
-#define luax_tovector myext_luax_tovector
 
-float* luax_checkvector(lua_State* L, int index, VectorType type, const char* expected) {
+float* x_luax_checkvector(lua_State* L, int index, VectorType type, const char* expected) {
   VectorType t;
   float* p = luax_tovector(L, index, &t);
   if (!p || t != type) luax_typeerror(L, index, expected ? expected : lovrVectorInfo[type].name);
   return p;
 }
-#define luax_checkvector myext_luax_checkvector
 
 static float* luax_newvector(lua_State* L, VectorType type, size_t components) {
   VectorType* p = lua_newuserdata(L, sizeof(VectorType) + components * sizeof(float));

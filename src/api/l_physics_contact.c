@@ -115,6 +115,7 @@ const luaL_Reg lovrContact[] = {
   { "getShapes", l_lovrContactGetShapes },
   { "getNormal", l_lovrContactGetNormal },
   { "getOverlap", l_lovrContactGetOverlap },
+  { "getDepth", l_lovrContactGetOverlap },
   { "getPoints", l_lovrContactGetPoints },
   { "getFriction", l_lovrContactGetFriction },
   { "setFriction", l_lovrContactSetFriction },

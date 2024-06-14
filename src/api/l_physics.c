@@ -11,6 +11,7 @@ StringEntry lovrShapeType[] = {
   [SHAPE_CONVEX] = ENTRY("convex"),
   [SHAPE_MESH] = ENTRY("mesh"),
   [SHAPE_TERRAIN] = ENTRY("terrain"),
+  [SHAPE_TRIANGLE] = ENTRY("triangle"),
   { 0 }
 };
 

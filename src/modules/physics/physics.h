@@ -34,7 +34,7 @@ void lovrPhysicsDestroy(void);
 
 typedef struct {
   bool (*filter)(void* userdata, World* world, Collider* a, Collider* b);
-  void (*enter)(void* userdata, World* world, Collider* a, Collider* b);
+  void (*enter)(void* userdata, World* world, Collider* a, Collider* b, Contact* contact);
   void (*exit)(void* userdata, World* world, Collider* a, Collider* b);
   void (*contact)(void* userdata, World* world, Collider* a, Collider* b, Contact* contact);
   void* userdata;
@@ -209,7 +209,8 @@ typedef enum {
   SHAPE_CYLINDER,
   SHAPE_CONVEX,
   SHAPE_MESH,
-  SHAPE_TERRAIN
+  SHAPE_TERRAIN,
+  SHAPE_TRIANGLE
 } ShapeType;
 
 void lovrShapeDestroy(void* ref);
@@ -362,4 +363,4 @@ void lovrSliderJointSetSpring(SliderJoint* joint, float frequency, float damping
 #define lovrHingeJointDestroy lovrJointDestroy
 #define lovrSliderJointDestroy lovrJointDestroy
 
-// #include "myext/physics.h"
+#include "myext/physics.h"

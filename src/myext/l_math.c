@@ -10,7 +10,7 @@ static struct {
   [V_MAT4] = { "mat4", 16 }
 };
 
-float* myext_luax_tovector(lua_State* L, int index, VectorType* type) {
+float* luax_tovector(lua_State* L, int index, VectorType* type) {
   if (lua_istable(L, index)) {
     lua_rawgeti(L, index, 1);
     bool is_num = lua_isnumber(L, -1);
@@ -60,7 +60,7 @@ float* myext_luax_tovector(lua_State* L, int index, VectorType* type) {
   }
 }
 
-float* myext_luax_checkvector(lua_State* L, int index, VectorType type, const char* expected) {
+float* luax_checkvector(lua_State* L, int index, VectorType type, const char* expected) {
   VectorType t;
   float* p;
   if (lua_istable(L, index)) {

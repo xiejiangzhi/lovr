@@ -515,7 +515,7 @@ static int l_lovrBufferSetData(lua_State* L) {
   const BufferInfo* info = lovrBufferGetInfo(buffer);
   const DataField* format = info->format;
 
-  if (format) {
+  if (format && lua_istable(L, 2)) {
     if (format->length > 0) {
       luax_fieldcheck(L, lua_istable(L, 2), 2, format, -1);
       uint32_t length = luax_len(L, 2);

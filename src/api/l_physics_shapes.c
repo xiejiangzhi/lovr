@@ -15,6 +15,7 @@ void luax_pushshape(lua_State* L, Shape* shape) {
     case SHAPE_CONVEX: luax_pushtype(L, ConvexShape, shape); break;
     case SHAPE_MESH: luax_pushtype(L, MeshShape, shape); break;
     case SHAPE_TERRAIN: luax_pushtype(L, TerrainShape, shape); break;
+    case SHAPE_TRIANGLE: luax_pushtype(L, TriangleShape, shape); break;
     default: lovrUnreachable();
   }
 }

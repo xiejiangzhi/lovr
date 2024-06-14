@@ -170,6 +170,9 @@ if(LOVR_ENABLE_PHYSICS)
   set_target_properties(joltc PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
   set(LOVR_JOLT joltc)
 endif()
+if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+  set(GENERATE_DEBUG_SYMBOLS ON CACHE BOOL "")
+endif()
 
 # glslang
 if(LOVR_USE_GLSLANG)
