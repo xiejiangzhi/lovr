@@ -554,7 +554,7 @@ static int l_lovrVec3Unpack(lua_State* L) {
   return 3;
 }
 
-int xl_lovrVec3Set(lua_State* L) {
+int x_l_lovrVec3Set(lua_State* L) {
   vec3 v = luax_checkvector(L, 1, V_VEC3, NULL);
   if (lua_isnoneornil(L, 2) || lua_type(L, 2) == LUA_TNUMBER) {
     float x = luax_optfloat(L, 2, 0.f);
