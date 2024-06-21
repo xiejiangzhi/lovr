@@ -33,34 +33,29 @@ StringEntry lovrMotorMode[] = {
 
 static int l_lovrPhysicsNewWorld(lua_State* L) {
   WorldInfo info = {
-    .tickRate = 60,
-    .tickLimit = 0,
+    .timestep = 1.f / 60.f,
+    .maxSteps = 0,
     .maxColliders = 16384,
-    .deterministic = true,
     .threadSafe = true,
     .allowSleep = true,
     .stabilization = .2f,
     .maxPenetration = .01f,
-    .minBounceVelocity = 1.f,
+    .restitutionThreshold = 1.f,
     .velocitySteps = 10,
     .positionSteps = 2
   };
 
   if (lua_istable(L, 1)) {
-    lua_getfield(L, 1, "tickRate");
-    if (!lua_isnil(L, -1)) info.tickRate = luax_checku32(L, -1);
+    lua_getfield(L, 1, "timestep");
+    if (!lua_isnil(L, -1)) info.timestep = luax_checkfloat(L, -1);
     lua_pop(L, 1);
 
-    lua_getfield(L, 1, "tickLimit");
-    if (!lua_isnil(L, -1)) info.tickLimit = luax_checku32(L, -1);
+    lua_getfield(L, 1, "maxSteps");
+    if (!lua_isnil(L, -1)) info.maxSteps = luax_checku32(L, -1);
     lua_pop(L, 1);
 
     lua_getfield(L, 1, "maxColliders");
     if (!lua_isnil(L, -1)) info.maxColliders = luax_checku32(L, -1);
-    lua_pop(L, 1);
-
-    lua_getfield(L, 1, "deterministic");
-    if (!lua_isnil(L, -1)) info.deterministic = lua_toboolean(L, -1);
     lua_pop(L, 1);
 
     lua_getfield(L, 1, "threadSafe");
@@ -79,8 +74,8 @@ static int l_lovrPhysicsNewWorld(lua_State* L) {
     if (!lua_isnil(L, -1)) info.maxPenetration = luax_checkfloat(L, -1);
     lua_pop(L, 1);
 
-    lua_getfield(L, 1, "minBounceVelocity");
-    if (!lua_isnil(L, -1)) info.minBounceVelocity = luax_checkfloat(L, -1);
+    lua_getfield(L, 1, "restitutionThreshold");
+    if (!lua_isnil(L, -1)) info.restitutionThreshold = luax_checkfloat(L, -1);
     lua_pop(L, 1);
 
     lua_getfield(L, 1, "velocitySteps");

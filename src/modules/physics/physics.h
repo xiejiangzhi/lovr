@@ -41,15 +41,14 @@ typedef struct {
 } WorldCallbacks;
 
 typedef struct {
-  uint32_t tickRate;
-  uint32_t tickLimit;
+  float timestep;
+  uint32_t maxSteps;
   uint32_t maxColliders;
-  bool deterministic;
   bool threadSafe;
   bool allowSleep;
   float stabilization;
   float maxPenetration;
-  float minBounceVelocity;
+  float restitutionThreshold;
   uint32_t velocitySteps;
   uint32_t positionSteps;
   const char* tags[MAX_TAGS];
