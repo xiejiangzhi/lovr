@@ -29,7 +29,7 @@ static void luax_checkfields(lua_State* L, const DataField* format, int tidx, ch
   int ttype = lua_type(L, tidx);
   int tlen = ttype == LUA_TTABLE ? luax_len(L, tidx) : -1;
 
-  if (format->length > 0 && (format->parent || format->fieldCount == 0)) {
+  if (format->length > 0) {
     lovrCheck(
       lua_istable(L, tidx),
       "Array %s val must be a table", format->name ? format->name : "None"
@@ -46,7 +46,7 @@ static void luax_checkfields(lua_State* L, const DataField* format, int tidx, ch
       } else {
         for (int j = 0; j < format->fieldCount; j++) {
           DataField* field = format->fields + j;
-          char* fdata = data + field->stride * i + field->offset;
+          char* fdata = data + field->offset + field->stride * i;
           lua_rawgeti(L, -1, j + 1);
           luax_checkfields(L, field, -1, fdata);
           lua_pop(L, 1);
@@ -54,7 +54,6 @@ static void luax_checkfields(lua_State* L, const DataField* format, int tidx, ch
       }
       lua_pop(L, 1);
     }
-    return;
   } else if (format->fieldCount > 0) {
     lovrCheck(
       lua_istable(L, tidx), "Struct %s val must be a table",
@@ -76,7 +75,6 @@ static void luax_checkfields(lua_State* L, const DataField* format, int tidx, ch
     }
   } else {
     luax_checkfield(L, format, tidx, data);
-    return;
   }
 }
 
