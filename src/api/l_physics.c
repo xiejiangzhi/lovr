@@ -1,5 +1,6 @@
 #include "api.h"
 #include "physics/physics.h"
+#include "core/maf.h"
 #include "util.h"
 #include <string.h>
 
@@ -210,9 +211,7 @@ static int l_lovrPhysicsNewTerrainShape(lua_State* L) {
 static int l_lovrPhysicsNewWeldJoint(lua_State* L) {
   Collider* a = luax_totype(L, 1, Collider);
   Collider* b = luax_checktype(L, 2, Collider);
-  float anchor[3];
-  luax_readvec3(L, 3, anchor, NULL);
-  WeldJoint* joint = lovrWeldJointCreate(a, b, anchor);
+  WeldJoint* joint = lovrWeldJointCreate(a, b);
   luax_pushtype(L, WeldJoint, joint);
   lovrRelease(joint, lovrJointDestroy);
   return 1;
@@ -222,7 +221,11 @@ static int l_lovrPhysicsNewBallJoint(lua_State* L) {
   Collider* a = luax_totype(L, 1, Collider);
   Collider* b = luax_checktype(L, 2, Collider);
   float anchor[3];
-  luax_readvec3(L, 3, anchor, NULL);
+  if (lua_isnoneornil(L, 3)) {
+    lovrColliderGetRawPosition(a ? a : b, anchor);
+  } else {
+    luax_readvec3(L, 3, anchor, NULL);
+  }
   BallJoint* joint = lovrBallJointCreate(a, b, anchor);
   luax_pushtype(L, BallJoint, joint);
   lovrRelease(joint, lovrJointDestroy);
@@ -232,9 +235,24 @@ static int l_lovrPhysicsNewBallJoint(lua_State* L) {
 static int l_lovrPhysicsNewConeJoint(lua_State* L) {
   Collider* a = luax_totype(L, 1, Collider);
   Collider* b = luax_checktype(L, 2, Collider);
-  float anchor[3], axis[3];
-  int index = luax_readvec3(L, 3, anchor, NULL);
-  luax_readvec3(L, index, axis, NULL);
+
+  int index = 3;
+  float anchor[3];
+  if (lua_isnoneornil(L, index)) {
+    lovrColliderGetRawPosition(a ? a : b, anchor);
+  } else {
+    index = luax_readvec3(L, index, anchor, NULL);
+  }
+
+  float axis[3];
+  if (lua_isnoneornil(L, index)) {
+    lovrColliderGetRawPosition(b, axis);
+    vec3_sub(axis, anchor);
+    vec3_normalize(axis);
+  } else {
+    luax_readvec3(L, index, axis, NULL);
+  }
+
   ConeJoint* joint = lovrConeJointCreate(a, b, anchor, axis);
   luax_pushtype(L, ConeJoint, joint);
   lovrRelease(joint, lovrJointDestroy);
@@ -245,8 +263,13 @@ static int l_lovrPhysicsNewDistanceJoint(lua_State* L) {
   Collider* a = luax_totype(L, 1, Collider);
   Collider* b = luax_checktype(L, 2, Collider);
   float anchor1[3], anchor2[3];
-  int index = luax_readvec3(L, 3, anchor1, NULL);
-  luax_readvec3(L, index, anchor2, NULL);
+  if (lua_isnoneornil(L, 3)) {
+    lovrColliderGetRawPosition(a ? a : b, anchor1);
+    lovrColliderGetRawPosition(b, anchor2);
+  } else {
+    int index = luax_readvec3(L, 3, anchor1, NULL);
+    luax_readvec3(L, index, anchor2, NULL);
+  }
   DistanceJoint* joint = lovrDistanceJointCreate(a, b, anchor1, anchor2);
   luax_pushtype(L, DistanceJoint, joint);
   lovrRelease(joint, lovrJointDestroy);
@@ -256,9 +279,24 @@ static int l_lovrPhysicsNewDistanceJoint(lua_State* L) {
 static int l_lovrPhysicsNewHingeJoint(lua_State* L) {
   Collider* a = luax_totype(L, 1, Collider);
   Collider* b = luax_checktype(L, 2, Collider);
-  float anchor[3], axis[3];
-  int index = luax_readvec3(L, 3, anchor, NULL);
-  luax_readvec3(L, index, axis, NULL);
+
+  int index = 3;
+  float anchor[3];
+  if (lua_isnoneornil(L, index)) {
+    lovrColliderGetRawPosition(a ? a : b, anchor);
+  } else {
+    index = luax_readvec3(L, index, anchor, NULL);
+  }
+
+  float axis[3];
+  if (lua_isnoneornil(L, index)) {
+    lovrColliderGetRawPosition(b, axis);
+    vec3_sub(axis, anchor);
+    vec3_normalize(axis);
+  } else {
+    luax_readvec3(L, index, axis, NULL);
+  }
+
   HingeJoint* joint = lovrHingeJointCreate(a, b, anchor, axis);
   luax_pushtype(L, HingeJoint, joint);
   lovrRelease(joint, lovrJointDestroy);

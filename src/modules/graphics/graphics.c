@@ -160,7 +160,6 @@ struct Material {
 };
 
 typedef struct {
-  uint32_t codepoint;
   float advance;
   uint16_t x, y;
   uint16_t uv[4];
@@ -173,7 +172,6 @@ struct Font {
   Material* material;
   arr_t(Glyph) glyphs;
   map_t glyphLookup;
-  map_t kerning;
   float pixelDensity;
   float lineSpacing;
   uint32_t padding;
@@ -990,7 +988,6 @@ void lovrGraphicsGetLimits(GraphicsLimits* limits) {
   memcpy(limits->workgroupSize, state.limits.workgroupSize, 3 * sizeof(uint32_t));
   limits->totalWorkgroupSize = state.limits.totalWorkgroupSize;
   limits->computeSharedMemory = state.limits.computeSharedMemory;
-  limits->shaderConstantSize = state.limits.pushConstantSize;
   limits->indirectDrawCount = state.limits.indirectDrawCount;
   limits->instances = state.limits.instances;
   limits->anisotropy = state.limits.anisotropy;
@@ -1392,6 +1389,7 @@ static void recordRenderPass(Pass* pass, gpu_stream* stream) {
   gpu_buffer* vertexBuffer = NULL;
   uint32_t vertexBufferOffset = 0;
   gpu_buffer* indexBuffer = NULL;
+  gpu_index_type indexType = 0;
   gpu_buffer* uniformBuffer = NULL;
   uint32_t uniformOffset = 0;
   uint32_t uniformSize = 0;
@@ -1451,10 +1449,13 @@ static void recordRenderPass(Pass* pass, gpu_stream* stream) {
       vertexBufferOffset = draw->vertexBufferOffset;
     }
 
-    if (draw->indexBuffer && draw->indexBuffer != indexBuffer) {
-      gpu_index_type indexType = (draw->flags & DRAW_INDEX32) ? GPU_INDEX_U32 : GPU_INDEX_U16;
-      gpu_bind_index_buffer(stream, draw->indexBuffer, 0, indexType);
-      indexBuffer = draw->indexBuffer;
+    if (draw->indexBuffer) {
+      gpu_index_type type = (draw->flags & DRAW_INDEX32) ? GPU_INDEX_U32 : GPU_INDEX_U16;
+      if (draw->indexBuffer != indexBuffer || type != indexType) {
+        gpu_bind_index_buffer(stream, draw->indexBuffer, 0, type);
+        indexBuffer = draw->indexBuffer;
+        indexType = type;
+      }
     }
 
     uint32_t DrawID = i & 0xff;
@@ -3344,6 +3345,24 @@ bool lovrShaderHasAttribute(Shader* shader, const char* name, uint32_t location)
   return false;
 }
 
+bool lovrShaderHasVariable(Shader* shader, const char* name) {
+  uint32_t hash = (uint32_t) hash64(name, strlen(name));
+
+  for (uint32_t i = 0; i < shader->uniformCount; i++) {
+    if (shader->uniforms[i].hash == hash) {
+      return true;
+    }
+  }
+
+  for (uint32_t i = 0; i < shader->resourceCount; i++) {
+    if (shader->resources[i].hash == hash) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 void lovrShaderGetWorkgroupSize(Shader* shader, uint32_t size[3]) {
   memcpy(size, shader->workgroupSize, 3 * sizeof(uint32_t));
 }
@@ -3503,7 +3522,7 @@ const MaterialInfo* lovrMaterialGetInfo(Material* material) {
 
 Font* lovrGraphicsGetDefaultFont(void) {
   if (!state.defaultFont) {
-    Rasterizer* rasterizer = lovrRasterizerCreate(NULL, 32);
+    Rasterizer* rasterizer = lovrRasterizerCreate(NULL, 32, NULL);
     state.defaultFont = lovrFontCreate(&(FontInfo) {
       .rasterizer = rasterizer,
       .spread = 4.
@@ -3521,22 +3540,67 @@ Font* lovrFontCreate(const FontInfo* info) {
   lovrRetain(info->rasterizer);
   arr_init(&font->glyphs);
   map_init(&font->glyphLookup, 36);
-  map_init(&font->kerning, 36);
 
   font->pixelDensity = lovrRasterizerGetLeading(info->rasterizer);
   font->lineSpacing = 1.f;
-  font->padding = (uint32_t) ceil(info->spread / 2.);
+  font->padding = lovrRasterizerGetType(info->rasterizer) == RASTERIZER_TTF ? (uint32_t) ceil(info->spread / 2.) : 0;
 
-  // Initial atlas size must be big enough to hold any of the glyphs
-  float box[4];
-  font->atlasWidth = 1;
-  font->atlasHeight = 1;
-  lovrRasterizerGetBoundingBox(info->rasterizer, box);
-  uint32_t maxWidth = (uint32_t) ceilf(box[2] - box[0]) + 2 * font->padding;
-  uint32_t maxHeight = (uint32_t) ceilf(box[3] - box[1]) + 2 * font->padding;
-  while (font->atlasWidth < 2 * maxWidth || font->atlasHeight < 2 * maxHeight) {
-    font->atlasWidth <<= 1;
-    font->atlasHeight <<= 1;
+  Image* image = lovrRasterizerGetAtlas(info->rasterizer);
+
+  if (image) {
+    font->atlasWidth = lovrImageGetWidth(image, 0);
+    font->atlasHeight = lovrImageGetHeight(image, 0);
+
+    font->atlas = lovrTextureCreate(&(TextureInfo) {
+      .type = TEXTURE_2D,
+      .format = lovrImageGetFormat(image),
+      .width = font->atlasWidth,
+      .height = font->atlasHeight,
+      .layers = 1,
+      .mipmaps = 1,
+      .usage = TEXTURE_SAMPLE,
+      .srgb = true,
+      .imageCount = 1,
+      .images = &image,
+      .label = "Font Atlas"
+    });
+
+    font->material = lovrMaterialCreate(&(MaterialInfo) {
+      .data.color = { 1.f, 1.f, 1.f, 1.f },
+      .data.uvScale = { 1.f, 1.f },
+      .texture = font->atlas
+    });
+
+    uint32_t glyphCount = lovrRasterizerGetGlyphCount(info->rasterizer);
+
+    for (uint32_t i = 0; i < glyphCount; i++) {
+      arr_expand(&font->glyphs, 1);
+      Glyph* glyph = &font->glyphs.data[font->glyphs.length++];
+      uint32_t codepoint = lovrRasterizerGetAtlasGlyph(info->rasterizer, i, &glyph->x, &glyph->y);
+      map_set(&font->glyphLookup, hash64(&codepoint, 4), font->glyphs.length - 1);
+
+      lovrRasterizerGetGlyphBoundingBox(info->rasterizer, codepoint, glyph->box);
+
+      float width = glyph->box[2] - glyph->box[0];
+      float height = glyph->box[3] - glyph->box[1];
+      glyph->uv[0] = (uint16_t) ((float) glyph->x / font->atlasWidth * 65535.f + .5f);
+      glyph->uv[1] = (uint16_t) ((float) glyph->y / font->atlasHeight * 65535.f + .5f);
+      glyph->uv[2] = (uint16_t) ((float) (glyph->x + width) / font->atlasWidth * 65535.f + .5f);
+      glyph->uv[3] = (uint16_t) ((float) (glyph->y + height) / font->atlasHeight * 65535.f + .5f);
+      glyph->advance = lovrRasterizerGetAdvance(font->info.rasterizer, codepoint);
+    }
+  } else {
+    // Initial atlas size must be big enough to hold any of the glyphs
+    float box[4];
+    font->atlasWidth = 1;
+    font->atlasHeight = 1;
+    lovrRasterizerGetBoundingBox(info->rasterizer, box);
+    uint32_t maxWidth = (uint32_t) ceilf(box[2] - box[0]) + 2 * font->padding;
+    uint32_t maxHeight = (uint32_t) ceilf(box[3] - box[1]) + 2 * font->padding;
+    while (font->atlasWidth < 2 * maxWidth || font->atlasHeight < 2 * maxHeight) {
+      font->atlasWidth <<= 1;
+      font->atlasHeight <<= 1;
+    }
   }
 
   return font;
@@ -3549,7 +3613,6 @@ void lovrFontDestroy(void* ref) {
   lovrRelease(font->atlas, lovrTextureDestroy);
   arr_free(&font->glyphs);
   map_free(&font->glyphLookup);
-  map_free(&font->kerning);
   lovrFree(font);
 }
 
@@ -3586,7 +3649,6 @@ static Glyph* lovrFontGetGlyph(Font* font, uint32_t codepoint, bool* resized) {
   map_set(&font->glyphLookup, hash, font->glyphs.length);
   Glyph* glyph = &font->glyphs.data[font->glyphs.length++];
 
-  glyph->codepoint = codepoint;
   glyph->advance = lovrRasterizerGetAdvance(font->info.rasterizer, codepoint);
 
   if (lovrRasterizerIsGlyphEmpty(font->info.rasterizer, codepoint)) {
@@ -3626,9 +3688,9 @@ static Glyph* lovrFontGetGlyph(Font* font, uint32_t codepoint, bool* resized) {
   glyph->x = font->atlasX + font->padding;
   glyph->y = font->atlasY + font->padding;
   glyph->uv[0] = (uint16_t) ((float) glyph->x / font->atlasWidth * 65535.f + .5f);
-  glyph->uv[1] = (uint16_t) ((float) (glyph->y + height) / font->atlasHeight * 65535.f + .5f);
+  glyph->uv[1] = (uint16_t) ((float) glyph->y / font->atlasHeight * 65535.f + .5f);
   glyph->uv[2] = (uint16_t) ((float) (glyph->x + width) / font->atlasWidth * 65535.f + .5f);
-  glyph->uv[3] = (uint16_t) ((float) glyph->y / font->atlasHeight * 65535.f + .5f);
+  glyph->uv[3] = (uint16_t) ((float) (glyph->y + height) / font->atlasHeight * 65535.f + .5f);
 
   font->atlasX += pixelWidth;
   font->rowHeight = MAX(font->rowHeight, pixelHeight);
@@ -3687,9 +3749,9 @@ static Glyph* lovrFontGetGlyph(Font* font, uint32_t codepoint, bool* resized) {
       Glyph* g = &font->glyphs.data[i];
       if (g->box[2] - g->box[0] > 0.f) {
         g->uv[0] = (uint16_t) ((float) g->x / font->atlasWidth * 65535.f + .5f);
-        g->uv[1] = (uint16_t) ((float) (g->y + g->box[3] - g->box[1]) / font->atlasHeight * 65535.f + .5f);
+        g->uv[1] = (uint16_t) ((float) g->y / font->atlasHeight * 65535.f + .5f);
         g->uv[2] = (uint16_t) ((float) (g->x + g->box[2] - g->box[0]) / font->atlasWidth * 65535.f + .5f);
-        g->uv[3] = (uint16_t) ((float) g->y / font->atlasHeight * 65535.f + .5f);
+        g->uv[3] = (uint16_t) ((float) (g->y + g->box[3] - g->box[1]) / font->atlasHeight * 65535.f + .5f);
       }
     }
 
@@ -3698,7 +3760,7 @@ static Glyph* lovrFontGetGlyph(Font* font, uint32_t codepoint, bool* resized) {
 
   size_t stack = tempPush(&state.allocator);
   float* pixels = tempAlloc(&state.allocator, pixelWidth * pixelHeight * 4 * sizeof(float));
-  lovrRasterizerGetPixels(font->info.rasterizer, glyph->codepoint, pixels, pixelWidth, pixelHeight, font->info.spread);
+  lovrRasterizerGetPixels(font->info.rasterizer, codepoint, pixels, pixelWidth, pixelHeight, font->info.spread);
   BufferView view = getBuffer(GPU_BUFFER_UPLOAD, pixelWidth * pixelHeight * 4 * sizeof(uint8_t), 64);
   float* src = pixels;
   uint8_t* dst = view.pointer;
@@ -3720,19 +3782,6 @@ static Glyph* lovrFontGetGlyph(Font* font, uint32_t codepoint, bool* resized) {
   state.barrier.flush |= GPU_CACHE_TRANSFER_WRITE;
   state.barrier.clear |= GPU_CACHE_TEXTURE;
   return glyph;
-}
-
-float lovrFontGetKerning(Font* font, uint32_t first, uint32_t second) {
-  uint32_t codepoints[] = { first, second };
-  uint64_t hash = hash64(codepoints, sizeof(codepoints));
-  union { float f32; uint64_t u64; } kerning = { .u64 = map_get(&font->kerning, hash) };
-
-  if (kerning.u64 == MAP_NIL) {
-    kerning.f32 = lovrRasterizerGetKerning(font->info.rasterizer, first, second);
-    map_set(&font->kerning, hash, kerning.u64);
-  }
-
-  return kerning.f32;
 }
 
 float lovrFontGetWidth(Font* font, ColoredString* strings, uint32_t count) {
@@ -3765,7 +3814,7 @@ float lovrFontGetWidth(Font* font, ColoredString* strings, uint32_t count) {
 
       Glyph* glyph = lovrFontGetGlyph(font, codepoint, NULL);
 
-      if (previous) x += lovrFontGetKerning(font, previous, codepoint);
+      if (previous) x += lovrRasterizerGetKerning(font->info.rasterizer, previous, codepoint);
       previous = codepoint;
 
       x += glyph->advance;
@@ -3832,7 +3881,7 @@ void lovrFontGetLines(Font* font, ColoredString* strings, uint32_t count, float 
     Glyph* glyph = lovrFontGetGlyph(font, codepoint, NULL);
 
     // Keming
-    if (previous) x += lovrFontGetKerning(font, previous, codepoint);
+    if (previous) x += lovrRasterizerGetKerning(font->info.rasterizer, previous, codepoint);
     previous = codepoint;
 
     // Wrap
@@ -3929,7 +3978,7 @@ void lovrFontGetVertices(Font* font, ColoredString* strings, uint32_t count, flo
       }
 
       // Keming
-      if (previous) x += lovrFontGetKerning(font, previous, codepoint);
+      if (previous) x += lovrRasterizerGetKerning(font->info.rasterizer, previous, codepoint);
       previous = codepoint;
 
       // Wrap
@@ -4440,20 +4489,27 @@ Model* lovrModelCreate(const ModelInfo* info) {
     }, (void**) &indexData);
   }
 
-  // Primitives are sorted to simplify animation:
-  // - Skinned primitives come first, ordered by skin
-  // - Primitives with blend shapes are next
-  // - Then "non-dynamic" primitives follow
-  // Within each section primitives are still sorted by their index.
+  // Primitives are sorted to ensure animated/blended vertices are close together:
+  // - Skinned primitives come first
+  //   - Within a skin, the primitives with blend shapes come first
+  //   - Followed by the primitives without blend shapes
+  // - Primitives with blend shapes (but no skinning) are next
+  // - Then the remaining "non-dynamic" primitives follow
+  // Within each section, primitives are still sorted by their index
+  // All of a node's primitives will remain together, since skin/blend shapes are per-node
 
   size_t stack = tempPush(&state.allocator);
   uint64_t* primitiveOrder = tempAlloc(&state.allocator, data->primitiveCount * sizeof(uint64_t));
   uint32_t* baseVertex = tempAlloc(&state.allocator, data->primitiveCount * sizeof(uint32_t));
 
+  // The sort key only has 31 bits for the skin
+  lovrCheck(data->skinCount < (1u << 31), "Too many skins!");
+
   for (uint32_t i = 0; i < data->primitiveCount; i++) {
-    uint32_t hi = data->primitives[i].skin;
-    if (hi == ~0u && !!data->primitives[i].blendShapes) hi--;
-    primitiveOrder[i] = ((uint64_t) hi << 32) | i;
+    primitiveOrder[i] = 0;
+    primitiveOrder[i] |= (uint64_t) data->primitives[i].skin << 33;
+    primitiveOrder[i] |= (uint64_t) (data->primitives[i].blendShapeCount == 0) << 32;
+    primitiveOrder[i] |= i;
   }
 
   qsort(primitiveOrder, data->primitiveCount, sizeof(uint64_t), u64cmp);
@@ -4915,6 +4971,8 @@ static void lovrModelAnimateVertices(Model* model) {
     model->transformsDirty = false;
   }
 
+  gpu_compute_begin(state.stream);
+
   if (blend) {
     Shader* shader = lovrGraphicsGetDefaultShader(SHADER_BLENDER);
     uint32_t vertexCount = data->dynamicVertexCount;
@@ -4928,7 +4986,6 @@ static void lovrModelAnimateVertices(Model* model) {
       { 3, GPU_SLOT_UNIFORM_BUFFER, .buffer = { NULL, 0, chunkSize * sizeof(float) } }
     };
 
-    gpu_compute_begin(state.stream);
     gpu_bind_pipeline(state.stream, shader->computePipeline, GPU_PIPELINE_COMPUTE);
 
     for (uint32_t i = 0; i < model->blendGroupCount; i++) {
@@ -4936,14 +4993,14 @@ static void lovrModelAnimateVertices(Model* model) {
 
       for (uint32_t j = 0; j < group->count; j += chunkSize) {
         uint32_t count = MIN(group->count - j, chunkSize);
-        bool first = j == 0;
+        bool inplace = j > 0;
 
         BufferView view = getBuffer(GPU_BUFFER_STREAM, chunkSize * sizeof(float), state.limits.uniformBufferAlign);
         memcpy(view.pointer, model->blendShapeWeights + group->index + j, count * sizeof(float));
         bindings[3].buffer = (gpu_buffer_binding) { view.buffer, view.offset, view.extent };
 
         gpu_bundle* bundle = getBundle(shader->layout, bindings, COUNTOF(bindings));
-        uint32_t constants[] = { group->vertexIndex, group->vertexCount, count, blendBufferCursor, first };
+        uint32_t constants[] = { group->vertexIndex, group->vertexCount, count, blendBufferCursor, inplace };
         uint32_t subgroupSize = state.device.subgroupSize;
 
         gpu_bind_bundles(state.stream, shader->gpu, &bundle, 0, 1, NULL, 0);
@@ -4964,29 +5021,24 @@ static void lovrModelAnimateVertices(Model* model) {
     }
 
     model->blendShapesDirty = false;
-  }
 
-  if (skin) {
-    if (blend) {
+    if (skin) {
       gpu_sync(state.stream, &(gpu_barrier) {
         .prev = GPU_PHASE_SHADER_COMPUTE,
         .next = GPU_PHASE_SHADER_COMPUTE,
         .flush = GPU_CACHE_STORAGE_WRITE,
         .clear = GPU_CACHE_STORAGE_READ | GPU_CACHE_STORAGE_WRITE
       }, 1);
-    } else {
-      gpu_compute_begin(state.stream);
     }
+  }
 
+  if (skin) {
     Shader* shader = lovrGraphicsGetDefaultShader(SHADER_ANIMATOR);
-    Buffer* sourceBuffer = blend ? model->vertexBuffer : model->rawVertexBuffer;
-
-    uint32_t count = data->skinnedVertexCount;
 
     gpu_binding bindings[] = {
-      { 0, GPU_SLOT_STORAGE_BUFFER, .buffer = { sourceBuffer->gpu, sourceBuffer->base, count * sizeof(ModelVertex) } },
-      { 1, GPU_SLOT_STORAGE_BUFFER, .buffer = { model->vertexBuffer->gpu, model->vertexBuffer->base, count * sizeof(ModelVertex) } },
-      { 2, GPU_SLOT_STORAGE_BUFFER, .buffer = { model->skinBuffer->gpu, model->skinBuffer->base, count * 8 } },
+      { 0, GPU_SLOT_STORAGE_BUFFER, .buffer = { model->rawVertexBuffer->gpu, model->rawVertexBuffer->base, data->skinnedVertexCount * sizeof(ModelVertex) } },
+      { 1, GPU_SLOT_STORAGE_BUFFER, .buffer = { model->vertexBuffer->gpu, model->vertexBuffer->base, data->skinnedVertexCount * sizeof(ModelVertex) } },
+      { 2, GPU_SLOT_STORAGE_BUFFER, .buffer = { model->skinBuffer->gpu, model->skinBuffer->base, data->skinnedVertexCount * 8 } },
       { 3, GPU_SLOT_UNIFORM_BUFFER, .buffer = { NULL, 0, 0 } } // Filled in for each skin
     };
 
@@ -5011,16 +5063,22 @@ static void lovrModelAnimateVertices(Model* model) {
       gpu_bundle* bundle = getBundle(shader->layout, bindings, COUNTOF(bindings));
       gpu_bind_bundles(state.stream, shader->gpu, &bundle, 0, 1, NULL, 0);
 
-      uint32_t subgroupSize = state.device.subgroupSize;
-      uint32_t maxVerticesPerDispatch = state.limits.workgroupCount[0] * subgroupSize;
-      uint32_t verticesRemaining = skin->vertexCount;
+      // Animate in 2 passes: first animate vertices with blend shapes, then animate the rest
+      // We do this because the source buffer is different for blended vs. unblended vertices:
+      // - Unblended vertices should animate the original vertices from rawVertexBuffer
+      // - Blended vertices should animate the post-blended vertices in-place
+      for (uint32_t j = 0; j < 2; j++) {
+        uint32_t subgroupSize = state.device.subgroupSize;
+        uint32_t maxVerticesPerDispatch = state.limits.workgroupCount[0] * subgroupSize;
+        uint32_t verticesRemaining = j == 0 ? skin->blendedVertexCount : (skin->vertexCount - skin->blendedVertexCount);
 
-      while (verticesRemaining > 0) {
-        uint32_t vertexCount = MIN(verticesRemaining, maxVerticesPerDispatch);
-        gpu_push_constants(state.stream, shader->gpu, (uint32_t[2]) { baseVertex, vertexCount }, 8);
-        gpu_compute(state.stream, (vertexCount + subgroupSize - 1) / subgroupSize, 1, 1);
-        verticesRemaining -= vertexCount;
-        baseVertex += vertexCount;
+        while (verticesRemaining > 0) {
+          uint32_t vertexCount = MIN(verticesRemaining, maxVerticesPerDispatch);
+          gpu_push_constants(state.stream, shader->gpu, (uint32_t[3]) { baseVertex, vertexCount, j == 0 }, 12);
+          gpu_compute(state.stream, (vertexCount + subgroupSize - 1) / subgroupSize, 1, 1);
+          verticesRemaining -= vertexCount;
+          baseVertex += vertexCount;
+        }
       }
     }
   }
@@ -6204,6 +6262,27 @@ void lovrPassLine(Pass* pass, uint32_t count, float** points) {
   }
 }
 
+void lovrPassPolygon(Pass* pass, uint32_t count, float** vertices) {
+  lovrCheck(count >= 3, "Need at least 3 points to make a polygon");
+
+  uint16_t* indices;
+
+  lovrPassDraw(pass, &(DrawInfo) {
+    .mode = DRAW_TRIANGLES,
+    .vertex.format = VERTEX_POINT,
+    .vertex.pointer = (void**) vertices,
+    .vertex.count = count,
+    .index.pointer = (void**) &indices,
+    .index.count = 3 * count - 2
+  });
+
+  for (uint32_t i = 3; i <= count; i++) {
+    *indices++ = 0;
+    *indices++ = i - 2;
+    *indices++ = i - 1;
+  }
+}
+
 void lovrPassPlane(Pass* pass, float* transform, DrawStyle style, uint32_t cols, uint32_t rows) {
   uint32_t key[] = { SHAPE_PLANE, style, cols, rows };
   ShapeVertex* vertices;
@@ -6996,7 +7075,7 @@ void lovrPassText(Pass* pass, ColoredString* strings, uint32_t count, float* tra
   uint16_t* indices;
   lovrPassDraw(pass, &(DrawInfo) {
     .mode = DRAW_TRIANGLES,
-    .shader = SHADER_FONT,
+    .shader = lovrRasterizerGetType(font->info.rasterizer) == RASTERIZER_TTF ? SHADER_FONT : SHADER_UNLIT,
     .material = font->material,
     .transform = transform,
     .vertex.format = VERTEX_GLYPH,

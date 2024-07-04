@@ -8,6 +8,7 @@ dev
 
 - Add `Layer` object, `lovr.headset.newLayer`, and `lovr.headset.get/setLayers`.
 - Add `File` object and `lovr.filesystem.newFile`.
+- Add support for BMFont in `Font` and `Rasterizer`.
 - Add `--watch` CLI flag, `lovr.filechanged` event, and `lovr.filesystem.watch/unwatch`.
 - Add `Model:resetBlendShapes`.
 - Add `lovr.system.wasMousePressed` and `lovr.system.wasMouseReleased`.
@@ -140,6 +141,7 @@ dev
 - Remove `SliderJoint:get/setUpper/LowerLimit` (use `:get/setLimits`).
 - Remove `Collider:getLocalCenter` (renamed to `Collider:getCenterOfMass`).
 - Remove `Shape:getMassData` (split into separate getters).
+- REmove `shaderConstantSize` limit from `lovr.graphics.getLimits`.
 
 v0.17.1 - 2024-03-12
 ---

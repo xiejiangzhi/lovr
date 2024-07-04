@@ -76,7 +76,6 @@ typedef struct {
   uint32_t workgroupSize[3];
   uint32_t totalWorkgroupSize;
   uint32_t computeSharedMemory;
-  uint32_t shaderConstantSize;
   uint32_t indirectDrawCount;
   uint32_t instances;
   float anisotropy;
@@ -335,6 +334,7 @@ void lovrShaderDestroy(void* ref);
 const ShaderInfo* lovrShaderGetInfo(Shader* shader);
 bool lovrShaderHasStage(Shader* shader, ShaderStage stage);
 bool lovrShaderHasAttribute(Shader* shader, const char* name, uint32_t location);
+bool lovrShaderHasVariable(Shader* shader, const char* name);
 void lovrShaderGetWorkgroupSize(Shader* shader, uint32_t size[3]);
 const DataField* lovrShaderGetBufferFormat(Shader* shader, const char* name, uint32_t* fieldCount);
 
@@ -620,6 +620,7 @@ void lovrPassSendData(Pass* pass, const char* name, size_t length, void** data, 
 
 void lovrPassPoints(Pass* pass, uint32_t count, float** vertices);
 void lovrPassLine(Pass* pass, uint32_t count, float** vertices);
+void lovrPassPolygon(Pass* pass, uint32_t count, float** vertices);
 void lovrPassPlane(Pass* pass, float* transform, DrawStyle style, uint32_t cols, uint32_t rows);
 void lovrPassRoundrect(Pass* pass, float* transform, float radius, uint32_t segments);
 void lovrPassBox(Pass* pass, float* transform, DrawStyle style);

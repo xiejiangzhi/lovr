@@ -2103,17 +2103,17 @@ void lovrJointDestruct(Joint* joint) {
   World* world = b->world;
   JointNode* node;
 
-  node = &joint->a;
-  if (node->next) lovrJointGetNode(node->next, a)->prev = node->prev;
-  if (node->prev) lovrJointGetNode(node->prev, a)->next = node->next;
-  else a->joints = node->next;
-
-  if (b) {
-    node = &joint->b;
-    if (node->next) lovrJointGetNode(node->next, b)->prev = node->prev;
-    if (node->prev) lovrJointGetNode(node->prev, b)->next = node->next;
-    else b->joints = node->next;
+  if (a) {
+    node = &joint->a;
+    if (node->next) lovrJointGetNode(node->next, a)->prev = node->prev;
+    if (node->prev) lovrJointGetNode(node->prev, a)->next = node->next;
+    else a->joints = node->next;
   }
+
+  node = &joint->b;
+  if (node->next) lovrJointGetNode(node->next, b)->prev = node->prev;
+  if (node->prev) lovrJointGetNode(node->prev, b)->next = node->next;
+  else b->joints = node->next;
 
   node = &joint->world;
   if (node->next) node->next->world.prev = node->prev;
@@ -2202,6 +2202,9 @@ float lovrJointGetForce(Joint* joint) {
     case JOINT_BALL:
       JPH_PointConstraint_GetTotalLambdaPosition((JPH_PointConstraint*) joint->constraint, &v);
       return vec3_length(vec3_fromJolt(force, &v)) * world->inverseDelta;
+    case JOINT_CONE:
+      JPH_ConeConstraint_GetTotalLambdaPosition((JPH_ConeConstraint*) joint->constraint, &v);
+      return vec3_length(vec3_fromJolt(force, &v)) * world->inverseDelta;
     case JOINT_DISTANCE:
       return JPH_DistanceConstraint_GetTotalLambdaPosition((JPH_DistanceConstraint*) joint->constraint);
     case JOINT_HINGE:
@@ -2210,7 +2213,7 @@ float lovrJointGetForce(Joint* joint) {
     case JOINT_SLIDER:
       JPH_SliderConstraint_GetTotalLambdaPosition((JPH_SliderConstraint*) joint->constraint, &x, &y);
       return sqrtf((x * x) + (y * y)) * world->inverseDelta;
-    default: return 0.f;
+    default: lovrUnreachable();
   }
 }
 
@@ -2228,6 +2231,8 @@ float lovrJointGetTorque(Joint* joint) {
       return vec3_length(vec3_fromJolt(torque, &v)) * world->inverseDelta;
     case JOINT_BALL:
       return 0.f;
+    case JOINT_CONE:
+      return JPH_ConeConstraint_GetTotalLambdaRotation((JPH_ConeConstraint*) joint->constraint);
     case JOINT_DISTANCE:
       return 0.f;
     case JOINT_HINGE:
@@ -2236,13 +2241,13 @@ float lovrJointGetTorque(Joint* joint) {
     case JOINT_SLIDER:
       JPH_SliderConstraint_GetTotalLambdaRotation((JPH_SliderConstraint*) joint->constraint, &v);
       return vec3_length(vec3_fromJolt(torque, &v)) * world->inverseDelta;
-    default: return 0.f;
+    default: lovrUnreachable();
   }
 }
 
 // WeldJoint
 
-WeldJoint* lovrWeldJointCreate(Collider* a, Collider* b, float anchor[3]) {
+WeldJoint* lovrWeldJointCreate(Collider* a, Collider* b) {
   lovrCheck(!a || a->world == b->world, "Joint bodies must exist in same World");
   JPH_Body* parent = a ? a->body : JPH_Body_GetFixedToWorldBody();
 
@@ -2251,8 +2256,7 @@ WeldJoint* lovrWeldJointCreate(Collider* a, Collider* b, float anchor[3]) {
   joint->type = JOINT_WELD;
 
   JPH_FixedConstraintSettings* settings = JPH_FixedConstraintSettings_Create();
-  JPH_FixedConstraintSettings_SetPoint1(settings, vec3_toJolt(anchor));
-  JPH_FixedConstraintSettings_SetPoint2(settings, vec3_toJolt(anchor));
+  JPH_FixedConstraintSettings_SetAutoDetectPoint(settings, true);
   joint->constraint = (JPH_Constraint*) JPH_FixedConstraintSettings_CreateConstraint(settings, parent, b->body);
   JPH_ConstraintSettings_Destroy((JPH_ConstraintSettings*) settings);
   JPH_PhysicsSystem_AddConstraint(b->world->system, joint->constraint);
@@ -2288,6 +2292,9 @@ ConeJoint* lovrConeJointCreate(Collider* a, Collider* b, float anchor[3], float 
   lovrCheck(!a || a->world == b->world, "Joint bodies must exist in same World");
   JPH_Body* parent = a ? a->body : JPH_Body_GetFixedToWorldBody();
 
+  lovrCheck(vec3_length(axis) > 0.f, "Cone axis can not be zero");
+  vec3_normalize(axis);
+
   ConeJoint* joint = lovrCalloc(sizeof(ConeJoint));
   joint->ref = 1;
   joint->type = JOINT_CONE;
@@ -2297,6 +2304,7 @@ ConeJoint* lovrConeJointCreate(Collider* a, Collider* b, float anchor[3], float 
   JPH_ConeConstraintSettings_SetPoint2(settings, vec3_toJolt(anchor));
   JPH_ConeConstraintSettings_SetTwistAxis1(settings, vec3_toJolt(axis));
   JPH_ConeConstraintSettings_SetTwistAxis2(settings, vec3_toJolt(axis));
+  JPH_ConeConstraintSettings_SetHalfConeAngle(settings, (float) M_PI / 4.f);
   joint->constraint = (JPH_Constraint*) JPH_ConeConstraintSettings_CreateConstraint(settings, parent, b->body);
   JPH_PhysicsSystem_AddConstraint(b->world->system, joint->constraint);
   lovrJointInit(joint, a, b);
@@ -2383,6 +2391,9 @@ void lovrDistanceJointSetSpring(DistanceJoint* joint, float frequency, float dam
 HingeJoint* lovrHingeJointCreate(Collider* a, Collider* b, float anchor[3], float axis[3]) {
   lovrCheck(!a || a->world == b->world, "Joint bodies must exist in same World");
   JPH_Body* parent = a ? a->body : JPH_Body_GetFixedToWorldBody();
+
+  lovrCheck(vec3_length(axis) > 0.f, "Hinge axis can not be zero");
+  vec3_normalize(axis);
 
   HingeJoint* joint = lovrCalloc(sizeof(HingeJoint));
   joint->ref = 1;
@@ -2540,7 +2551,7 @@ SliderJoint* lovrSliderJointCreate(Collider* a, Collider* b, float axis[3]) {
 void lovrSliderJointGetAxis(SliderJoint* joint, float axis[3]) {
   JPH_Vec3 resultAxis;
   JPH_SliderConstraintSettings* settings = (JPH_SliderConstraintSettings*) JPH_Constraint_GetConstraintSettings((JPH_Constraint*) joint->constraint);
-  JPH_SliderConstraintSettings_GetSliderAxis(settings, &resultAxis);
+  JPH_SliderConstraintSettings_GetSliderAxis1(settings, &resultAxis);
   JPH_Body* body1 = JPH_TwoBodyConstraint_GetBody1((JPH_TwoBodyConstraint*) joint->constraint);
   JPH_RMatrix4x4 centerOfMassTransform;
   JPH_Body_GetCenterOfMassTransform(body1, &centerOfMassTransform);

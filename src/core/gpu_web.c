@@ -25,9 +25,25 @@ struct gpu_shader {
   WGPUPipelineLayout pipelineLayout;
 };
 
+struct gpu_bundle_pool {
+  void* unused;
+};
+
+struct gpu_bundle {
+  WGPUBindGroup handle;
+};
+
+struct gpu_pass {
+  gpu_pass_info info;
+};
+
 struct gpu_pipeline {
   WGPURenderPipeline render;
   WGPUComputePipeline compute;
+};
+
+struct gpu_tally {
+  WGPUQuerySet handle;
 };
 
 struct gpu_stream {
@@ -43,26 +59,36 @@ size_t gpu_sizeof_texture(void) { return sizeof(gpu_texture); }
 size_t gpu_sizeof_sampler(void) { return sizeof(gpu_sampler); }
 size_t gpu_sizeof_layout(void) { return sizeof(gpu_layout); }
 size_t gpu_sizeof_shader(void) { return sizeof(gpu_shader); }
+size_t gpu_sizeof_bundle_pool(void) { return sizeof(gpu_bundle_pool); }
+size_t gpu_sizeof_bundle(void) { return sizeof(gpu_bundle); }
+size_t gpu_sizeof_pass(void) { return sizeof(gpu_pass); }
 size_t gpu_sizeof_pipeline(void) { return sizeof(gpu_pipeline); }
+size_t gpu_sizeof_tally(void) { return sizeof(gpu_tally); }
 
 // State
 
 static struct {
   WGPUDevice device;
+  WGPUQueue queue;
+  gpu_stream streams[64];
+  uint32_t streamCount;
+  uint32_t tick;
+  uint32_t lastTickFinished;
 } state;
 
 // Helpers
 
 #define COUNTOF(x) (sizeof(x) / sizeof(x[0]))
+#define MIN(a, b) (a < b ? a : b)
+#define MAX(a, b) (a > b ? a : b)
 
 static WGPUTextureFormat convertFormat(gpu_texture_format format, bool srgb);
 
 // Buffer
 
 bool gpu_buffer_init(gpu_buffer* buffer, gpu_buffer_info* info) {
-  buffer->handle = wgpuDeviceCreateBuffer(state.device, &(WGPUBufferDescriptor) {
-    .label = info->label,
-    .usage =
+  static const WGPUBufferUsage usages[] = {
+    [GPU_BUFFER_STATIC] =
       WGPUBufferUsage_Vertex |
       WGPUBufferUsage_Index |
       WGPUBufferUsage_Uniform |
@@ -71,9 +97,31 @@ bool gpu_buffer_init(gpu_buffer* buffer, gpu_buffer_info* info) {
       WGPUBufferUsage_CopySrc |
       WGPUBufferUsage_CopyDst |
       WGPUBufferUsage_QueryResolve,
+    [GPU_BUFFER_STREAM] =
+      WGPUBufferUsage_Vertex |
+      WGPUBufferUsage_Index |
+      WGPUBufferUsage_Uniform |
+      WGPUBufferUsage_CopySrc |
+      WGPUBufferUsage_MapWrite,
+    [GPU_BUFFER_UPLOAD] =
+      WGPUBufferUsage_CopySrc |
+      WGPUBufferUsage_MapWrite,
+    [GPU_BUFFER_DOWNLOAD] =
+      WGPUBufferUsage_CopyDst |
+      WGPUBufferUsage_Storage |
+      WGPUBufferUsage_MapRead,
+  };
+
+  buffer->handle = wgpuDeviceCreateBuffer(state.device, &(WGPUBufferDescriptor) {
+    .label = info->label,
+    .usage = usages[info->type],
     .size = info->size,
     .mappedAtCreation = !!info->pointer
   });
+
+  if (info->pointer) {
+    *info->pointer = wgpuBufferGetMappedRange(buffer->handle, 0, info->size);
+  }
 
   return !!buffer->handle;
 }
@@ -151,12 +199,35 @@ void gpu_texture_destroy(gpu_texture* texture) {
   wgpuTextureDestroy(texture->handle);
 }
 
+// Surface
+
+bool gpu_surface_init(gpu_surface_info* info) {
+  return false; // TODO
+}
+
+void gpu_surface_resize(uint32_t width, uint32_t height) {
+  // TODO
+}
+
+gpu_texture* gpu_surface_acquire(void) {
+  return NULL; // TODO
+}
+
+void gpu_surface_present(void) {
+  // TODO
+}
+
 // Sampler
 
 bool gpu_sampler_init(gpu_sampler* sampler, gpu_sampler_info* info) {
   static const WGPUFilterMode filters[] = {
     [GPU_FILTER_NEAREST] = WGPUFilterMode_Nearest,
     [GPU_FILTER_LINEAR] = WGPUFilterMode_Linear
+  };
+
+  static const WGPUMipmapFilterMode mipFilters[] = {
+    [GPU_FILTER_NEAREST] = WGPUMipmapFilterMode_Nearest,
+    [GPU_FILTER_LINEAR] = WGPUMipmapFilterMode_Linear
   };
 
   static const WGPUAddressMode wraps[] = {
@@ -181,7 +252,7 @@ bool gpu_sampler_init(gpu_sampler* sampler, gpu_sampler_info* info) {
     .addressModeW = wraps[info->wrap[2]],
     .magFilter = filters[info->mag],
     .minFilter = filters[info->min],
-    .mipmapFilter = filters[info->mip],
+    .mipmapFilter = mipFilters[info->mip],
     .lodMinClamp = info->lodClamp[0],
     .lodMaxClamp = info->lodClamp[1],
     .compare = compares[info->compare],
@@ -258,7 +329,7 @@ void gpu_layout_destroy(gpu_layout* layout) {
 // Shader
 
 bool gpu_shader_init(gpu_shader* shader, gpu_shader_info* info) {
-  for (uint32_t i = 0; i < COUNTOF(info->stages) && info->stages[i].code; i++) {
+  for (uint32_t i = 0; i < info->stageCount; i++) {
     WGPUShaderModuleSPIRVDescriptor spirv = {
       .chain.sType = WGPUSType_ShaderModuleSPIRVDescriptor,
       .codeSize = info->stages[i].length,
@@ -289,7 +360,71 @@ void gpu_shader_destroy(gpu_shader* shader) {
   wgpuPipelineLayoutRelease(shader->pipelineLayout);
 }
 
-// Bundle
+// Bundles
+
+bool gpu_bundle_pool_init(gpu_bundle_pool* pool, gpu_bundle_pool_info* info) {
+  pool->unused = NULL;
+  return true;
+}
+
+void gpu_bundle_pool_destroy(gpu_bundle_pool* pool) {
+  //
+}
+
+void gpu_bundle_write(gpu_bundle** bundles, gpu_bundle_info* infos, uint32_t count) {
+  WGPUBindGroupEntry entries[32];
+
+  for (uint32_t i = 0; i < count; i++) {
+    gpu_bundle_info* info = &infos[i];
+    WGPUBindGroupEntry* entry = entries;
+    gpu_binding* binding = info->bindings;
+
+    // TODO: error if binding array is given
+    // TODO: error if binding count is bigger than 32
+
+    for (uint32_t j = 0; j < info->count; j++, entry++, binding++) {
+      memset(entry, 0, sizeof(*entry));
+      entry->binding = binding->number;
+
+      switch (binding->type) {
+        case GPU_SLOT_UNIFORM_BUFFER:
+        case GPU_SLOT_STORAGE_BUFFER:
+        case GPU_SLOT_UNIFORM_BUFFER_DYNAMIC:
+        case GPU_SLOT_STORAGE_BUFFER_DYNAMIC:
+          entry->buffer = binding->buffer.object->handle;
+          entry->offset = binding->buffer.offset;
+          entry->size = binding->buffer.extent;
+          break;
+        case GPU_SLOT_SAMPLED_TEXTURE:
+        case GPU_SLOT_STORAGE_TEXTURE:
+          entry->textureView = binding->texture->view;
+          break;
+        case GPU_SLOT_SAMPLER:
+          entry->sampler = binding->sampler->handle;
+          break;
+      }
+    }
+
+    WGPUBindGroupDescriptor descriptor = {
+      .layout = info->layout->handle,
+      .entryCount = info->count,
+      .entries = entries
+    };
+
+    bundles[i]->handle = wgpuDeviceCreateBindGroup(state.device, &descriptor);
+  }
+}
+
+// Pass
+
+bool gpu_pass_init(gpu_pass* pass, gpu_pass_info* info) {
+  pass->info = *info;
+  return true;
+}
+
+void gpu_pass_destroy(gpu_pass* pass) {
+  //
+}
 
 // Pipeline
 
@@ -431,7 +566,7 @@ bool gpu_pipeline_init_graphics(gpu_pipeline* pipeline, gpu_pipeline_info* info)
   };
 
   WGPUDepthStencilState depth = {
-    .format = convertFormat(info->depth.format, false),
+    .format = convertFormat(info->pass->info.depth.format, false),
     .depthWriteEnabled = info->depth.write,
     .depthCompare = compares[info->depth.test],
     .stencilFront = stencil,
@@ -450,21 +585,21 @@ bool gpu_pipeline_init_graphics(gpu_pipeline* pipeline, gpu_pipeline_info* info)
 
   WGPUBlendState blends[4];
   WGPUColorTargetState targets[4];
-  for (uint32_t i = 0; i < info->attachmentCount; i++) {
+  for (uint32_t i = 0; i < info->pass->info.colorCount; i++) {
     targets[i] = (WGPUColorTargetState) {
-      .format = convertFormat(info->color[i].format, info->color[i].srgb),
-      .blend = info->color[i].blend.enabled ? &blends[i] : NULL,
-      .writeMask = info->color[i].mask
+      .format = convertFormat(info->pass->info.color[i].format, info->pass->info.color[i].srgb),
+      .blend = info->blend[i].enabled ? &blends[i] : NULL,
+      .writeMask = info->colorMask[i]
     };
 
-    if (info->color[i].blend.enabled) {
+    if (info->blend[i].enabled) {
       blends[i] = (WGPUBlendState) {
-        .color.operation = blendOps[info->color[i].blend.color.op],
-        .color.srcFactor = blendFactors[info->color[i].blend.color.src],
-        .color.dstFactor = blendFactors[info->color[i].blend.color.dst],
-        .alpha.operation = blendOps[info->color[i].blend.alpha.op],
-        .alpha.srcFactor = blendFactors[info->color[i].blend.alpha.src],
-        .alpha.dstFactor = blendFactors[info->color[i].blend.alpha.dst]
+        .color.operation = blendOps[info->blend[i].color.op],
+        .color.srcFactor = blendFactors[info->blend[i].color.src],
+        .color.dstFactor = blendFactors[info->blend[i].color.dst],
+        .alpha.operation = blendOps[info->blend[i].alpha.op],
+        .alpha.srcFactor = blendFactors[info->blend[i].alpha.src],
+        .alpha.dstFactor = blendFactors[info->blend[i].alpha.dst]
       };
     }
   }
@@ -472,7 +607,7 @@ bool gpu_pipeline_init_graphics(gpu_pipeline* pipeline, gpu_pipeline_info* info)
   WGPUFragmentState fragment = {
     .module = info->shader->handles[1],
     .entryPoint = "main",
-    .targetCount = info->attachmentCount,
+    .targetCount = info->pass->info.colorCount,
     .targets = targets
   };
 
@@ -481,7 +616,7 @@ bool gpu_pipeline_init_graphics(gpu_pipeline* pipeline, gpu_pipeline_info* info)
     .layout = info->shader->pipelineLayout,
     .vertex = vertex,
     .primitive = primitive,
-    .depthStencil = info->depth.format ? &depth : NULL,
+    .depthStencil = info->pass->info.depth.format ? &depth : NULL,
     .multisample = multisample,
     .fragment = &fragment
   };
@@ -490,7 +625,15 @@ bool gpu_pipeline_init_graphics(gpu_pipeline* pipeline, gpu_pipeline_info* info)
 }
 
 bool gpu_pipeline_init_compute(gpu_pipeline* pipeline, gpu_compute_pipeline_info* info) {
-  return false; // TODO
+  WGPUComputePipelineDescriptor pipelineInfo = {
+    .layout = info->shader->pipelineLayout,
+    .compute = {
+      .module = info->shader->handles[0],
+      .entryPoint = "main"
+    }
+  };
+
+  return pipeline->compute = wgpuDeviceCreateComputePipeline(state.device, &pipelineInfo);
 }
 
 void gpu_pipeline_destroy(gpu_pipeline* pipeline) {
@@ -498,9 +641,97 @@ void gpu_pipeline_destroy(gpu_pipeline* pipeline) {
   if (pipeline->compute) wgpuComputePipelineRelease(pipeline->compute);
 }
 
+void gpu_pipeline_get_cache(void* data, size_t* size) {
+  *size = 0;
+}
+
 // Tally
 
+bool gpu_tally_init(gpu_tally* tally, gpu_tally_info* info) {
+  static const WGPUQueryType types[] = {
+    [GPU_TALLY_TIME] = WGPUQueryType_Timestamp,
+    [GPU_TALLY_PIXEL] = WGPUQueryType_Occlusion
+  };
+
+  return tally->handle = wgpuDeviceCreateQuerySet(state.device, &(WGPUQuerySetDescriptor) {
+    .type = types[info->type],
+    .count = info->count
+  });
+}
+
+void gpu_tally_destroy(gpu_tally* tally) {
+  wgpuQuerySetRelease(tally->handle);
+}
+
 // Stream
+
+gpu_stream* gpu_stream_begin(const char* label) {
+  if (state.streamCount >= COUNTOF(state.streams)) return NULL;
+  gpu_stream* stream = &state.streams[state.streamCount++];
+
+  stream->commands = wgpuDeviceCreateCommandEncoder(state.device, &(WGPUCommandEncoderDescriptor) {
+    .label = label
+  });
+
+  return stream;
+}
+
+void gpu_stream_end(gpu_stream* stream) {
+  //
+}
+
+void gpu_render_begin(gpu_stream* stream, gpu_canvas* canvas) {
+  static const WGPULoadOp loadOps[] = {
+    [GPU_LOAD_OP_CLEAR] = WGPULoadOp_Clear,
+    [GPU_LOAD_OP_DISCARD] = WGPULoadOp_Clear,
+    [GPU_LOAD_OP_KEEP] = WGPULoadOp_Load
+  };
+
+  static const WGPUStoreOp storeOps[] = {
+    [GPU_SAVE_OP_KEEP] = WGPUStoreOp_Store,
+    [GPU_LOAD_OP_DISCARD] = WGPUStoreOp_Discard
+  };
+
+  WGPURenderPassColorAttachment colorAttachments[COUNTOF(canvas->color)];
+
+  for (uint32_t i = 0; i < canvas->pass->info.colorCount; i++) {
+    colorAttachments[i] = (WGPURenderPassColorAttachment) {
+      .view = canvas->color[i].texture->view,
+      .resolveTarget = canvas->color[i].resolve->view,
+      .loadOp = loadOps[canvas->pass->info.color[i].load],
+      .storeOp = storeOps[canvas->pass->info.color[i].save],
+      .clearValue.r = canvas->color[i].clear[0],
+      .clearValue.g = canvas->color[i].clear[1],
+      .clearValue.b = canvas->color[i].clear[2],
+      .clearValue.a = canvas->color[i].clear[3]
+    };
+  }
+
+  WGPURenderPassDepthStencilAttachment depth = {
+    .view = canvas->depth.texture->view,
+    .depthLoadOp = loadOps[canvas->pass->info.depth.load],
+    .depthStoreOp = storeOps[canvas->pass->info.depth.save],
+    .depthClearValue = canvas->depth.clear,
+    .depthReadOnly = false,
+    .stencilLoadOp = loadOps[canvas->pass->info.depth.stencilLoad],
+    .stencilStoreOp = storeOps[canvas->pass->info.depth.stencilSave],
+    .stencilClearValue = 0,
+    .stencilReadOnly = false
+  };
+
+  WGPURenderPassDescriptor info = {
+    .colorAttachmentCount = canvas->pass->info.colorCount,
+    .colorAttachments = colorAttachments,
+    .depthStencilAttachment = canvas->depth.texture ? &depth : NULL
+  };
+
+  stream->render = wgpuCommandEncoderBeginRenderPass(stream->commands, &info);
+}
+
+void gpu_render_end(gpu_stream* stream, gpu_canvas* canvas) {
+  wgpuRenderPassEncoderEnd(stream->render);
+  stream->render = NULL;
+}
 
 void gpu_compute_begin(gpu_stream* stream) {
   stream->compute = wgpuCommandEncoderBeginComputePass(stream->commands, NULL);
@@ -508,6 +739,7 @@ void gpu_compute_begin(gpu_stream* stream) {
 
 void gpu_compute_end(gpu_stream* stream) {
   wgpuComputePassEncoderEnd(stream->compute);
+  stream->compute = NULL;
 }
 
 void gpu_set_viewport(gpu_stream* stream, float view[4], float depth[2]) {
@@ -527,6 +759,18 @@ void gpu_bind_pipeline(gpu_stream* stream, gpu_pipeline* pipeline, gpu_pipeline_
     wgpuComputePassEncoderSetPipeline(stream->compute, pipeline->compute);
   } else {
     wgpuRenderPassEncoderSetPipeline(stream->render, pipeline->render);
+  }
+}
+
+void gpu_bind_bundles(gpu_stream* stream, gpu_shader* shader, gpu_bundle** bundles, uint32_t first, uint32_t count, uint32_t* dynamicOffsets, uint32_t dynamicOffsetCount) {
+  if (stream->compute) {
+    for (uint32_t i = 0; i < count; i++) {
+      wgpuComputePassEncoderSetBindGroup(stream->compute, first + i, bundles[i]->handle, 0, NULL); // TODO dynamic offsets buh
+    }
+  } else {
+    for (uint32_t i = 0; i < count; i++) {
+      wgpuRenderPassEncoderSetBindGroup(stream->render, first + i, bundles[i]->handle, 0, NULL); // TODO dynamic offsets buh
+    }
   }
 }
 
@@ -637,15 +881,15 @@ void gpu_copy_texture_buffer(gpu_stream* stream, gpu_texture* src, gpu_buffer* d
 }
 
 void gpu_copy_tally_buffer(gpu_stream* stream, gpu_tally* src, gpu_buffer* dst, uint32_t srcIndex, uint32_t dstOffset, uint32_t count) {
-  // TODO
+  wgpuCommandEncoderResolveQuerySet(stream->commands, src->handle, srcIndex, count, dst->handle, dstOffset);
 }
 
-void gpu_clear_buffer(gpu_stream* stream, gpu_buffer* buffer, uint32_t offset, uint32_t size) {
+void gpu_clear_buffer(gpu_stream* stream, gpu_buffer* buffer, uint32_t offset, uint32_t size, uint32_t value) {
   wgpuCommandEncoderClearBuffer(stream->commands, buffer->handle, offset, size);
 }
 
 void gpu_clear_texture(gpu_stream* stream, gpu_texture* texture, float value[4], uint32_t layer, uint32_t layerCount, uint32_t level, uint32_t levelCount) {
-  // TODO Unsupported
+  // TODO Unsupported, probably need compute shader
 }
 
 void gpu_clear_tally(gpu_stream* stream, gpu_tally* tally, uint32_t index, uint32_t count) {
@@ -660,16 +904,129 @@ void gpu_sync(gpu_stream* stream, gpu_barrier* barriers, uint32_t count) {
   //
 }
 
+void gpu_tally_begin(gpu_stream* stream, gpu_tally* tally, uint32_t index) {
+  wgpuRenderPassEncoderBeginOcclusionQuery(stream->render, index);
+}
+
+void gpu_tally_finish(gpu_stream* stream, gpu_tally* tally, uint32_t index) {
+  wgpuRenderPassEncoderEndOcclusionQuery(stream->render);
+}
+
+void gpu_tally_mark(gpu_stream* stream, gpu_tally* tally, uint32_t index) {
+  wgpuCommandEncoderWriteTimestamp(stream->commands, tally->handle, index);
+}
+
+void gpu_xr_acquire(gpu_stream* stream, gpu_texture* texture) {
+  //
+}
+
+void gpu_xr_release(gpu_stream* stream, gpu_texture* texture) {
+  //
+}
+
 // Entry
 
 bool gpu_init(gpu_config* config) {
   state.device = emscripten_webgpu_get_device();
+  state.queue = wgpuDeviceGetQueue(state.device);
+
+  if (config->features) {
+    config->features->textureBC = wgpuDeviceHasFeature(state.device, WGPUFeatureName_TextureCompressionBC);
+    config->features->textureASTC = wgpuDeviceHasFeature(state.device, WGPUFeatureName_TextureCompressionASTC);
+    config->features->wireframe = false;
+    config->features->depthClamp = wgpuDeviceHasFeature(state.device, WGPUFeatureName_DepthClipControl);
+    config->features->depthResolve = false;
+    config->features->indirectDrawFirstInstance = wgpuDeviceHasFeature(state.device, WGPUFeatureName_IndirectFirstInstance);
+    config->features->shaderDebug = false;
+    config->features->float64 = false;
+    config->features->int64 = false;
+    config->features->int16 = false;
+  }
+
+  if (config->limits) {
+    WGPUSupportedLimits supported;
+    wgpuDeviceGetLimits(state.device, &supported);
+    config->limits->textureSize2D = supported.limits.maxTextureDimension2D;
+    config->limits->textureSize3D = supported.limits.maxTextureDimension3D;
+    config->limits->textureSizeCube = supported.limits.maxTextureDimension2D;
+    config->limits->textureLayers = supported.limits.maxTextureArrayLayers;
+    config->limits->renderSize[0] = supported.limits.maxTextureDimension2D;
+    config->limits->renderSize[1] = supported.limits.maxTextureDimension2D;
+    config->limits->renderSize[2] = 1;
+    config->limits->uniformBuffersPerStage = supported.limits.maxUniformBuffersPerShaderStage;
+    config->limits->storageBuffersPerStage = supported.limits.maxStorageBuffersPerShaderStage;
+    config->limits->sampledTexturesPerStage = supported.limits.maxSampledTexturesPerShaderStage;
+    config->limits->storageTexturesPerStage = supported.limits.maxStorageTexturesPerShaderStage;
+    config->limits->samplersPerStage = supported.limits.maxSamplersPerShaderStage;
+    config->limits->uniformBufferRange = supported.limits.maxUniformBufferBindingSize;
+    config->limits->storageBufferRange = supported.limits.maxStorageBufferBindingSize;
+    config->limits->uniformBufferAlign = supported.limits.minUniformBufferOffsetAlignment;
+    config->limits->storageBufferAlign = supported.limits.minStorageBufferOffsetAlignment;
+    config->limits->vertexAttributes = supported.limits.maxVertexAttributes;
+    config->limits->vertexBuffers = supported.limits.maxVertexBuffers;
+    config->limits->vertexBufferStride = supported.limits.maxVertexBufferArrayStride;
+    config->limits->vertexShaderOutputs = supported.limits.maxInterStageShaderComponents;
+    config->limits->clipDistances = 0; // TODO
+    config->limits->cullDistances = 0;
+    config->limits->clipAndCullDistances = 0; // TODO
+    config->limits->workgroupCount[0] = supported.limits.maxComputeWorkgroupsPerDimension;
+    config->limits->workgroupCount[1] = supported.limits.maxComputeWorkgroupsPerDimension;
+    config->limits->workgroupCount[2] = supported.limits.maxComputeWorkgroupsPerDimension;
+    config->limits->workgroupSize[0] = supported.limits.maxComputeWorkgroupSizeX;
+    config->limits->workgroupSize[1] = supported.limits.maxComputeWorkgroupSizeY;
+    config->limits->workgroupSize[2] = supported.limits.maxComputeWorkgroupSizeZ;
+    config->limits->totalWorkgroupSize = supported.limits.maxComputeInvocationsPerWorkgroup;
+    config->limits->computeSharedMemory = supported.limits.maxComputeWorkgroupStorageSize;
+    config->limits->pushConstantSize = 0;
+    config->limits->indirectDrawCount = 1;
+    config->limits->instances = ~0u;
+    config->limits->timestampPeriod = 1.f;
+    config->limits->anisotropy = 16.f;
+    config->limits->pointSize = 1.f;
+  }
+
   return !!state.device;
 }
 
 void gpu_destroy(void) {
   if (state.device) wgpuDeviceDestroy(state.device);
   memset(&state, 0, sizeof(state));
+}
+
+uint32_t gpu_begin(void) {
+  return state.tick++;
+}
+
+static void onSubmittedWorkDone(WGPUQueueWorkDoneStatus status, void* userdata) {
+  state.lastTickFinished = (uint32_t) (uintptr_t) userdata;
+}
+
+void gpu_submit(gpu_stream** streams, uint32_t count) {
+  WGPUCommandBuffer commandBuffers[64];
+  count = MIN(count, COUNTOF(commandBuffers));
+
+  for (uint32_t i = 0; i < count; i++) {
+    commandBuffers[i] = wgpuCommandEncoderFinish(streams[i]->commands, NULL);
+  }
+
+  wgpuQueueSubmit(state.queue, count, commandBuffers);
+  wgpuQueueOnSubmittedWorkDone(state.queue, onSubmittedWorkDone, (void*) (uintptr_t) state.tick);
+
+  for (uint32_t i = 0; i < state.streamCount; i++) {
+    wgpuCommandEncoderRelease(state.streams[i].commands);
+  }
+}
+
+bool gpu_is_complete(uint32_t tick) {
+  return state.lastTickFinished >= tick;
+}
+
+bool gpu_wait_tick(uint32_t tick) {
+  return true; // TODO Unsupported
+}
+
+void gpu_wait_idle(void) {
+  // TODO Unsupported
 }
 
 // Helpers

@@ -49,7 +49,7 @@ if(EMSCRIPTEN)
     "-Os "
     "-s USE_WEBGPU=1 "
     "-s FORCE_FILESYSTEM=1 "
-    "-s EXPORTED_FUNCTIONS=_main,_lovrDestroy,_webxr_attach,_webxr_detach "
+    "-s EXPORTED_FUNCTIONS=_main,_webxr_attach,_webxr_detach "
     "-s \"EXPORTED_RUNTIME_METHODS=['getValue','setValue']\" "
     "--js-library \"${CMAKE_CURRENT_SOURCE_DIR}/etc/webxr.js\" "
     "--shell-file \"${CMAKE_CURRENT_SOURCE_DIR}/etc/lovr.html\""
@@ -425,15 +425,17 @@ if(LOVR_ENABLE_FILESYSTEM)
     src/modules/filesystem/filesystem.c
     src/api/l_filesystem.c
     src/api/l_filesystem_file.c
-    src/lib/dmon/dmon.c
     src/lib/miniz/miniz_tinfl.c
   )
 
   # dmon
-  if(APPLE)
-    find_library(CORE_FOUNDATION CoreFoundation)
-    find_library(CORE_SERVICES CoreServices)
-    target_link_libraries(lovr "${CORE_FOUNDATION}" "${CORE_SERVICES}")
+  if(NOT EMSCRIPTEN)
+    target_sources(lovr PRIVATE src/lib/dmon/dmon.c)
+    if(APPLE)
+      find_library(CORE_FOUNDATION CoreFoundation)
+      find_library(CORE_SERVICES CoreServices)
+      target_link_libraries(lovr "${CORE_FOUNDATION}" "${CORE_SERVICES}")
+    endif()
   endif()
 else()
   target_compile_definitions(lovr PRIVATE LOVR_DISABLE_FILESYSTEM)
@@ -591,7 +593,7 @@ else()
 endif()
 
 if(LOVR_ENABLE_UTF8)
-  target_sources(lovr PRIVATE src/lib/lua/lutf8lib.c)
+  target_sources(lovr PRIVATE src/lib/luax/lutf8lib.c)
 else()
   target_compile_definitions(lovr PRIVATE LOVR_DISABLE_UTF8)
 endif()
@@ -733,6 +735,7 @@ elseif(APPLE)
     MACOSX_RPATH TRUE
     BUILD_WITH_INSTALL_RPATH TRUE
     INSTALL_RPATH "@executable_path"
+    ENABLE_EXPORTS ON
   )
   if(LOVR_BUILD_BUNDLE)
     set(EXE_DIR ${CMAKE_CURRENT_BINARY_DIR}/lovr.app/Contents/MacOS)
@@ -775,6 +778,7 @@ elseif(APPLE)
   endforeach()
 elseif(EMSCRIPTEN)
   target_sources(lovr PRIVATE src/core/os_wasm.c)
+  set_target_properties(lovr PROPERTIES ENABLE_EXPORTS ON)
   configure_file(etc/lovr.ico favicon.ico COPYONLY)
 elseif(ANDROID)
   set(ANDROID_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/etc/AndroidManifest.xml" CACHE STRING "The AndroidManifest.xml file to use")
@@ -901,6 +905,7 @@ elseif(UNIX)
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     BUILD_WITH_INSTALL_RPATH TRUE
     INSTALL_RPATH "\$ORIGIN"
+    ENABLE_EXPORTS ON
   )
   function(move_lib)
     if(TARGET ${ARGV0})
