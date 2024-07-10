@@ -14,7 +14,7 @@ jobs:
         shell: cmd
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: 'recursive'
       - name: Configure
@@ -24,7 +24,7 @@ jobs:
       - name: Test
         run: build\%CMAKE_BUILD_TYPE%\lovr test
       - name: Upload
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: lovr.exe
           path: |
@@ -41,7 +41,7 @@ jobs:
       - name: Install Packages
         run: sudo apt install -y xorg-dev libx11-xcb-dev libxcb-glx0-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb-xkb-dev libfuse2 libcurl4-openssl-dev libssl-dev
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: 'recursive'
       - name: Init
@@ -57,13 +57,16 @@ jobs:
           ./appimagetool-x86_64.AppImage build/bin &&
           mv LÖVR-x86_64.AppImage lovr-x86_64.AppImage
       - name: Upload
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: lovr.appimage
           path: lovr-x86_64.AppImage
 
   android:
     name: Android
+    strategy:
+      matrix:
+        abi: [arm64-v8a, x86_64]
     runs-on: ubuntu-22.04
     steps:
       - name: Update Packages
@@ -73,7 +76,7 @@ jobs:
       - name: Install Android 29
         run: ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --install "platforms;android-29"
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: 'recursive'
       - name: Init
@@ -93,7 +96,7 @@ jobs:
           cmake ..
           -D CMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake
           -D ANDROID_SDK=$ANDROID_HOME
-          -D ANDROID_ABI=arm64-v8a
+          -D ANDROID_ABI=${{ matrix.abi }}
           -D ANDROID_NATIVE_API_LEVEL=29
           -D ANDROID_BUILD_TOOLS_VERSION=34.0.0
           -D ANDROID_KEYSTORE=key.keystore
@@ -101,52 +104,9 @@ jobs:
       - name: Build
         run: cmake --build build
       - name: Upload
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: lovr.apk
-          path: build/lovr.apk
-  magicleap:
-    name: Magicleap
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Update Packages
-        run: sudo apt update
-      - name: Install Packages
-        run: sudo apt install -y glslang-tools
-      - name: Install Android 29
-        run: ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --install "platforms;android-29"
-      - name: Checkout
-        uses: actions/checkout@v3
-        with:
-          submodules: 'recursive'
-      - name: Init
-        run: >
-          mkdir build &&
-          cd build &&
-          keytool
-          -genkey
-          -dname 'cn=Unknown, ou=Unknown, o=Unknown, l=Unknown, st=Unknown, c=Unknown'
-          -keystore key.keystore
-          -keypass hunter2
-          -storepass hunter2
-          -alias key
-          -keyalg RSA
-          -keysize 2048
-          -validity 10000 &&
-          cmake ..
-          -D CMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake
-          -D ANDROID_SDK=$ANDROID_HOME
-          -D ANDROID_ABI=x86_64
-          -D ANDROID_NATIVE_API_LEVEL=29
-          -D ANDROID_BUILD_TOOLS_VERSION=34.0.0
-          -D ANDROID_KEYSTORE=key.keystore
-          -D ANDROID_KEYSTORE_PASS=pass:hunter2
-      - name: Build
-        run: cmake --build build
-      - name: Upload
-        uses: actions/upload-artifact@v3
-        with:
-          name: lovr64.apk
+          name: ${{ matrix.abi == 'arm64-v8a' && 'lovr.apk' || 'lovr-x64.apk' }}
           path: build/lovr.apk
 
   macos:
@@ -164,7 +124,7 @@ jobs:
           export VULKAN_SDK=${{ runner.temp }}/vulkan && echo "VULKAN_SDK=$VULKAN_SDK/macOS" >> $GITHUB_ENV
           sudo vulkansdk-macos-$VKV/InstallVulkan.app/Contents/MacOS/InstallVulkan --root $VULKAN_SDK --accept-licenses --default-answer --confirm-command install
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: 'recursive'
       - name: Init
@@ -182,7 +142,7 @@ jobs:
           sed -i '' 's|../../../lib/libMoltenVK.dylib|../../../MacOS/libMoltenVK.dylib|' build/lovr.app/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json &&
           ditto -c -k --keepParent build/lovr.app lovr.zip
       - name: Upload
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: lovr.app
           path: lovr.zip
