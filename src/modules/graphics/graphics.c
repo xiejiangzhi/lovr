@@ -2936,7 +2936,7 @@ Shader* lovrShaderCreate(const ShaderInfo* info) {
     spv[i].attributes = tempAlloc(&state.allocator, spv[i].attributeCount * sizeof(spv_attribute));
     spv[i].resources = tempAlloc(&state.allocator, spv[i].resourceCount * sizeof(spv_resource));
     spv[i].fields = tempAlloc(&state.allocator, spv[i].fieldCount * sizeof(spv_field));
-    memset(spv[i].fields, 0, spv[i].fieldCount * sizeof(spv_field));
+    if (spv[i].fields) memset(spv[i].fields, 0, spv[i].fieldCount * sizeof(spv_field));
 
     result = spv_parse(source[i], info->stages[i].size, &spv[i]);
     lovrCheck(result == SPV_OK, "Failed to load Shader: %s\n", spv_result_to_string(result));
@@ -5412,24 +5412,24 @@ void lovrPassSetCanvas(Pass* pass, Texture* textures[4], Texture* depthTexture, 
   canvas->depth.texture = NULL;
   canvas->depth.format = 0;
 
-  const TextureInfo* t = textures[0] ? &textures[0]->info : &depthTexture->info;
-
-  if (textures[0] || depthTexture) {
-    canvas->width = t->width;
-    canvas->height = t->height;
-    canvas->views = t->layers;
-    lovrCheck(t->width <= state.limits.renderSize[0], "Pass canvas width (%d) exceeds the renderSize limit of this GPU (%d)", t->width, state.limits.renderSize[0]);
-    lovrCheck(t->height <= state.limits.renderSize[1], "Pass canvas height (%d) exceeds the renderSize limit of this GPU (%d)", t->height, state.limits.renderSize[1]);
-    lovrCheck(t->layers <= state.limits.renderSize[2], "Pass canvas layer count (%d) exceeds the renderSize limit of this GPU (%d)", t->layers, state.limits.renderSize[2]);
-    lovrCheck(samples == 1 || samples == 4, "Currently MSAA must be 1 or 4");
-    canvas->samples = samples;
-    canvas->resolve = samples > 1;
-  } else {
+  if (!textures[0] && !depthTexture) {
     memset(canvas, 0, sizeof(Canvas));
     pass->gpu = NULL;
     lovrPassReset(pass);
     return;
   }
+
+  const TextureInfo* t = textures[0] ? &textures[0]->info : &depthTexture->info;
+
+  canvas->width = t->width;
+  canvas->height = t->height;
+  canvas->views = t->layers;
+  lovrCheck(t->width <= state.limits.renderSize[0], "Pass canvas width (%d) exceeds the renderSize limit of this GPU (%d)", t->width, state.limits.renderSize[0]);
+  lovrCheck(t->height <= state.limits.renderSize[1], "Pass canvas height (%d) exceeds the renderSize limit of this GPU (%d)", t->height, state.limits.renderSize[1]);
+  lovrCheck(t->layers <= state.limits.renderSize[2], "Pass canvas layer count (%d) exceeds the renderSize limit of this GPU (%d)", t->layers, state.limits.renderSize[2]);
+  lovrCheck(samples == 1 || samples == 4, "Currently MSAA must be 1 or 4");
+  canvas->samples = samples;
+  canvas->resolve = samples > 1;
 
   for (uint32_t i = 0; i < COUNTOF(canvas->color) && textures[i]; i++, canvas->count++) {
     const TextureInfo* texture = &textures[i]->info;
@@ -7355,7 +7355,7 @@ void lovrPassSetTallyBuffer(Pass* pass, Buffer* buffer, uint32_t offset) {
 void lovrPassCompute(Pass* pass, uint32_t x, uint32_t y, uint32_t z, Buffer* indirect, uint32_t offset) {
   if ((pass->computeCount & (pass->computeCount - 1)) == 0) {
     Compute* computes = lovrPassAllocate(pass, MAX(pass->computeCount << 1, 1) * sizeof(Compute));
-    memcpy(computes, pass->computes, pass->computeCount * sizeof(Compute));
+    if (pass->computes) memcpy(computes, pass->computes, pass->computeCount * sizeof(Compute));
     pass->computes = computes;
   }
 
@@ -7725,7 +7725,7 @@ static gpu_texture* getScratchTexture(gpu_stream* stream, Canvas* canvas, Textur
 }
 
 static bool isDepthFormat(TextureFormat format) {
-  return format == FORMAT_D16 || format == FORMAT_D32F || format == FORMAT_D24S8 || format == FORMAT_D32FS8;
+  return format == FORMAT_D16 || format == FORMAT_D24 || format == FORMAT_D32F || format == FORMAT_D24S8 || format == FORMAT_D32FS8;
 }
 
 static bool supportsSRGB(TextureFormat format) {
@@ -7767,6 +7767,7 @@ static uint32_t measureTexture(TextureFormat format, uint32_t w, uint32_t h, uin
     case FORMAT_RGB565:
     case FORMAT_RGB5A1:
     case FORMAT_D16: return w * h * d * 2;
+    case FORMAT_D24: return w * h * d * 3;
     case FORMAT_RGBA8:
     case FORMAT_RG16:
     case FORMAT_RG16F:

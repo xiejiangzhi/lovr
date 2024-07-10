@@ -60,6 +60,9 @@ dev
 - Add motor support to `HingeJoint` and `SliderJoint`.
 - Add support for creating a `MeshShape` from a `ModelData`.
 - Add `Texture:getLabel` and `Shader:getLabel`.
+- Add `Shader:hasVariable`.
+- Add `lovr.headset.getHandles`.
+- Add support for depth texture format `d24`.
 
 ### Change
 
@@ -717,7 +720,7 @@ v0.13.0 - 2019-10-14
 - Add an OpenXR headset driver.
 - Add a new `standard` PBR shader.
 - Add the ability to have multiple headset tracking drivers active at once.
-- Add `strength` and `frequency` parameters to `lovr.headset.vibrate`. 
+- Add `strength` and `frequency` parameters to `lovr.headset.vibrate`.
 - Add `lovr.headset.getDisplayMask`.
 - Add `lovr.headset.isTracked`.
 - Add support for hexcode colors.
