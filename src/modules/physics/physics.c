@@ -927,8 +927,17 @@ void lovrColliderAddShape(Collider* collider, Shape* shape) {
     JPH_MutableCompoundShape_AddShape((JPH_MutableCompoundShape*) handle, position, rotation, shape->handle, 0);
     shape->index = JPH_CompoundShape_GetNumSubShapes((JPH_CompoundShape*) handle) - 1;
   } else if (handle == state.sphere->handle) {
-    handle = shape->handle;
-    shape->index = 0;
+    // If the shape is at the origin, use it directly, otherwise wrap in a compound shape with an offset
+    if (vec3_length(shape->translation) < 1e-6 && shape->rotation[3] > .999f) {
+      handle = shape->handle;
+      shape->index = 0;
+    } else {
+      JPH_MutableCompoundShapeSettings* settings = JPH_MutableCompoundShapeSettings_Create();
+      JPH_CompoundShapeSettings_AddShape2((JPH_CompoundShapeSettings*) settings, position, rotation, shape->handle, 0);
+      handle = (JPH_Shape*) JPH_MutableCompoundShape_Create(settings);
+      JPH_ShapeSettings_Destroy((JPH_ShapeSettings*) settings);
+      shape->index = 0;
+    }
   } else {
     float identity[] = { 0.f, 0.f, 0.f, 1.f };
     JPH_MutableCompoundShapeSettings* settings = JPH_MutableCompoundShapeSettings_Create();
@@ -937,6 +946,10 @@ void lovrColliderAddShape(Collider* collider, Shape* shape) {
     handle = (JPH_Shape*) JPH_MutableCompoundShape_Create(settings);
     JPH_ShapeSettings_Destroy((JPH_ShapeSettings*) settings);
     shape->index = 1;
+  }
+
+  if (alreadyCompound && collider->automaticMass) {
+    JPH_MutableCompoundShape_AdjustCenterOfMass((JPH_MutableCompoundShape*) handle);
   }
 
   JPH_Vec3 newCenter;
@@ -948,23 +961,21 @@ void lovrColliderAddShape(Collider* collider, Shape* shape) {
       if (offsetCenterOfMass) {
         // Set the shape to the CompoundShape, replacing the OffsetCenterOfMassShape.  This takes
         // care of recomputing the mass, center, etc.
-        JPH_MutableCompoundShape_AdjustCenterOfMass((JPH_MutableCompoundShape*) handle);
         JPH_BodyInterface_SetShape(interface, collider->id, handle, true, JPH_Activation_DontActivate);
         adjustJoints(collider, &oldCenter, &newCenter);
         JPH_Shape_Destroy(offsetCenterOfMass);
       } else {
         // If the shape is already the CompoundShape, use NotifyShapeChanged to update mass/center
-        JPH_MutableCompoundShape_AdjustCenterOfMass((JPH_MutableCompoundShape*) handle);
         JPH_BodyInterface_NotifyShapeChanged(interface, collider->id, &oldCenter, true, JPH_Activation_DontActivate);
         adjustJoints(collider, &oldCenter, &newCenter);
       }
     } else {
       // Mark the shape as changed so the AABB updates, but don't change the mass/center.
-      JPH_BodyInterface_NotifyShapeChanged(interface, collider->id, &newCenter, false, JPH_Activation_DontActivate);
+      JPH_BodyInterface_NotifyShapeChanged(interface, collider->id, &oldCenter, false, JPH_Activation_DontActivate);
     }
   } else {
     if (collider->automaticMass) {
-      // Replace the simple shape with the new compound shape, adjusting all the mass properties
+      // Replace the existing shape with the new shape, adjusting all the mass properties
       JPH_BodyInterface_SetShape(interface, collider->id, handle, true, JPH_Activation_DontActivate);
       if (offsetCenterOfMass) JPH_Shape_Destroy(offsetCenterOfMass);
       adjustJoints(collider, &oldCenter, &newCenter);
@@ -1005,6 +1016,10 @@ void lovrColliderRemoveShape(Collider* collider, Shape* shape) {
       handle = state.sphere->handle;
     } else {
       JPH_MutableCompoundShape_RemoveShape((JPH_MutableCompoundShape*) handle, shape->index);
+
+      if (collider->automaticMass) {
+        JPH_MutableCompoundShape_AdjustCenterOfMass((JPH_MutableCompoundShape*) handle);
+      }
     }
   } else {
     handle = state.sphere->handle;
@@ -1030,19 +1045,17 @@ void lovrColliderRemoveShape(Collider* collider, Shape* shape) {
     if (collider->automaticMass) {
       if (offsetCenterOfMass) {
         // Replace the OffsetCenterOfMassShape with the CompoundShape
-        JPH_MutableCompoundShape_AdjustCenterOfMass((JPH_MutableCompoundShape*) handle);
         JPH_BodyInterface_SetShape(interface, collider->id, handle, true, JPH_Activation_DontActivate);
         adjustJoints(collider, &oldCenter, &newCenter);
         JPH_Shape_Destroy(offsetCenterOfMass);
       } else {
         // Tell Jolt that the CompoundShape changed, recenter and recompute mass data
-        JPH_MutableCompoundShape_AdjustCenterOfMass((JPH_MutableCompoundShape*) handle);
         JPH_BodyInterface_NotifyShapeChanged(interface, collider->id, &oldCenter, true, JPH_Activation_DontActivate);
         adjustJoints(collider, &oldCenter, &newCenter);
       }
     } else {
       // Mark shape as changed, don't update the mass/center, keep OffsetCenterOfMassShape, if any
-      JPH_BodyInterface_NotifyShapeChanged(interface, collider->id, &newCenter, false, JPH_Activation_DontActivate);
+      JPH_BodyInterface_NotifyShapeChanged(interface, collider->id, &oldCenter, false, JPH_Activation_DontActivate);
     }
   }
 
@@ -1099,16 +1112,16 @@ static void lovrColliderReplaceShape(Collider* collider, Shape* shape, JPH_Shape
   JPH_MutableCompoundShape_ModifyShape2((JPH_MutableCompoundShape*) handle, shape->index, translation, rotation, new);
 
   if (collider->automaticMass) {
+    JPH_MutableCompoundShape_AdjustCenterOfMass((JPH_MutableCompoundShape*) handle);
+
     JPH_Vec3 newCenter;
     JPH_Shape_GetCenterOfMass(handle, &newCenter);
 
     if (offsetCenterOfMass) {
-      JPH_MutableCompoundShape_AdjustCenterOfMass((JPH_MutableCompoundShape*) handle);
       JPH_BodyInterface_SetShape(interface, collider->id, handle, true, JPH_Activation_DontActivate);
       adjustJoints(collider, &oldCenter, &newCenter);
       JPH_Shape_Destroy(offsetCenterOfMass);
     } else {
-      JPH_MutableCompoundShape_AdjustCenterOfMass((JPH_MutableCompoundShape*) handle);
       JPH_BodyInterface_NotifyShapeChanged(interface, collider->id, &oldCenter, true, JPH_Activation_DontActivate);
       adjustJoints(collider, &oldCenter, &newCenter);
     }
@@ -1134,6 +1147,10 @@ static void lovrColliderMoveShape(Collider* collider, Shape* shape, float transl
   // Wrap the shape in a compound shape if it isn't one already, otherwise just move the subshape
   if (alreadyCompound) {
     JPH_MutableCompoundShape_ModifyShape((JPH_MutableCompoundShape*) handle, shape->index, vec3_toJolt(translation), quat_toJolt(rotation));
+
+    if (collider->automaticMass) {
+      JPH_MutableCompoundShape_AdjustCenterOfMass((JPH_MutableCompoundShape*) handle);
+    }
   } else {
     JPH_MutableCompoundShapeSettings* settings = JPH_MutableCompoundShapeSettings_Create();
     JPH_CompoundShapeSettings_AddShape2((JPH_CompoundShapeSettings*) settings, vec3_toJolt(translation), quat_toJolt(rotation), shape->handle, 0);
@@ -1147,17 +1164,15 @@ static void lovrColliderMoveShape(Collider* collider, Shape* shape, float transl
   if (alreadyCompound) {
     if (collider->automaticMass) {
       if (offsetCenterOfMass) {
-        JPH_MutableCompoundShape_AdjustCenterOfMass((JPH_MutableCompoundShape*) handle);
         JPH_BodyInterface_SetShape(interface, collider->id, handle, true, JPH_Activation_DontActivate);
         adjustJoints(collider, &oldCenter, &newCenter);
         JPH_Shape_Destroy(offsetCenterOfMass);
       } else {
-        JPH_MutableCompoundShape_AdjustCenterOfMass((JPH_MutableCompoundShape*) handle);
         JPH_BodyInterface_NotifyShapeChanged(interface, collider->id, &oldCenter, true, JPH_Activation_DontActivate);
         adjustJoints(collider, &oldCenter, &newCenter);
       }
     } else {
-      JPH_BodyInterface_NotifyShapeChanged(interface, collider->id, &newCenter, false, JPH_Activation_DontActivate);
+      JPH_BodyInterface_NotifyShapeChanged(interface, collider->id, &oldCenter, false, JPH_Activation_DontActivate);
     }
   } else {
     if (collider->automaticMass) {
@@ -1897,33 +1912,55 @@ void lovrSphereShapeSetRadius(SphereShape* shape, float radius) {
   lovrShapeReplace(shape, (JPH_Shape*) JPH_SphereShape_Create(radius));
 }
 
+static JPH_Shape* makeCapsule(float radius, float length) {
+  float position[3];
+  float orientation[4];
+  vec3_set(position, 0.f, 0.f, 0.f);
+  quat_fromAngleAxis(orientation, (float) M_PI / 2.f, 1.f, 0.f, 0.f);
+  JPH_Shape* capsule = (JPH_Shape*) JPH_CapsuleShape_Create(length / 2.f, radius);
+  JPH_Shape* wrapper = (JPH_Shape*) JPH_RotatedTranslatedShape_Create(vec3_toJolt(position), quat_toJolt(orientation), capsule);
+  JPH_Shape_Destroy(capsule);
+  return wrapper;
+}
+
 CapsuleShape* lovrCapsuleShapeCreate(float radius, float length) {
   lovrCheck(radius > 0.f && length > 0.f, "CapsuleShape dimensions must be positive");
   CapsuleShape* shape = lovrCalloc(sizeof(CapsuleShape));
   shape->ref = 1;
   shape->type = SHAPE_CAPSULE;
-  shape->handle = (JPH_Shape*) JPH_CapsuleShape_Create(length / 2.f, radius);
+  shape->handle = makeCapsule(radius, length);
   JPH_Shape_SetUserData(shape->handle, (uint64_t) (uintptr_t) shape);
   quat_identity(shape->rotation);
   return shape;
 }
 
 float lovrCapsuleShapeGetRadius(CapsuleShape* shape) {
-  return JPH_CapsuleShape_GetRadius((JPH_CapsuleShape*) shape->handle);
+  return JPH_CapsuleShape_GetRadius((JPH_CapsuleShape*) JPH_DecoratedShape_GetInnerShape((JPH_DecoratedShape*) shape->handle));
 }
 
 void lovrCapsuleShapeSetRadius(CapsuleShape* shape, float radius) {
   float length = lovrCapsuleShapeGetLength(shape);
-  lovrShapeReplace(shape, (JPH_Shape*) JPH_CapsuleShape_Create(length / 2.f, radius));
+  lovrShapeReplace(shape, makeCapsule(length / 2.f, radius));
 }
 
 float lovrCapsuleShapeGetLength(CapsuleShape* shape) {
-  return 2.f * JPH_CapsuleShape_GetHalfHeightOfCylinder((JPH_CapsuleShape*) shape->handle);
+  return 2.f * JPH_CapsuleShape_GetHalfHeightOfCylinder((JPH_CapsuleShape*) JPH_DecoratedShape_GetInnerShape((JPH_DecoratedShape*) shape->handle));
 }
 
 void lovrCapsuleShapeSetLength(CapsuleShape* shape, float length) {
   float radius = lovrCapsuleShapeGetRadius(shape);
-  lovrShapeReplace(shape, (JPH_Shape*) JPH_CapsuleShape_Create(length / 2.f, radius));
+  lovrShapeReplace(shape, makeCapsule(radius, length));
+}
+
+static JPH_Shape* makeCylinder(float radius, float length) {
+  float position[3];
+  float orientation[4];
+  vec3_set(position, 0.f, 0.f, 0.f);
+  quat_fromAngleAxis(orientation, (float) M_PI / 2.f, 1.f, 0.f, 0.f);
+  JPH_Shape* cylinder = (JPH_Shape*) JPH_CylinderShape_Create(length / 2.f, radius);
+  JPH_Shape* wrapper = (JPH_Shape*) JPH_RotatedTranslatedShape_Create(vec3_toJolt(position), quat_toJolt(orientation), cylinder);
+  JPH_Shape_Destroy(cylinder);
+  return wrapper;
 }
 
 CylinderShape* lovrCylinderShapeCreate(float radius, float length) {
@@ -1931,28 +1968,28 @@ CylinderShape* lovrCylinderShapeCreate(float radius, float length) {
   CylinderShape* shape = lovrCalloc(sizeof(CylinderShape));
   shape->ref = 1;
   shape->type = SHAPE_CYLINDER;
-  shape->handle = (JPH_Shape*) JPH_CylinderShape_Create(length / 2.f, radius);
+  shape->handle = makeCylinder(radius, length);
   JPH_Shape_SetUserData(shape->handle, (uint64_t) (uintptr_t) shape);
   quat_identity(shape->rotation);
   return shape;
 }
 
 float lovrCylinderShapeGetRadius(CylinderShape* shape) {
-  return JPH_CylinderShape_GetRadius((JPH_CylinderShape*) shape->handle);
+  return JPH_CylinderShape_GetRadius((JPH_CylinderShape*) JPH_DecoratedShape_GetInnerShape((JPH_DecoratedShape*) shape->handle));
 }
 
 void lovrCylinderShapeSetRadius(CylinderShape* shape, float radius) {
   float length = lovrCylinderShapeGetLength(shape);
-  lovrShapeReplace(shape, (JPH_Shape*) JPH_CylinderShape_Create(length / 2.f, radius));
+  lovrShapeReplace(shape, makeCylinder(radius, length));
 }
 
 float lovrCylinderShapeGetLength(CylinderShape* shape) {
-  return JPH_CylinderShape_GetHalfHeight((JPH_CylinderShape*) shape->handle) * 2.f;
+  return 2.f * JPH_CylinderShape_GetHalfHeight((JPH_CylinderShape*) JPH_DecoratedShape_GetInnerShape((JPH_DecoratedShape*) shape->handle));
 }
 
 void lovrCylinderShapeSetLength(CylinderShape* shape, float length) {
   float radius = lovrCylinderShapeGetRadius(shape);
-  lovrShapeReplace(shape, (JPH_Shape*) JPH_CylinderShape_Create(length / 2.f, radius));
+  lovrShapeReplace(shape, makeCylinder(radius, length));
 }
 
 ConvexShape* lovrConvexShapeCreate(float points[], uint32_t count) {
