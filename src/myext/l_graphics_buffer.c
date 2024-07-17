@@ -1,6 +1,7 @@
 
 static void luax_checkfield(lua_State* L, const DataField* field, int idx, char* data) {
   int n = typeComponents[field->type];
+  int len;
   switch (lua_type(L, idx)) {
   case LUA_TNUMBER:
     lovrCheck(n == 1, "Cannot set field '%s' by number", field->name);
@@ -11,7 +12,7 @@ static void luax_checkfield(lua_State* L, const DataField* field, int idx, char*
     luax_checkfieldv(L, idx, field, data);
     break;
   case LUA_TTABLE:
-    int len = luax_len(L, idx);
+    len = luax_len(L, idx);
     lovrCheck(
       len == n, "Table length for key '%s#%s' must be %d, got %i",
       field->parent ? field->parent->name : "Root", field->name, n, len
