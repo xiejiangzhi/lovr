@@ -914,7 +914,7 @@ bool gpu_sampler_init(gpu_sampler* sampler, gpu_sampler_info* info) {
     [GPU_WRAP_CLAMP] = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
     [GPU_WRAP_REPEAT] = VK_SAMPLER_ADDRESS_MODE_REPEAT,
     [GPU_WRAP_MIRROR] = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT,
-    [GPU_WRAP_BORDER] = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+    [GPU_WRAP_BORDER] = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER
   };
 
   static const VkCompareOp compareOps[] = {
@@ -964,7 +964,8 @@ bool gpu_layout_init(gpu_layout* layout, gpu_layout_info* info) {
     [GPU_SLOT_STORAGE_BUFFER_DYNAMIC] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
     [GPU_SLOT_SAMPLED_TEXTURE] = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
     [GPU_SLOT_STORAGE_TEXTURE] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-    [GPU_SLOT_SAMPLER] = VK_DESCRIPTOR_TYPE_SAMPLER
+    [GPU_SLOT_SAMPLER] = VK_DESCRIPTOR_TYPE_SAMPLER,
+    [GPU_SLOT_COMBINED_TEXTURE_SAMPLER] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
   };
 
   VkDescriptorSetLayoutBinding bindings[32];
@@ -1065,14 +1066,15 @@ void gpu_shader_destroy(gpu_shader* shader) {
 // Bundles
 
 bool gpu_bundle_pool_init(gpu_bundle_pool* pool, gpu_bundle_pool_info* info) {
-  VkDescriptorPoolSize sizes[7] = {
+  VkDescriptorPoolSize sizes[8] = {
     [GPU_SLOT_UNIFORM_BUFFER] = { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0 },
     [GPU_SLOT_STORAGE_BUFFER] = { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 0 },
     [GPU_SLOT_UNIFORM_BUFFER_DYNAMIC] = { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 0 },
     [GPU_SLOT_STORAGE_BUFFER_DYNAMIC] = { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 0 },
     [GPU_SLOT_SAMPLED_TEXTURE] = { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 0 },
     [GPU_SLOT_STORAGE_TEXTURE] = { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 0 },
-    [GPU_SLOT_SAMPLER] = { VK_DESCRIPTOR_TYPE_SAMPLER, 0 }
+    [GPU_SLOT_SAMPLER] = { VK_DESCRIPTOR_TYPE_SAMPLER, 0 },
+    [GPU_SLOT_COMBINED_TEXTURE_SAMPLER] = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0 },
   };
 
   if (info->layout) {
@@ -1153,7 +1155,8 @@ void gpu_bundle_write(gpu_bundle** bundles, gpu_bundle_info* infos, uint32_t cou
     [GPU_SLOT_STORAGE_BUFFER_DYNAMIC] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
     [GPU_SLOT_SAMPLED_TEXTURE] = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
     [GPU_SLOT_STORAGE_TEXTURE] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-    [GPU_SLOT_SAMPLER] = VK_DESCRIPTOR_TYPE_SAMPLER
+    [GPU_SLOT_SAMPLER] = VK_DESCRIPTOR_TYPE_SAMPLER,
+    [GPU_SLOT_COMBINED_TEXTURE_SAMPLER] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
   };
 
   for (uint32_t i = 0; i < count; i++) {
@@ -1166,7 +1169,8 @@ void gpu_bundle_write(gpu_bundle** bundles, gpu_bundle_info* infos, uint32_t cou
       gpu_sampler** samplers = binding->count > 0 ? binding->samplers : &binding->sampler;
       bool texture = type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE || type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
       bool sampler = type == VK_DESCRIPTOR_TYPE_SAMPLER;
-      bool image = texture || sampler;
+      bool combined_texture_sampler = type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      bool image = texture || sampler || combined_texture_sampler;
 
       uint32_t index = 0;
       uint32_t descriptorCount = MAX(binding->count, 1);
@@ -1195,6 +1199,14 @@ void gpu_bundle_write(gpu_bundle** bundles, gpu_bundle_info* infos, uint32_t cou
         } else if (texture) {
           for (uint32_t n = 0; n < chunk; n++, index++) {
             imageInfo[imageCount++] = (VkDescriptorImageInfo) {
+              .imageView = textures[index]->view,
+              .imageLayout = textures[index]->layout
+            };
+          }
+        } else if (combined_texture_sampler) {
+          for (uint32_t n = 0; n < chunk; n++, index++) {
+            imageInfo[imageCount++] = (VkDescriptorImageInfo) {
+              .sampler = samplers[index]->handle,
               .imageView = textures[index]->view,
               .imageLayout = textures[index]->layout
             };

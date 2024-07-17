@@ -193,7 +193,7 @@ typedef enum {
   GPU_WRAP_CLAMP,
   GPU_WRAP_REPEAT,
   GPU_WRAP_MIRROR,
-  GPU_WRAP_BORDER,
+  GPU_WRAP_BORDER
 } gpu_wrap;
 
 typedef enum {
@@ -228,7 +228,8 @@ typedef enum {
   GPU_SLOT_STORAGE_BUFFER_DYNAMIC,
   GPU_SLOT_SAMPLED_TEXTURE,
   GPU_SLOT_STORAGE_TEXTURE,
-  GPU_SLOT_SAMPLER
+  GPU_SLOT_SAMPLER,
+  GPU_SLOT_COMBINED_TEXTURE_SAMPLER
 } gpu_slot_type;
 
 enum {
@@ -283,10 +284,10 @@ typedef struct {
   uint32_t number;
   gpu_slot_type type;
   uint32_t count;
+  gpu_sampler* sampler;
   union {
     gpu_buffer_binding buffer;
     gpu_texture* texture;
-    gpu_sampler* sampler;
     gpu_buffer_binding* buffers;
     gpu_texture** textures;
     gpu_sampler** samplers;

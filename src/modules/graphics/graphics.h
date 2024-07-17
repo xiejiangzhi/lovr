@@ -213,6 +213,7 @@ typedef struct {
   struct Image** images;
   const char* label;
   uintptr_t handle;
+  struct Sampler* sampler;
 } TextureInfo;
 
 typedef struct {
@@ -249,7 +250,7 @@ typedef enum {
   WRAP_CLAMP,
   WRAP_REPEAT,
   WRAP_MIRROR,
-  WRAP_BORDER,
+  WRAP_BORDER
 } WrapMode;
 
 typedef enum {
