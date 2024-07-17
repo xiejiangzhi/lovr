@@ -86,6 +86,7 @@ struct Texture {
   gpu_texture* sampleView;
   gpu_texture* renderView;
   gpu_texture* storageView;
+  Sampler* sampler;
   Material* material;
   Texture* root;
   uint32_t baseLayer;
@@ -2310,6 +2311,11 @@ Texture* lovrTextureCreate(const TextureInfo* info) {
   }
 
   texture->sync.barrier = &state.barrier;
+
+  if (info->sampler) {
+    Sampler* sampler = info->sampler;
+    texture->sampler = lovrSamplerCreate(&(sampler->info));
+  }
   return texture;
 }
 
@@ -2433,6 +2439,9 @@ void lovrTextureDestroy(void* ref) {
     if (texture->renderView && texture->renderView != texture->gpu) gpu_texture_destroy(texture->renderView);
     if (texture->storageView && texture->storageView != texture->gpu) gpu_texture_destroy(texture->storageView);
     if (texture->gpu) gpu_texture_destroy(texture->gpu);
+  }
+  if (texture->sampler) {
+    lovrSamplerDestroy(texture->sampler);
   }
   lovrFree((char*) texture->info.label);
   lovrFree(texture);
@@ -3073,7 +3082,8 @@ Shader* lovrShaderCreate(const ShaderInfo* info) {
         [SPV_STORAGE_BUFFER] = GPU_SLOT_STORAGE_BUFFER,
         [SPV_SAMPLED_TEXTURE] = GPU_SLOT_SAMPLED_TEXTURE,
         [SPV_STORAGE_TEXTURE] = GPU_SLOT_STORAGE_TEXTURE,
-        [SPV_SAMPLER] = GPU_SLOT_SAMPLER
+        [SPV_SAMPLER] = GPU_SLOT_SAMPLER,
+        [SPV_COMBINED_TEXTURE_SAMPLER] = GPU_SLOT_COMBINED_TEXTURE_SAMPLER
       };
 
       gpu_phase phases[] = {
@@ -3107,7 +3117,6 @@ Shader* lovrShaderCreate(const ShaderInfo* info) {
       uint32_t index = shader->resourceCount++;
 
       lovrCheck(index < MAX_SHADER_RESOURCES, "Shader resource count exceeds resourcesPerShader limit (%d)", MAX_SHADER_RESOURCES);
-      lovrCheck(resource->type != SPV_COMBINED_TEXTURE_SAMPLER, "Shader variable '%s' is a%s, which is not supported%s", resource->name, " combined texture sampler", " (use e.g. texture2D instead of sampler2D)");
       lovrCheck(resource->type != SPV_UNIFORM_TEXEL_BUFFER, "Shader variable '%s' is a%s, which is not supported%s", resource->name, " uniform texel buffer", "");
       lovrCheck(resource->type != SPV_STORAGE_TEXEL_BUFFER, "Shader variable '%s' is a%s, which is not supported%s", resource->name, " storage texel buffer", "");
       lovrCheck(resource->type != SPV_INPUT_ATTACHMENT, "Shader variable '%s' is a%s, which is not supported%s", resource->name, "n input attachment", "");
@@ -3121,7 +3130,9 @@ Shader* lovrShaderCreate(const ShaderInfo* info) {
       }
 
       bool buffer = resource->type == SPV_UNIFORM_BUFFER || resource->type == SPV_STORAGE_BUFFER;
-      bool texture = resource->type == SPV_SAMPLED_TEXTURE || resource->type == SPV_STORAGE_TEXTURE;
+      bool texture = resource->type == SPV_SAMPLED_TEXTURE
+        || resource->type == SPV_STORAGE_TEXTURE
+        || resource->type == SPV_COMBINED_TEXTURE_SAMPLER;
       bool sampler = resource->type == SPV_SAMPLER;
       bool storage = resource->type == SPV_STORAGE_BUFFER || resource->type == SPV_STORAGE_TEXTURE;
 
@@ -5846,6 +5857,10 @@ void lovrPassSetShader(Pass* pass, Shader* shader) {
           case GPU_SLOT_SAMPLER:
             bindings[i].sampler = state.defaultSamplers[FILTER_LINEAR]->gpu;
             break;
+          case GPU_SLOT_COMBINED_TEXTURE_SAMPLER:
+            bindings[i].texture = state.defaultTexture->gpu;
+            bindings[i].sampler = state.defaultSamplers[FILTER_LINEAR]->gpu;
+            break;
           default: break;
         }
       }
@@ -6003,6 +6018,7 @@ void lovrPassSendTexture(Pass* pass, const char* name, size_t length, Texture* t
 
   trackTexture(pass, texture, resource->phase, resource->cache);
   pass->bindings[slot].texture = view;
+  pass->bindings[slot].sampler = texture->sampler ? texture->sampler->gpu : state.defaultSamplers[1]->gpu;
   pass->flags |= DIRTY_BINDINGS;
 }
 

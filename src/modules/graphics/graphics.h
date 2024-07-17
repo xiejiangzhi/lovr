@@ -213,6 +213,7 @@ typedef struct {
   struct Image** images;
   const char* label;
   uintptr_t handle;
+  struct Sampler* sampler;
 } TextureInfo;
 
 typedef struct {
