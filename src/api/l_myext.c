@@ -30,17 +30,21 @@ static int l_lovrSyncEntitiesPhyData(lua_State* L) {
       vec3_set(v, pos[0], pos[1], pos[2]);
 
       lua_getfield(L, eidx, "phy_tpos");
-      lua_pushnumber(L, pos[0]);
-      lua_rawseti(L, -2, 1);
-      lua_pushnumber(L, pos[1]);
-      lua_rawseti(L, -2, 2);
-      lua_pushnumber(L, pos[2]);
-      lua_rawseti(L, -2, 3);
+      luax_writeobjarr(L, -2, 3, pos);
+
+      lua_getfield(L, eidx, "phy_lv");
+      v = luax_checkvector(L, -1, V_VEC3, NULL);
+      float lv[3];
+      lovrColliderGetLinearVelocity(collider, lv);
+      vec3_set(v, lv[0], lv[1], lv[2]);
+
+      lua_pushnumber(L, vec3_length(lv));
+      lua_setfield(L, eidx, "phy_speed");
 
       lua_getfield(L, eidx, "phy_rot");
       quat q = luax_checkvector(L, -1, V_QUAT, NULL);
       quat_set(q, rot[0], rot[1], rot[2], rot[3]);
-      lua_pop(L, 5);
+      lua_pop(L, 6);
     } else {
       lua_pop(L, 2);
     }
