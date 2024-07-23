@@ -34,9 +34,11 @@ LOVR_EXPORT int luaopen_lovr_myext(lua_State* L);
 
 // Object names are lightuserdata because Variants need a non-Lua string due to threads.
 static int luax_meta__tostring(lua_State* L) {
-  lua_getfield(L, -1, "__info");
+  lua_getfield(L, 1, "__info");
   TypeInfo* info = lua_touserdata(L, -1);
-  lua_pushstring(L, info->name);
+  lua_pop(L, 1);
+  Proxy* p = lua_touserdata(L, 1);
+  lua_pushfstring(L, "%s: %p", info->name, p->object);
   return 1;
 }
 
