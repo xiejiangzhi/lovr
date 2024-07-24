@@ -650,3 +650,6 @@ void lovrPassSetTallyBuffer(Pass* pass, Buffer* buffer, uint32_t offset);
 
 void lovrPassCompute(Pass* pass, uint32_t x, uint32_t y, uint32_t z, Buffer* indirect, uint32_t offset);
 void lovrPassBarrier(Pass* pass);
+
+void lovrPassSetLabel(Pass* pass, const char* label);
+const char* lovrPassGetLabel(Pass* pass);
