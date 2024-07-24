@@ -86,8 +86,8 @@ struct Texture {
   gpu_texture* sampleView;
   gpu_texture* renderView;
   gpu_texture* storageView;
-  Sampler* sampler;
   Material* material;
+  Sampler* sampler;
   Texture* root;
   uint32_t baseLayer;
   uint32_t baseLevel;
@@ -1251,7 +1251,7 @@ static void recordRenderPass(Pass* pass, gpu_stream* stream) {
     { 0, GPU_SLOT_UNIFORM_BUFFER, .buffer = { 0 } },
     { 1, GPU_SLOT_UNIFORM_BUFFER_DYNAMIC, .buffer = { 0 } },
     { 2, GPU_SLOT_UNIFORM_BUFFER_DYNAMIC, .buffer = { 0 } },
-    { 3, GPU_SLOT_SAMPLER, .sampler = pass->sampler ? pass->sampler->gpu : state.defaultSamplers[FILTER_LINEAR]->gpu }
+    { 3, GPU_SLOT_SAMPLER, .texture.sampler = pass->sampler ? pass->sampler->gpu : state.defaultSamplers[FILTER_LINEAR]->gpu }
   };
 
   BufferView view;
@@ -2314,8 +2314,8 @@ Texture* lovrTextureCreate(const TextureInfo* info) {
   texture->sync.barrier = &state.barrier;
 
   if (info->sampler) {
-    Sampler* sampler = info->sampler;
-    texture->sampler = lovrSamplerCreate(&(sampler->info));
+    texture->sampler = info->sampler;
+    lovrRetain(texture->sampler);
   }
   return texture;
 }
@@ -2353,6 +2353,8 @@ Texture* lovrTextureCreateView(Texture* parent, const TextureViewInfo* info) {
   texture->info.height = MAX(base->height >> info->levelIndex, 1);
   texture->info.layers = info->layerCount == ~0u ? base->layers : info->layerCount;
   texture->info.mipmaps = info->levelCount == ~0u ? base->mipmaps : info->levelCount;
+  texture->sampler = parent->sampler;
+  lovrRetain(texture->sampler);
 
   if (base->usage & (TEXTURE_SAMPLE | TEXTURE_RENDER)) {
     gpu_texture_init_view(texture->gpu, &(gpu_texture_view_info) {
@@ -2434,6 +2436,7 @@ void lovrTextureDestroy(void* ref) {
   Texture* texture = ref;
   if (texture != state.window) {
     flushTransfers();
+    lovrRelease(texture->sampler, lovrSamplerDestroy);
     lovrRelease(texture->material, lovrMaterialDestroy);
     if (texture->root != texture) lovrRelease(texture->root, lovrTextureDestroy);
     if (texture->sampleView && texture->sampleView != texture->gpu) gpu_texture_destroy(texture->sampleView), lovrFree(texture->sampleView);
@@ -2441,19 +2444,12 @@ void lovrTextureDestroy(void* ref) {
     if (texture->storageView && texture->storageView != texture->gpu) gpu_texture_destroy(texture->storageView);
     if (texture->gpu) gpu_texture_destroy(texture->gpu);
   }
-  if (texture->sampler) {
-    lovrSamplerDestroy(texture->sampler);
-  }
   lovrFree((char*) texture->info.label);
   lovrFree(texture);
 }
 
 const TextureInfo* lovrTextureGetInfo(Texture* texture) {
   return &texture->info;
-}
-
-Texture* lovrTextureGetParent(Texture* texture) {
-  return texture->root == texture ? NULL : texture->root;
 }
 
 Image* lovrTextureGetPixels(Texture* texture, uint32_t offset[4], uint32_t extent[3]) {
@@ -2586,6 +2582,16 @@ void lovrTextureGenerateMipmaps(Texture* texture, uint32_t base, uint32_t count)
   gpu_barrier barrier = syncTransfer(&texture->root->sync, GPU_PHASE_BLIT, GPU_CACHE_TRANSFER_READ | GPU_CACHE_TRANSFER_WRITE);
   gpu_sync(state.stream, &barrier, 1);
   mipmapTexture(state.stream, texture, texture->baseLevel + base, count);
+}
+
+Sampler* lovrTextureGetSampler(Texture* texture) {
+  return texture->sampler;
+}
+
+void lovrTextureSetSampler(Texture* texture, Sampler* sampler) {
+  lovrRelease(texture->sampler, lovrSamplerDestroy);
+  texture->sampler = sampler;
+  lovrRetain(sampler);
 }
 
 Material* lovrTextureToMaterial(Texture* texture) {
@@ -3085,10 +3091,10 @@ Shader* lovrShaderCreate(const ShaderInfo* info) {
       static const gpu_slot_type types[] = {
         [SPV_UNIFORM_BUFFER] = GPU_SLOT_UNIFORM_BUFFER,
         [SPV_STORAGE_BUFFER] = GPU_SLOT_STORAGE_BUFFER,
+        [SPV_COMBINED_TEXTURE_SAMPLER] = GPU_SLOT_TEXTURE_WITH_SAMPLER,
         [SPV_SAMPLED_TEXTURE] = GPU_SLOT_SAMPLED_TEXTURE,
         [SPV_STORAGE_TEXTURE] = GPU_SLOT_STORAGE_TEXTURE,
         [SPV_SAMPLER] = GPU_SLOT_SAMPLER,
-        [SPV_COMBINED_TEXTURE_SAMPLER] = GPU_SLOT_COMBINED_TEXTURE_SAMPLER
       };
 
       gpu_phase phases[] = {
@@ -3135,9 +3141,7 @@ Shader* lovrShaderCreate(const ShaderInfo* info) {
       }
 
       bool buffer = resource->type == SPV_UNIFORM_BUFFER || resource->type == SPV_STORAGE_BUFFER;
-      bool texture = resource->type == SPV_SAMPLED_TEXTURE
-        || resource->type == SPV_STORAGE_TEXTURE
-        || resource->type == SPV_COMBINED_TEXTURE_SAMPLER;
+      bool texture = resource->type == SPV_SAMPLED_TEXTURE || resource->type == SPV_STORAGE_TEXTURE || resource->type == SPV_COMBINED_TEXTURE_SAMPLER;
       bool sampler = resource->type == SPV_SAMPLER;
       bool storage = resource->type == SPV_STORAGE_BUFFER || resource->type == SPV_STORAGE_TEXTURE;
 
@@ -3550,7 +3554,7 @@ Material* lovrMaterialCreate(const MaterialInfo* info) {
     Texture* texture = textures[i] ? textures[i] : state.defaultTexture;
     lovrCheck(i == 0 || texture->info.type == TEXTURE_2D, "Material textures must be 2D");
     lovrCheck(texture->info.usage & TEXTURE_SAMPLE, "Textures must be created with the 'sample' usage to use them in Materials");
-    bindings[i + 1] = (gpu_binding) { i + 1, GPU_SLOT_SAMPLED_TEXTURE, .texture = texture->sampleView };
+    bindings[i + 1] = (gpu_binding) { i + 1, GPU_SLOT_SAMPLED_TEXTURE, .texture.object = texture->sampleView };
     material->hasWritableTexture |= texture->info.usage != TEXTURE_SAMPLE;
   }
 
@@ -5336,7 +5340,7 @@ static void lovrPassRelease(Pass* pass) {
 
 Pass* lovrGraphicsGetWindowPass(void) {
   if (!state.windowPass) {
-    state.windowPass = lovrPassCreate();
+    state.windowPass = lovrPassCreate(NULL);
   }
 
   Texture* window = lovrGraphicsGetWindowTexture();
@@ -5353,7 +5357,7 @@ Pass* lovrGraphicsGetWindowPass(void) {
   return state.windowPass;
 }
 
-Pass* lovrPassCreate(void) {
+Pass* lovrPassCreate(const char* label) {
   Pass* pass = lovrCalloc(sizeof(Pass));
   pass->ref = 1;
 
@@ -5361,6 +5365,12 @@ Pass* lovrPassCreate(void) {
   pass->allocator.length = 1 << 12;
   pass->allocator.memory = os_vm_init(pass->allocator.limit);
   os_vm_commit(pass->allocator.memory, pass->allocator.length);
+
+  if (label) {
+    size_t size = strlen(label) + 1;
+    pass->label = lovrMalloc(size);
+    memcpy(pass->label, label, size);
+  }
 
   lovrPassReset(pass);
 
@@ -5858,16 +5868,12 @@ void lovrPassSetShader(Pass* pass, Shader* shader) {
             bindings[i].buffer.offset = state.defaultBuffer->base;
             bindings[i].buffer.extent = state.defaultBuffer->info.size;
             break;
+          case GPU_SLOT_TEXTURE_WITH_SAMPLER:
           case GPU_SLOT_SAMPLED_TEXTURE:
           case GPU_SLOT_STORAGE_TEXTURE:
-            bindings[i].texture = state.defaultTexture->gpu;
-            break;
           case GPU_SLOT_SAMPLER:
-            bindings[i].sampler = state.defaultSamplers[FILTER_LINEAR]->gpu;
-            break;
-          case GPU_SLOT_COMBINED_TEXTURE_SAMPLER:
-            bindings[i].texture = state.defaultTexture->gpu;
-            bindings[i].sampler = state.defaultSamplers[FILTER_LINEAR]->gpu;
+            bindings[i].texture.object = state.defaultTexture->gpu;
+            bindings[i].texture.sampler = state.defaultSamplers[FILTER_LINEAR]->gpu;
             break;
           default: break;
         }
@@ -6025,8 +6031,8 @@ void lovrPassSendTexture(Pass* pass, const char* name, size_t length, Texture* t
   }
 
   trackTexture(pass, texture, resource->phase, resource->cache);
-  pass->bindings[slot].texture = view;
-  pass->bindings[slot].sampler = texture->sampler ? texture->sampler->gpu : state.defaultSamplers[1]->gpu;
+  pass->bindings[slot].texture.object = view;
+  pass->bindings[slot].texture.sampler = texture->sampler ? texture->sampler->gpu : state.defaultSamplers[FILTER_LINEAR]->gpu;
   pass->flags |= DIRTY_BINDINGS;
 }
 
@@ -6038,7 +6044,8 @@ void lovrPassSendSampler(Pass* pass, const char* name, size_t length, Sampler* s
 
   lovrCheck(shader->samplerMask & (1u << slot), "Trying to send a Sampler to '%s', but the active Shader doesn't have a Sampler in that slot", name);
 
-  pass->bindings[slot].sampler = sampler->gpu;
+  pass->bindings[slot].texture.object = state.defaultTexture->gpu;
+  pass->bindings[slot].texture.sampler = sampler->gpu;
   pass->flags |= DIRTY_BINDINGS;
 }
 
@@ -7465,20 +7472,6 @@ void lovrPassCompute(Pass* pass, uint32_t x, uint32_t y, uint32_t z, Buffer* ind
 void lovrPassBarrier(Pass* pass) {
   if (pass->computeCount > 0) {
     pass->computes[pass->computeCount - 1].flags |= COMPUTE_BARRIER;
-  }
-}
-
-void lovrPassSetLabel(Pass* pass, const char* label) {
-  if (pass->label) {
-    lovrFree(pass->label);
-  }
-
-  if (label) {
-    size_t size = strlen(label) + 1;
-    pass->label = lovrMalloc(size);
-    memcpy(pass->label, label, size);
-  } else {
-    pass->label = NULL;
   }
 }
 

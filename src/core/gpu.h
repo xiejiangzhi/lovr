@@ -226,10 +226,10 @@ typedef enum {
   GPU_SLOT_STORAGE_BUFFER,
   GPU_SLOT_UNIFORM_BUFFER_DYNAMIC,
   GPU_SLOT_STORAGE_BUFFER_DYNAMIC,
+  GPU_SLOT_TEXTURE_WITH_SAMPLER,
   GPU_SLOT_SAMPLED_TEXTURE,
   GPU_SLOT_STORAGE_TEXTURE,
   GPU_SLOT_SAMPLER,
-  GPU_SLOT_COMBINED_TEXTURE_SAMPLER
 } gpu_slot_type;
 
 enum {
@@ -281,16 +281,20 @@ typedef struct {
 } gpu_buffer_binding;
 
 typedef struct {
+  gpu_texture* object;
+  gpu_sampler* sampler;
+} gpu_texture_binding;
+
+typedef struct {
   uint32_t number;
   gpu_slot_type type;
   uint32_t count;
   gpu_sampler* sampler;
   union {
     gpu_buffer_binding buffer;
-    gpu_texture* texture;
+    gpu_texture_binding texture;
     gpu_buffer_binding* buffers;
-    gpu_texture** textures;
-    gpu_sampler** samplers;
+    gpu_texture_binding* textures;
   };
 } gpu_binding;
 

@@ -241,6 +241,8 @@ void lovrTextureCopy(Texture* src, Texture* dst, uint32_t srcOffset[4], uint32_t
 void lovrTextureBlit(Texture* src, Texture* dst, uint32_t srcOffset[4], uint32_t dstOffset[4], uint32_t srcExtent[3], uint32_t dstExtent[3], FilterMode filter);
 void lovrTextureClear(Texture* texture, float value[4], uint32_t layer, uint32_t layerCount, uint32_t level, uint32_t levelCount);
 void lovrTextureGenerateMipmaps(Texture* texture, uint32_t base, uint32_t count);
+Sampler* lovrTextureGetSampler(Texture* texture);
+void lovrTextureSetSampler(Texture* texture, Sampler* sampler);
 Material* lovrTextureToMaterial(Texture* texture);
 const char* lovrTextureGetLabel(Texture* texture);
 
@@ -565,7 +567,7 @@ typedef enum {
 } Winding;
 
 Pass* lovrGraphicsGetWindowPass(void);
-Pass* lovrPassCreate(void);
+Pass* lovrPassCreate(const char* label);
 void lovrPassDestroy(void* ref);
 void lovrPassReset(Pass* pass);
 const PassStats* lovrPassGetStats(Pass* pass);
@@ -651,5 +653,4 @@ void lovrPassSetTallyBuffer(Pass* pass, Buffer* buffer, uint32_t offset);
 void lovrPassCompute(Pass* pass, uint32_t x, uint32_t y, uint32_t z, Buffer* indirect, uint32_t offset);
 void lovrPassBarrier(Pass* pass);
 
-void lovrPassSetLabel(Pass* pass, const char* label);
 const char* lovrPassGetLabel(Pass* pass);
