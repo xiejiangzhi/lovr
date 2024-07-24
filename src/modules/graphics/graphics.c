@@ -2605,10 +2605,6 @@ Material* lovrTextureToMaterial(Texture* texture) {
   return texture->material;
 }
 
-const char* lovrTextureGetLabel(Texture* texture) {
-  return texture->info.label;
-}
-
 // Sampler
 
 Sampler* lovrGraphicsGetDefaultSampler(FilterMode mode) {
