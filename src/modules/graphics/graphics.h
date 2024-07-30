@@ -244,7 +244,6 @@ void lovrTextureGenerateMipmaps(Texture* texture, uint32_t base, uint32_t count)
 Sampler* lovrTextureGetSampler(Texture* texture);
 void lovrTextureSetSampler(Texture* texture, Sampler* sampler);
 Material* lovrTextureToMaterial(Texture* texture);
-const char* lovrTextureGetLabel(Texture* texture);
 
 // Sampler
 
@@ -571,6 +570,7 @@ Pass* lovrPassCreate(const char* label);
 void lovrPassDestroy(void* ref);
 void lovrPassReset(Pass* pass);
 const PassStats* lovrPassGetStats(Pass* pass);
+const char* lovrPassGetLabel(Pass* pass);
 
 void lovrPassGetCanvas(Pass* pass, Texture* color[4], Texture** depthTexture, uint32_t* depthFormat, uint32_t* samples);
 void lovrPassSetCanvas(Pass* pass, Texture* color[4], Texture* depthTexture, uint32_t depthFormat, uint32_t samples);
@@ -652,5 +652,3 @@ void lovrPassSetTallyBuffer(Pass* pass, Buffer* buffer, uint32_t offset);
 
 void lovrPassCompute(Pass* pass, uint32_t x, uint32_t y, uint32_t z, Buffer* indirect, uint32_t offset);
 void lovrPassBarrier(Pass* pass);
-
-const char* lovrPassGetLabel(Pass* pass);

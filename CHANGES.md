@@ -24,6 +24,8 @@ dev
 - Add `lovr.system.openConsole`.
 - Add `lovr.filesystem.getBundlePath` (for internal Lua code).
 - Add `lovr.filesystem.setSource` (for internal Lua code).
+- Add table support to `Channel:push`.
+- Add `lovr.thread.newChannel`.
 - Add `t.thread.workers` to configure number of worker threads.
 - Add support for declaring objects as to-be-closed variables in Lua 5.4.
 - Add variant of `lovr.physics.newWorld` that takes a table of settings.
@@ -65,7 +67,6 @@ dev
 - Add `lovr.headset.getHandles`.
 - Add `raw` flag to `lovr.graphics.newShader`.
 - Add `border` `WrapMode`.
-- Add table support to `channel:push`.
 
 ### Change
 

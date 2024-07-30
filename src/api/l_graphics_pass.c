@@ -29,6 +29,13 @@ static int l_lovrPassGetStats(lua_State* L) {
   return 1;
 }
 
+static int l_lovrPassGetLabel(lua_State* L) {
+  Pass* pass = luax_checktype(L, 1, Pass);
+  const char* label = lovrPassGetLabel(pass);
+  lua_pushstring(L, label);
+  return 1;
+}
+
 static int l_lovrPassGetCanvas(lua_State* L) {
   Pass* pass = luax_checktype(L, 1, Pass);
   Texture* textures[4];
@@ -1077,6 +1084,7 @@ static int l_lovrPassToString(lua_State* L) {
 const luaL_Reg lovrPass[] = {
   { "reset", l_lovrPassReset },
   { "getStats", l_lovrPassGetStats },
+  { "getLabel", l_lovrPassGetLabel },
 
   { "getCanvas", l_lovrPassGetCanvas },
   { "setCanvas", l_lovrPassSetCanvas },
