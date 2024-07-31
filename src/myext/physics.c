@@ -23,7 +23,7 @@ TriangleShape* lovrTriangleShapeCreate(float vertices[9]) {
 }
 
 bool lovrWorldQueryTriangle(
-  World* world, float vertices[9], int filter, QueryCallback callback, void* userdata
+  World* world, float vertices[9], int filter, OverlapCallback* callback, void* userdata
 ) {
   Shape* shape = lovrTriangleShapeCreate(vertices);
   float pose[7] = { 0, 0, 0, 0, 0, 0, 1 };
