@@ -14,7 +14,7 @@ void lua_rawgeti_numarr(lua_State *L, int idx, int tsi, float* out_arr, int out_
   lj_checkapi(tvistab(t), "stack slot %d is not a table", idx);
   GCtab* gt = tabV(t);
 
- for (int i = 0; i < out_n; i++) {
+  for (int i = 0; i < out_n; i++) {
     v = inarray(gt, tsi + i) ? arrayslot(gt, tsi + i) : NULL;
     if (v) {
       if (LJ_LIKELY(tvisnumber(v)))

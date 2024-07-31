@@ -604,7 +604,6 @@ const luaL_Reg lovrBuffer[] = {
   { "newReadback", l_lovrBufferNewReadback },
   { "getData", l_lovrBufferGetData },
   { "setData", l_lovrBufferSetData },
-  { "setDataEx", l_lovrBufferSetDataEx },
   { "mapData", l_lovrBufferMapData },
   { "clear", l_lovrBufferClear },
   { NULL, NULL }
