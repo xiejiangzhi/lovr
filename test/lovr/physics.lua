@@ -22,4 +22,18 @@ group('physics', function()
       expect(c:isEnabled()).to.equal(true)
     end)
   end)
+
+  group('MeshShape', function()
+    if lovr.graphics then
+      test('from Mesh', function()
+        mesh = lovr.graphics.newMesh({
+          {   0,  .4, 0 },
+          { -.5, -.4, 0 },
+          {  .5, -.4, 0 }
+        })
+
+        shape = lovr.physics.newMeshShape(mesh)
+      end)
+    end
+  end)
 end)

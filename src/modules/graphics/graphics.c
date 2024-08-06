@@ -4268,8 +4268,7 @@ static float* lovrMeshGetPositions(Mesh* mesh) {
   uint32_t positionHash = (uint32_t) hash64("VertexPosition", strlen("VertexPosition"));
   for (uint32_t i = 0; i < MAX(format->fieldCount, 1); i++) {
     const DataField* attribute = format->fieldCount > 0 ? &format->fields[i] : format;
-    if (attribute->type != TYPE_F32x3) continue;
-    if ((attribute->hash == LOCATION_POSITION || attribute->hash == positionHash)) {
+    if (attribute->type == TYPE_F32x3 && attribute->hash == positionHash) {
       return (float*) ((char*) mesh->vertices + attribute->offset);
     }
   }
@@ -4284,11 +4283,11 @@ void lovrMeshGetTriangles(Mesh* mesh, float** vertices, uint32_t** indices, uint
   const DataField* format = lovrMeshGetVertexFormat(mesh);
 
   *vertices = lovrMalloc(format->length * 3 * sizeof(float));
+  *vertexCount = format->length;
 
   for (uint32_t i = 0; i < format->length; i++) {
-    vec3_init(*vertices, position);
+    vec3_init((*vertices) + 3 * i, position);
     position = (float*) ((char*) position + format->stride);
-    *vertices += 3;
   }
 
   if (mesh->indexCount > 0) {
@@ -4306,8 +4305,7 @@ void lovrMeshGetTriangles(Mesh* mesh, float** vertices, uint32_t** indices, uint
     *indices = lovrMalloc(*indexCount * sizeof(uint32_t));
     lovrCheck(format->length >= 3 && format->length % 3 == 0, "Mesh vertex count must be divisible by 3");
     for (uint32_t i = 0; i < format->length; i++) {
-      **indices = i;
-      *indices += 1;
+      (*indices)[i] = i;
     }
   }
 }
@@ -4487,11 +4485,11 @@ Model* lovrModelCreate(const ModelInfo* info) {
   BufferInfo vertexBufferInfo = {
     .format = (DataField[]) {
       { .length = data->vertexCount, .stride = sizeof(ModelVertex), .fieldCount = 5 },
-      { .type = TYPE_F32x3, .offset = offsetof(ModelVertex, position), .hash = LOCATION_POSITION },
-      { .type = TYPE_SN10x3, .offset = offsetof(ModelVertex, normal), .hash = LOCATION_NORMAL },
-      { .type = TYPE_F32x2, .offset = offsetof(ModelVertex, uv), .hash = LOCATION_UV },
-      { .type = TYPE_UN8x4, .offset = offsetof(ModelVertex, color), .hash = LOCATION_COLOR },
-      { .type = TYPE_SN10x3, .offset = offsetof(ModelVertex, tangent), .hash = LOCATION_TANGENT }
+      { .name = "VertexPosition", .type = TYPE_F32x3, .offset = offsetof(ModelVertex, position) },
+      { .name = "VertexNormal", .type = TYPE_SN10x3, .offset = offsetof(ModelVertex, normal) },
+      { .name = "VertexUV", .type = TYPE_F32x2, .offset = offsetof(ModelVertex, uv) },
+      { .name = "VertexColor", .type = TYPE_UN8x4, .offset = offsetof(ModelVertex, color) },
+      { .name = "VertexTangent", .type = TYPE_SN10x3, .offset = offsetof(ModelVertex, tangent) }
     }
   };
 
@@ -6111,7 +6109,7 @@ static void lovrPassResolvePipeline(Pass* pass, DrawInfo* info, Draw* draw, Draw
 
       for (uint32_t j = 0; j < MAX(format->fieldCount, 1); j++) {
         const DataField* field = format->fieldCount > 0 ? &format->fields[j] : format;
-        if (field->hash == attribute->hash || field->hash == attribute->location) {
+        if (field->hash == attribute->hash) {
           lovrCheck(field->type < TYPE_MAT2, "Currently vertex attributes can not use matrix or index types");
           pipeline->info.vertex.attributes[i] = (gpu_attribute) {
             .buffer = 0,
@@ -7248,6 +7246,7 @@ void lovrPassDrawMesh(Pass* pass, Mesh* mesh, float* transform, uint32_t instanc
     .index.buffer = mesh->indexBuffer,
     .start = start,
     .count = count,
+    .baseVertex = mesh->baseVertex,
     .instances = instances
   });
 }
