@@ -4,6 +4,7 @@ function lovr.arg(arg)
     _version = { short = '-v', long = '--version', help = 'Show version and exit' },
     console = { long = '--console', help = 'Attach Windows console' },
     debug = { long = '--debug', help = 'Enable debugging checks and logging' },
+    simulator = { long = '--simulator', help = 'Force headset simulator' },
     watch = { short = '-w', long = '--watch', help = 'Watch files and restart on change' }
   }
 
@@ -61,13 +62,21 @@ function lovr.arg(arg)
   end
 
   if arg._version then
-    print(('LOVR %d.%d.%d'):format(lovr.getVersion()))
+    if select('#', lovr.getVersion()) >= 5 then
+      print(('LOVR %d.%d.%d (%s) %s'):format(lovr.getVersion()))
+    else
+      print(('LOVR %d.%d.%d (%s)'):format(lovr.getVersion()))
+    end
     os.exit(0)
   end
 
   return function(conf)
     if arg.debug then
       conf.graphics.debug = true
+    end
+
+    if arg.simulator then
+      conf.headset.drivers = { 'simulator' }
     end
 
     if arg.watch then

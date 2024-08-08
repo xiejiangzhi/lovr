@@ -114,6 +114,7 @@ if(LOVR_USE_LUAJIT AND NOT EMSCRIPTEN)
     set(LOVR_LUA_INCLUDE ${LUAJIT_INCLUDE_DIRS})
     set(LOVR_LUA ${LUAJIT_LIBRARIES})
   else()
+    set(BUILD_SHARED_LIBS ON)
     add_subdirectory(deps/luajit luajit)
     set_target_properties(luajit PROPERTIES EXCLUDE_FROM_ALL 1)
     if(MSVC)
@@ -667,6 +668,10 @@ if(NOT ANDROID)
     COMMAND ${CMAKE_COMMAND} -E tar c "${CMAKE_CURRENT_BINARY_DIR}/nogame.zip" --format=zip .
     COMMAND ${CMAKE_COMMAND} -E cat "${CMAKE_CURRENT_BINARY_DIR}/nogame.zip" >> ${NOGAME_BUNDLE}
   )
+endif()
+
+if(LOVR_VERSION_HASH)
+  target_compile_definitions(lovr PRIVATE LOVR_VERSION_HASH=${LOVR_VERSION_HASH})
 endif()
 
 # Add a custom target that is always out of date so libraries are always moved
