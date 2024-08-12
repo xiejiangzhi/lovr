@@ -1565,6 +1565,10 @@ static void recordRenderPass(Pass* pass, gpu_stream* stream) {
 
 static Readback* lovrReadbackCreateTimestamp(TimingInfo* passes, uint32_t count, BufferView view);
 
+void lovrGraphicsBeginFrame() {
+  beginFrame();
+}
+
 void lovrGraphicsSubmit(Pass** passes, uint32_t count) {
   beginFrame();
 

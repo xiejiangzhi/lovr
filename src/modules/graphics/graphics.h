@@ -104,6 +104,7 @@ void lovrGraphicsSetBackgroundColor(float background[4]);
 
 bool lovrGraphicsIsTimingEnabled(void);
 void lovrGraphicsSetTimingEnabled(bool enable);
+void lovrGraphicsBeginFrame();
 void lovrGraphicsSubmit(Pass** passes, uint32_t count);
 void lovrGraphicsPresent(void);
 void lovrGraphicsWait(void);
