@@ -384,7 +384,7 @@ static Pass* simulator_getPass(void) {
       .height = height,
       .layers = 1,
       .mipmaps = 1,
-      .usage = TEXTURE_RENDER | TEXTURE_SAMPLE,
+      .usage = TEXTURE_RENDER | TEXTURE_SAMPLE
     });
 
     Texture* textures[4] = { state.texture };
@@ -418,6 +418,10 @@ static void simulator_submit(void) {
 
 static bool simulator_isFocused(void) {
   return state.focused;
+}
+
+static bool simulator_isMounted(void) {
+  return true;
 }
 
 static double simulator_update(void) {
@@ -563,5 +567,6 @@ HeadsetInterface lovrHeadsetSimulatorDriver = {
   .getPass = simulator_getPass,
   .submit = simulator_submit,
   .isFocused = simulator_isFocused,
+  .isMounted = simulator_isMounted,
   .update = simulator_update
 };

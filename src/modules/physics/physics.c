@@ -53,6 +53,7 @@ struct Collider {
   Joint* joints;
   Shape* shapes;
   uint8_t tag;
+  bool enabled;
   bool automaticMass;
   uint32_t activeIndex;
   uintptr_t userdata;
@@ -174,6 +175,9 @@ static JPH_ObjectLayerFilter* getObjectLayerFilter(World* world, uint32_t tagMas
   if (!thread.objectLayerFilter) {
     thread.objectLayerFilter = JPH_ObjectLayerFilter_Create();
   }
+
+  // Never include objects on the last layer, reserved for colliders without shapes
+  tagMask &= ~(1 << (world->tagCount + 1));
 
   JPH_ObjectLayerFilter_SetProcs(thread.objectLayerFilter, (JPH_ObjectLayerFilter_Procs) {
     .ShouldCollide = objectLayerFilter
@@ -310,18 +314,18 @@ World* lovrWorldCreate(WorldInfo* info) {
   }
 
   uint32_t broadPhaseLayerCount = world->staticTagMask ? 2 : 1;
-  uint32_t objectLayerCount = info->tagCount + 1;
+  uint32_t objectLayerCount = info->tagCount + 2;
   JPH_BroadPhaseLayerInterface* broadPhaseLayerInterface = JPH_BroadPhaseLayerInterfaceTable_Create(objectLayerCount, broadPhaseLayerCount);
   world->objectLayerPairFilter = JPH_ObjectLayerPairFilterTable_Create(objectLayerCount);
 
-  // Each tag gets its own object layer, last object layer is for untagged colliders
+  // Each tag gets its own object layer, also add a layer for untagged colliders and one for shapeless colliders
   for (uint32_t i = 0; i < objectLayerCount; i++) {
     bool isStatic = world->staticTagMask & (1 << i);
     JPH_BroadPhaseLayerInterfaceTable_MapObjectToBroadPhaseLayer(broadPhaseLayerInterface, i, isStatic);
 
-    // Static tags never collide with other static tags
+    // Static tags never collide with other static tags, last layer never colliders with anything
     for (uint32_t j = i; j < objectLayerCount; j++) {
-      if (isStatic && world->staticTagMask & (1 << j)) {
+      if ((isStatic && world->staticTagMask & (1 << j)) || j == objectLayerCount - 1) {
         JPH_ObjectLayerPairFilterTable_DisableCollision(world->objectLayerPairFilter, i, j);
       } else {
         JPH_ObjectLayerPairFilterTable_EnableCollision(world->objectLayerPairFilter, i, j);
@@ -766,6 +770,7 @@ Collider* lovrColliderCreate(World* world, float position[3], Shape* shape) {
   collider->ref = 1;
   collider->world = world;
   collider->tag = 0xff;
+  collider->enabled = true;
   collider->automaticMass = true;
 
   if (shape) {
@@ -781,7 +786,7 @@ Collider* lovrColliderCreate(World* world, float position[3], Shape* shape) {
   JPH_RVec3* p = vec3_toJolt(position);
   JPH_Quat q = { 0.f, 0.f, 0.f, 1.f };
   JPH_MotionType type = JPH_Shape_MustBeStatic(shape->handle) ? JPH_MotionType_Static : JPH_MotionType_Dynamic;
-  JPH_ObjectLayer objectLayer = world->tagCount;
+  JPH_ObjectLayer objectLayer = shape != state.sphere ? world->tagCount : world->tagCount + 1; // Untagged/shapeless layer
   JPH_BodyCreationSettings* settings = JPH_BodyCreationSettings_Create3(shape->handle, p, &q, type, objectLayer);
   collider->body = JPH_BodyInterface_CreateBody(world->bodyInterfaceLocked, settings);
   collider->id = JPH_Body_GetID(collider->body);
@@ -893,16 +898,17 @@ void lovrColliderSetUserData(Collider* collider, uintptr_t userdata) {
 }
 
 bool lovrColliderIsEnabled(Collider* collider) {
-  return JPH_BodyInterface_IsAdded(getBodyInterface(collider, READ), collider->id);
+  return collider->enabled;
 }
 
 void lovrColliderSetEnabled(Collider* collider, bool enable) {
-  JPH_BodyInterface* interface = getBodyInterface(collider, WRITE);
-  bool added = JPH_BodyInterface_IsAdded(interface, collider->id);
-  if (enable && !added) {
-    JPH_BodyInterface_AddBody(interface, collider->id, JPH_Activation_DontActivate);
-  } else if (!enable && added) {
-    JPH_BodyInterface_RemoveBody(interface, collider->id);
+  if (enable != collider->enabled) {
+    if (enable) {
+      JPH_BodyInterface_AddBody(getBodyInterface(collider, WRITE), collider->id, JPH_Activation_DontActivate);
+    } else if (!enable) {
+      JPH_BodyInterface_RemoveBody(getBodyInterface(collider, WRITE), collider->id);
+    }
+    collider->enabled = enable;
   }
 }
 
@@ -1008,6 +1014,13 @@ void lovrColliderAddShape(Collider* collider, Shape* shape) {
     }
   }
 
+  // Colliders with zero shapes have to go on a special layer, so if we add a shape to a collider
+  // without any shapes, we gotta move it onto the right object layer
+  if (!collider->shapes) {
+    JPH_ObjectLayer objectLayer = collider->tag == 0xff ? collider->world->tagCount : collider->tag;
+    JPH_BodyInterface_SetObjectLayer(interface, collider->id, objectLayer);
+  }
+
   // Bookkeeping
   shape->collider = collider;
   shape->next = collider->shapes;
@@ -1089,6 +1102,11 @@ void lovrColliderRemoveShape(Collider* collider, Shape* shape) {
       (*list)->index--;
     }
     list = &(*list)->next;
+  }
+
+  // Colliders with zero shapes gotta go on a special layer
+  if (!collider->shapes) {
+    JPH_BodyInterface_SetObjectLayer(interface, collider->id, collider->world->tagCount + 1);
   }
 
   lovrRelease(shape, lovrShapeDestroy);
@@ -1217,14 +1235,19 @@ const char* lovrColliderGetTag(Collider* collider) {
 void lovrColliderSetTag(Collider* collider, const char* tag) {
   collider->tag = tag ? findTag(collider->world, tag, strlen(tag)) : 0xff;
   lovrCheck(!tag || collider->tag != 0xff, "Unknown tag '%s'", tag);
-  JPH_ObjectLayer objectLayer = collider->tag == 0xff ? collider->world->tagCount : collider->tag;
 
   JPH_BodyInterface* interface = getBodyInterface(collider, WRITE);
-  JPH_BodyInterface_SetObjectLayer(interface, collider->id, objectLayer);
-
   if (collider->tag != 0xff && collider->world->staticTagMask & (1 << collider->tag)) {
     JPH_BodyInterface_SetMotionType(interface, collider->id, JPH_MotionType_Static, JPH_Activation_DontActivate);
   }
+
+  // Colliders without shapes go on a special object layer that doesn't collide with anything
+  if (!collider->shapes) {
+    return;
+  }
+
+  JPH_ObjectLayer objectLayer = collider->tag == 0xff ? collider->world->tagCount : collider->tag;
+  JPH_BodyInterface_SetObjectLayer(interface, collider->id, objectLayer);
 }
 
 float lovrColliderGetFriction(Collider* collider) {
@@ -1295,10 +1318,12 @@ bool lovrColliderIsAwake(Collider* collider) {
 }
 
 void lovrColliderSetAwake(Collider* collider, bool awake) {
-  if (awake) {
-    JPH_BodyInterface_ActivateBody(getBodyInterface(collider, WRITE), collider->id);
-  } else {
-    JPH_BodyInterface_DeactivateBody(getBodyInterface(collider, WRITE), collider->id);
+  if (collider->enabled) {
+    if (awake) {
+      JPH_BodyInterface_ActivateBody(getBodyInterface(collider, WRITE), collider->id);
+    } else {
+      JPH_BodyInterface_DeactivateBody(getBodyInterface(collider, WRITE), collider->id);
+    }
   }
 }
 
@@ -1467,12 +1492,12 @@ void lovrColliderResetMassData(Collider* collider) {
 void lovrColliderGetDegreesOfFreedom(Collider* collider, bool translation[3], bool rotation[3]) {
   JPH_MotionProperties* motion = JPH_Body_GetMotionProperties(collider->body);
   JPH_AllowedDOFs dofs = JPH_MotionProperties_GetAllowedDOFs(motion);
-  if (dofs & JPH_AllowedDOFs_TranslationX) translation[0] = true;
-  if (dofs & JPH_AllowedDOFs_TranslationY) translation[1] = true;
-  if (dofs & JPH_AllowedDOFs_TranslationZ) translation[2] = true;
-  if (dofs & JPH_AllowedDOFs_RotationX) rotation[0] = true;
-  if (dofs & JPH_AllowedDOFs_RotationY) rotation[1] = true;
-  if (dofs & JPH_AllowedDOFs_RotationZ) rotation[2] = true;
+  translation[0] = dofs & JPH_AllowedDOFs_TranslationX;
+  translation[1] = dofs & JPH_AllowedDOFs_TranslationY;
+  translation[2] = dofs & JPH_AllowedDOFs_TranslationZ;
+  rotation[0] = dofs & JPH_AllowedDOFs_RotationX;
+  rotation[1] = dofs & JPH_AllowedDOFs_RotationY;
+  rotation[2] = dofs & JPH_AllowedDOFs_RotationZ;
 }
 
 void lovrColliderSetDegreesOfFreedom(Collider* collider, bool translation[3], bool rotation[3]) {
@@ -1502,6 +1527,7 @@ void lovrColliderGetPosition(Collider* collider, float position[3]) {
 }
 
 void lovrColliderSetPosition(Collider* collider, float position[3]) {
+  lovrCheck(collider->enabled, "Collider must be enabled");
   JPH_BodyInterface_SetPosition(getBodyInterface(collider, WRITE), collider->id, vec3_toJolt(position), JPH_Activation_Activate);
   vec3_init(collider->lastPosition, position);
 }
@@ -1516,6 +1542,7 @@ void lovrColliderGetOrientation(Collider* collider, float orientation[4]) {
 }
 
 void lovrColliderSetOrientation(Collider* collider, float orientation[4]) {
+  lovrCheck(collider->enabled, "Collider must be enabled");
   JPH_BodyInterface_SetRotation(getBodyInterface(collider, WRITE), collider->id, quat_toJolt(orientation), JPH_Activation_Activate);
   quat_init(collider->lastOrientation, orientation);
 }
@@ -1545,6 +1572,7 @@ void lovrColliderGetPose(Collider* collider, float position[3], float orientatio
 }
 
 void lovrColliderSetPose(Collider* collider, float position[3], float orientation[4]) {
+  lovrCheck(collider->enabled, "Collider must be enabled");
   JPH_BodyInterface_SetPositionAndRotation(getBodyInterface(collider, WRITE), collider->id, vec3_toJolt(position), quat_toJolt(orientation), JPH_Activation_Activate);
   vec3_init(collider->lastPosition, position);
   quat_init(collider->lastOrientation, orientation);
@@ -1552,6 +1580,7 @@ void lovrColliderSetPose(Collider* collider, float position[3], float orientatio
 
 void lovrColliderMoveKinematic(Collider* collider, float position[3], float orientation[4], float dt) {
   lovrCheck(dt > 0.f, "dt must > 0");
+  lovrCheck(collider->enabled, "Collider must be enabled");
   JPH_BodyInterface_MoveKinematic(getBodyInterface(collider, WRITE), collider->id, vec3_toJolt(position), quat_toJolt(orientation), dt);
 }
 
@@ -1562,6 +1591,7 @@ void lovrColliderGetLinearVelocity(Collider* collider, float velocity[3]) {
 }
 
 void lovrColliderSetLinearVelocity(Collider* collider, float velocity[3]) {
+  lovrCheck(collider->enabled, "Collider must be enabled");
   JPH_BodyInterface_SetLinearVelocity(getBodyInterface(collider, WRITE), collider->id, vec3_toJolt(velocity));
 }
 
@@ -1572,6 +1602,7 @@ void lovrColliderGetAngularVelocity(Collider* collider, float velocity[3]) {
 }
 
 void lovrColliderSetAngularVelocity(Collider* collider, float velocity[3]) {
+  lovrCheck(collider->enabled, "Collider must be enabled");
   JPH_BodyInterface_SetAngularVelocity(getBodyInterface(collider, WRITE), collider->id, vec3_toJolt(velocity));
 }
 
@@ -1596,26 +1627,32 @@ void lovrColliderSetAngularDamping(Collider* collider, float damping) {
 }
 
 void lovrColliderApplyForce(Collider* collider, float force[3]) {
+  lovrCheck(collider->enabled, "Collider must be enabled");
   JPH_BodyInterface_AddForce(getBodyInterface(collider, WRITE), collider->id, vec3_toJolt(force));
 }
 
 void lovrColliderApplyForceAtPosition(Collider* collider, float force[3], float position[3]) {
+  lovrCheck(collider->enabled, "Collider must be enabled");
   JPH_BodyInterface_AddForce2(getBodyInterface(collider, WRITE), collider->id, vec3_toJolt(force), vec3_toJolt(position));
 }
 
 void lovrColliderApplyTorque(Collider* collider, float torque[3]) {
+  lovrCheck(collider->enabled, "Collider must be enabled");
   JPH_BodyInterface_AddTorque(getBodyInterface(collider, WRITE), collider->id, vec3_toJolt(torque));
 }
 
 void lovrColliderApplyLinearImpulse(Collider* collider, float impulse[3]) {
+  lovrCheck(collider->enabled, "Collider must be enabled");
   JPH_BodyInterface_AddImpulse(getBodyInterface(collider, WRITE), collider->id, vec3_toJolt(impulse));
 }
 
 void lovrColliderApplyLinearImpulseAtPosition(Collider* collider, float impulse[3], float position[3]) {
+  lovrCheck(collider->enabled, "Collider must be enabled");
   JPH_BodyInterface_AddImpulse2(getBodyInterface(collider, WRITE), collider->id, vec3_toJolt(impulse), vec3_toJolt(position));
 }
 
 void lovrColliderApplyAngularImpulse(Collider* collider, float impulse[3]) {
+  lovrCheck(collider->enabled, "Collider must be enabled");
   JPH_BodyInterface_AddAngularImpulse(getBodyInterface(collider, WRITE), collider->id, vec3_toJolt(impulse));
 }
 

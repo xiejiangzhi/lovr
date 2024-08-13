@@ -47,10 +47,11 @@ option(LOVR_BUILD_WITH_SYMBOLS "Build with C function symbols exposed" OFF)
 if(EMSCRIPTEN)
   string(CONCAT EMSCRIPTEN_LINKER_FLAGS
     "-Os "
-    "-s USE_WEBGPU=1 "
-    "-s FORCE_FILESYSTEM=1 "
-    "-s EXPORTED_FUNCTIONS=_main,_webxr_attach,_webxr_detach "
-    "-s \"EXPORTED_RUNTIME_METHODS=['getValue','setValue']\" "
+    "-sUSE_WEBGPU=1 "
+    "-sFORCE_FILESYSTEM=1 "
+    "-sINITIAL_HEAP=1677721600 "
+    "-sEXPORTED_FUNCTIONS=_main,_webxr_attach,_webxr_detach "
+    "-sEXPORTED_RUNTIME_METHODS=getValue,setValue "
     "--js-library \"${CMAKE_CURRENT_SOURCE_DIR}/etc/webxr.js\" "
     "--shell-file \"${CMAKE_CURRENT_SOURCE_DIR}/etc/lovr.html\""
   )
@@ -187,6 +188,8 @@ if(LOVR_USE_GLSLANG)
   set(BUILD_SHARED_LIBS OFF)
   if(NOT EMSCRIPTEN)
     set(ENABLE_GLSLANG_BINARIES ON CACHE BOOL "")
+  else()
+    set(ENABLE_GLSLANG_BINARIES OFF CACHE BOOL "")
   endif()
   list(APPEND LOVR_INCLUDES deps/glslang/glslang/Include deps/glslang/glslang/Public)
   add_subdirectory(deps/glslang glslang)
@@ -480,7 +483,7 @@ if(LOVR_ENABLE_GRAPHICS)
     elseif(Vulkan_GLSLANG_VALIDATOR_EXECUTABLE)
       set(GLSLANG_VALIDATOR "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}")
     else()
-      find_program(GLSLANG_VALIDATOR glslang-standalone)
+      find_program(GLSLANG_VALIDATOR glslang)
       if(NOT GLSLANG_VALIDATOR)
         message(FATAL_ERROR "Need glslangValidator installed or LOVR_USE_GLSLANG enabled")
       endif()
@@ -656,7 +659,7 @@ foreach(path ${LOVR_RESOURCES})
   file(WRITE ${output} "const unsigned char ${identifier}[] = {${data}};\nconst unsigned int ${identifier}_len = sizeof(${identifier});\n")
 endforeach()
 
-if(NOT ANDROID)
+if(NOT ANDROID AND NOT EMSCRIPTEN)
   if(APPLE AND LOVR_BUILD_BUNDLE)
     set(NOGAME_BUNDLE "${CMAKE_CURRENT_BINARY_DIR}/lovr.app/Contents/Resources/nogame.lovr")
   else()
