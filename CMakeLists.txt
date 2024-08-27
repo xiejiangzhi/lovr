@@ -174,6 +174,10 @@ if(LOVR_ENABLE_PHYSICS)
   add_subdirectory(deps/jolt-physics-sharp jolt)
   set_target_properties(Jolt PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
   set_target_properties(joltc PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+  target_sources(joltc PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/joltc_ext/ext.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/joltc_ext/ext.cpp"
+  )
   set(LOVR_JOLT joltc)
 endif()
 

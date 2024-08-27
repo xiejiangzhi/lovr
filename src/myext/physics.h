@@ -9,3 +9,5 @@ bool lovrWorldQueryTriangle(
 );
 
 // bool lovrWorldQueryShape(World* world, Shape* shape, float position[3], float orientation[4], const char* tag, QueryCallback callback, void* userdata);
+
+bool lovrShapeCollidePoint(Shape* shape, float pos[3]);

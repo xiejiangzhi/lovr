@@ -1,4 +1,6 @@
 
+#include "joltc_ext/ext.h"
+
 // bool lovrShapeQueryOverlapping(Shape* shape, QueryCallback callback, void* userdata) {
 //   QueryData data = {
 //     .callback = callback, .userdata = userdata, .called = false
@@ -6,6 +8,7 @@
 //   dSpaceCollide2(shape->id, (dGeomID)shape->collider->world->space, &data, queryCallback);
 //   return data.called;
 // }
+
 
 TriangleShape* lovrTriangleShapeCreate(float vertices[9]) {
   TriangleShape* shape = lovrCalloc(sizeof(TriangleShape));
@@ -30,6 +33,13 @@ bool lovrWorldQueryTriangle(
   bool r = lovrWorldOverlapShape(world, shape, pose, filter, callback, userdata);
   lovrShapeDestruct(shape);
   return r;
+}
+
+bool lovrShapeCollidePoint(Shape* shape, float pos[3]) {
+  float pos_ov[3];
+  lovrShapeGetPose(shape, pos_ov, NULL);
+  vec3_sub(pos, pos_ov);
+  return JPH_Shape_CollidePoint(shape->handle, vec3_toJolt(pos));
 }
 
 

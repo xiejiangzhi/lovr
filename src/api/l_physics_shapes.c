@@ -325,7 +325,7 @@ static int l_lovrShapeGetAABB(lua_State* L) {
   return 6;
 }
 
-// #include "myext/l_physics_shape.c"
+#include "myext/l_physics_shape.c"
 
 #define lovrShape \
   { "destroy", l_lovrShapeDestroy }, \
@@ -345,6 +345,7 @@ static int l_lovrShapeGetAABB(lua_State* L) {
   { "getPosition", l_lovrShapeGetPosition }, \
   { "getOrientation", l_lovrShapeGetOrientation }, \
   { "getPose", l_lovrShapeGetPose }, \
+  { "collidePoint", l_lovrShapeCollidePoint }, \
   { "getAABB", l_lovrShapeGetAABB }
 
 static int l_lovrBoxShapeGetDimensions(lua_State* L) {
