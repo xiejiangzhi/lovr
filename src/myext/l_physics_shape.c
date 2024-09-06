@@ -39,11 +39,11 @@
 //   return 0;
 // }
 
-static int l_lovrShapeCollidePoint(lua_State* L) {
-  Shape* shape = luax_checkshape(L, 1);
-  float pos[3];
-  luax_readvec3(L, 2, pos, NULL);
-  bool r = lovrShapeCollidePoint(shape, pos);
-  lua_pushboolean(L, r);
-  return 1;
-}
+// static int l_lovrShapeCollidePoint(lua_State* L) {
+//   Shape* shape = luax_checkshape(L, 1);
+//   float pos[3];
+//   luax_readvec3(L, 2, pos, NULL);
+//   bool r = lovrShapeCollidePoint(shape, pos);
+//   lua_pushboolean(L, r);
+//   return 1;
+// }

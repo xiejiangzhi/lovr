@@ -1,6 +1,7 @@
 #include "api.h"
 #include "core/maf.h"
 #include "util.h"
+#include <stdlib.h>
 
 #include "myext/l_math_vector.c"
 

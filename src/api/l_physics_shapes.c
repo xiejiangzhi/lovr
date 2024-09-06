@@ -47,7 +47,7 @@ static Shape* luax_toshape(lua_State* L, int index) {
 Shape* luax_checkshape(lua_State* L, int index) {
   Shape* shape = luax_toshape(L, index);
   if (shape) {
-    lovrCheck(!lovrShapeIsDestroyed(shape), "Attempt to use a destroyed Shape");
+    luax_check(L, !lovrShapeIsDestroyed(shape), "Attempt to use a destroyed Shape");
     return shape;
   } else {
     luax_typeerror(L, index, "Shape");
@@ -58,24 +58,32 @@ Shape* luax_checkshape(lua_State* L, int index) {
 Shape* luax_newboxshape(lua_State* L, int index) {
   float size[3];
   luax_readscale(L, index, size, 3, NULL);
-  return lovrBoxShapeCreate(size);
+  Shape* shape = lovrBoxShapeCreate(size);
+  luax_assert(L, shape);
+  return shape;
 }
 
 Shape* luax_newsphereshape(lua_State* L, int index) {
   float radius = luax_optfloat(L, index, 1.f);
-  return lovrSphereShapeCreate(radius);
+  Shape* shape = lovrSphereShapeCreate(radius);
+  luax_assert(L, shape);
+  return shape;
 }
 
 Shape* luax_newcapsuleshape(lua_State* L, int index) {
   float radius = luax_optfloat(L, index + 0, 1.f);
   float length = luax_optfloat(L, index + 1, 1.f);
-  return lovrCapsuleShapeCreate(radius, length);
+  Shape* shape = lovrCapsuleShapeCreate(radius, length);
+  luax_assert(L, shape);
+  return shape;
 }
 
 Shape* luax_newcylindershape(lua_State* L, int index) {
   float radius = luax_optfloat(L, index + 0, 1.f);
   float length = luax_optfloat(L, index + 1, 1.f);
-  return lovrCylinderShapeCreate(radius, length);
+  Shape* shape = lovrCylinderShapeCreate(radius, length);
+  luax_assert(L, shape);
+  return shape;
 }
 
 Shape* luax_newconvexshape(lua_State* L, int index) {
@@ -88,6 +96,7 @@ Shape* luax_newconvexshape(lua_State* L, int index) {
   luax_readmesh(L, index, &points, &count, NULL, NULL, &shouldFree);
   ConvexShape* shape = lovrConvexShapeCreate(points, count);
   if (shouldFree) lovrFree(points);
+  luax_assert(L, shape);
   return shape;
 }
 
@@ -110,6 +119,7 @@ Shape* luax_newmeshshape(lua_State* L, int index) {
     lovrFree(indices);
   }
 
+  luax_assert(L, shape);
   return shape;
 }
 
@@ -118,7 +128,9 @@ Shape* luax_newterrainshape(lua_State* L, int index) {
   int type = lua_type(L, index);
   if (type == LUA_TNIL || type == LUA_TNONE) {
     float vertices[9] = { 0.f };
-    return lovrTerrainShapeCreate(vertices, 3, scaleXZ, 1.f);
+    Shape* shape = lovrTerrainShapeCreate(vertices, 3, scaleXZ, 1.f);
+    luax_assert(L, shape);
+    return shape;
   } else if (type == LUA_TFUNCTION) {
     uint32_t n = luax_optu32(L, index + 1, 100);
     float* vertices = lovrMalloc(sizeof(float) * n * n);
@@ -129,17 +141,18 @@ Shape* luax_newterrainshape(lua_State* L, int index) {
       lua_pushnumber(L, x);
       lua_pushnumber(L, z);
       lua_call(L, 2, 1);
-      lovrCheck(lua_type(L, -1) == LUA_TNUMBER, "Expected TerrainShape callback to return a number");
+      luax_check(L, lua_type(L, -1) == LUA_TNUMBER, "Expected TerrainShape callback to return a number");
       vertices[i] = luax_tofloat(L, -1);
       lua_pop(L, 1);
     }
     TerrainShape* shape = lovrTerrainShapeCreate(vertices, n, scaleXZ, 1.f);
     lovrFree(vertices);
+    luax_assert(L, shape);
     return shape;
   } else if (type == LUA_TUSERDATA) {
     Image* image = luax_checktype(L, index, Image);
     uint32_t n = lovrImageGetWidth(image, 0);
-    lovrCheck(lovrImageGetHeight(image, 0) == n, "TerrainShape images must be square");
+    luax_check(L, lovrImageGetHeight(image, 0) == n, "TerrainShape images must be square");
     float scaleY = luax_optfloat(L, index + 1, 1.f);
     float* vertices = lovrMalloc(sizeof(float) * n * n);
     for (uint32_t y = 0; y < n; y++) {
@@ -151,6 +164,7 @@ Shape* luax_newterrainshape(lua_State* L, int index) {
     }
     TerrainShape* shape = lovrTerrainShapeCreate(vertices, n, scaleXZ, scaleY);
     lovrFree(vertices);
+    luax_assert(L, shape);
     return shape;
   } else {
     luax_typeerror(L, index, "nil, Image, or function");
@@ -276,7 +290,7 @@ static int l_lovrShapeSetOffset(lua_State* L) {
   int index = 2;
   index = luax_readvec3(L, index, position, NULL);
   index = luax_readquat(L, index, orientation, NULL);
-  lovrShapeSetOffset(shape, position, orientation);
+  luax_assert(L, lovrShapeSetOffset(shape, position, orientation));
   return 0;
 }
 
@@ -325,6 +339,34 @@ static int l_lovrShapeGetAABB(lua_State* L) {
   return 6;
 }
 
+static int l_lovrShapeContainsPoint(lua_State* L) {
+  Shape* shape = luax_checkshape(L, 1);
+  float point[3];
+  luax_readvec3(L, 2, point, NULL);
+  bool hit = lovrShapeContainsPoint(shape, point);
+  lua_pushboolean(L, hit);
+  return 1;
+}
+
+static int l_lovrShapeRaycast(lua_State* L) {
+  Shape* shape = luax_checkshape(L, 1);
+  int index = 2;
+  float start[3], end[3];
+  index = luax_readvec3(L, index, start, NULL);
+  index = luax_readvec3(L, index, end, NULL);
+  CastResult hit;
+  if (lovrShapeRaycast(shape, start, end, &hit)) {
+    lua_pushnumber(L, hit.position[0]);
+    lua_pushnumber(L, hit.position[1]);
+    lua_pushnumber(L, hit.position[2]);
+    lua_pushnumber(L, hit.normal[0]);
+    lua_pushnumber(L, hit.normal[1]);
+    lua_pushnumber(L, hit.normal[2]);
+    return 6;
+  }
+  return 0;
+}
+
 #include "myext/l_physics_shape.c"
 
 #define lovrShape \
@@ -345,8 +387,9 @@ static int l_lovrShapeGetAABB(lua_State* L) {
   { "getPosition", l_lovrShapeGetPosition }, \
   { "getOrientation", l_lovrShapeGetOrientation }, \
   { "getPose", l_lovrShapeGetPose }, \
-  { "collidePoint", l_lovrShapeCollidePoint }, \
-  { "getAABB", l_lovrShapeGetAABB }
+  { "getAABB", l_lovrShapeGetAABB }, \
+  { "containsPoint", l_lovrShapeContainsPoint }, \
+  { "raycast", l_lovrShapeRaycast }
 
 static int l_lovrBoxShapeGetDimensions(lua_State* L) {
   BoxShape* box = luax_checktype(L, 1, BoxShape);
@@ -362,7 +405,7 @@ static int l_lovrBoxShapeSetDimensions(lua_State* L) {
   BoxShape* box = luax_checktype(L, 1, BoxShape);
   float dimensions[3];
   luax_readvec3(L, 2, dimensions, NULL);
-  lovrBoxShapeSetDimensions(box, dimensions);
+  luax_assert(L, lovrBoxShapeSetDimensions(box, dimensions));
   return 0;
 }
 
@@ -382,7 +425,7 @@ static int l_lovrSphereShapeGetRadius(lua_State* L) {
 static int l_lovrSphereShapeSetRadius(lua_State* L) {
   SphereShape* sphere = luax_checktype(L, 1, SphereShape);
   float radius = luax_checkfloat(L, 2);
-  lovrSphereShapeSetRadius(sphere, radius);
+  luax_assert(L, lovrSphereShapeSetRadius(sphere, radius));
   return 0;
 }
 
@@ -402,7 +445,7 @@ static int l_lovrCapsuleShapeGetRadius(lua_State* L) {
 static int l_lovrCapsuleShapeSetRadius(lua_State* L) {
   CapsuleShape* capsule = luax_checktype(L, 1, CapsuleShape);
   float radius = luax_checkfloat(L, 2);
-  lovrCapsuleShapeSetRadius(capsule, radius);
+  luax_assert(L, lovrCapsuleShapeSetRadius(capsule, radius));
   return 0;
 }
 
@@ -415,7 +458,7 @@ static int l_lovrCapsuleShapeGetLength(lua_State* L) {
 static int l_lovrCapsuleShapeSetLength(lua_State* L) {
   CapsuleShape* capsule = luax_checktype(L, 1, CapsuleShape);
   float length = luax_checkfloat(L, 2);
-  lovrCapsuleShapeSetLength(capsule, length);
+  luax_assert(L, lovrCapsuleShapeSetLength(capsule, length));
   return 0;
 }
 
@@ -437,7 +480,7 @@ static int l_lovrCylinderShapeGetRadius(lua_State* L) {
 static int l_lovrCylinderShapeSetRadius(lua_State* L) {
   CylinderShape* cylinder = luax_checktype(L, 1, CylinderShape);
   float radius = luax_checkfloat(L, 2);
-  lovrCylinderShapeSetRadius(cylinder, radius);
+  luax_assert(L, lovrCylinderShapeSetRadius(cylinder, radius));
   return 0;
 }
 
@@ -450,7 +493,7 @@ static int l_lovrCylinderShapeGetLength(lua_State* L) {
 static int l_lovrCylinderShapeSetLength(lua_State* L) {
   CylinderShape* cylinder = luax_checktype(L, 1, CylinderShape);
   float length = luax_checkfloat(L, 2);
-  lovrCylinderShapeSetLength(cylinder, length);
+  luax_assert(L, lovrCylinderShapeSetLength(cylinder, length));
   return 0;
 }
 
@@ -474,7 +517,7 @@ static int l_lovrConvexShapeGetPoint(lua_State* L) {
   ConvexShape* convex = luax_checktype(L, 1, ConvexShape);
   uint32_t index = luax_checku32(L, 2) - 1;
   float point[3];
-  lovrConvexShapeGetPoint(convex, index, point);
+  luax_assert(L, lovrConvexShapeGetPoint(convex, index, point));
   lua_pushnumber(L, point[0]);
   lua_pushnumber(L, point[1]);
   lua_pushnumber(L, point[2]);
@@ -492,6 +535,7 @@ static int l_lovrConvexShapeGetFace(lua_State* L) {
   ConvexShape* convex = luax_checktype(L, 1, ConvexShape);
   uint32_t index = luax_checku32(L, 2) - 1;
   uint32_t count = lovrConvexShapeGetFace(convex, index, NULL, 0);
+  luax_assert(L, count);
   lua_createtable(L, (int) count, 0);
   uint32_t stack[8];
   uint32_t* indices = count > COUNTOF(stack) ? lovrMalloc(count * sizeof(uint32_t)) : stack;

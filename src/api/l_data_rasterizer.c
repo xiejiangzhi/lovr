@@ -27,7 +27,7 @@ static int l_lovrRasterizerGetFontSize(lua_State* L) {
 
 static int l_lovrRasterizerGetGlyphCount(lua_State* L) {
   Rasterizer* rasterizer = luax_checktype(L, 1, Rasterizer);
-  uint32_t count = lovrRasterizerGetGlyphCount(rasterizer);
+  size_t count = lovrRasterizerGetGlyphCount(rasterizer);
   lua_pushinteger(L, count);
   return 1;
 }
@@ -193,6 +193,7 @@ static int l_lovrRasterizerNewImage(lua_State* L) {
   uint32_t width = 2 * padding + (uint32_t) ceilf(box[2] - box[0]);
   uint32_t height = 2 * padding + (uint32_t) ceilf(box[3] - box[1]);
   Image* image = lovrImageCreateRaw(width, height, FORMAT_RGBA32F, false);
+  luax_assert(L, image);
   void* pixels = lovrImageGetLayerData(image, 0, 0);
   lovrRasterizerGetPixels(rasterizer, codepoint, pixels, width, height, spread);
   luax_pushtype(L, Image, image);
