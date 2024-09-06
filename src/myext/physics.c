@@ -35,14 +35,6 @@ bool lovrWorldQueryTriangle(
   return r;
 }
 
-bool lovrShapeCollidePoint(Shape* shape, float pos[3]) {
-  float pos_ov[3];
-  lovrShapeGetPose(shape, pos_ov, NULL);
-  vec3_sub(pos, pos_ov);
-  return JPH_Shape_CollidePoint(shape->handle, vec3_toJolt(pos));
-}
-
-
 
 // bool lovrWorldQueryShape(
 //   World* world, Shape* shape, float position[3], float orientation[4],
