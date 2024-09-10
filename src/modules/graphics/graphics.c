@@ -3724,7 +3724,8 @@ Material* lovrMaterialCreate(const MaterialInfo* info) {
     if (!found) {
       arr_expand(&state.materialBlocks, 1);
       lovrAssert(state.materialBlocks.length < UINT16_MAX, "Out of memory");
-      block = &state.materialBlocks.data[state.materialBlocks.length];
+      uint32_t blockIndex = state.materialBlocks.length;
+      block = &state.materialBlocks.data[blockIndex];
       block->list = lovrMalloc(MATERIALS_PER_BLOCK * sizeof(Material));
       block->bundlePool = lovrMalloc(gpu_sizeof_bundle_pool());
       block->bundles = lovrMalloc(MATERIALS_PER_BLOCK * gpu_sizeof_bundle());
@@ -3732,7 +3733,7 @@ Material* lovrMaterialCreate(const MaterialInfo* info) {
       for (uint32_t i = 0; i < MATERIALS_PER_BLOCK; i++) {
         block->list[i].next = i + 1;
         block->list[i].tick = state.tick - 4;
-        block->list[i].block = (uint16_t) state.materialBlock;
+        block->list[i].block = (uint16_t) blockIndex;
         block->list[i].index = i;
         block->list[i].bundle = (gpu_bundle*) ((char*) block->bundles + i * gpu_sizeof_bundle());
         block->list[i].hasWritableTexture = false;
@@ -3767,8 +3768,8 @@ Material* lovrMaterialCreate(const MaterialInfo* info) {
       }
 
       atomic_fetch_add(&block->view.block->ref, 1);
-
-      state.materialBlock = state.materialBlocks.length++;
+      state.materialBlock = blockIndex;
+      state.materialBlocks.length++;
     }
   }
 
@@ -6504,6 +6505,8 @@ static void lovrPassResolvePipeline(Pass* pass, DrawInfo* info, Draw* draw, Draw
     pipeline->dirty = true;
 
     const DataField* format = info->vertex.buffer->info.format;
+    const DataField* fields = format->fieldCount > 0 ? format->fields : format;
+    uint32_t fieldCount = MAX(format->fieldCount, 1);
 
     pipeline->info.vertex.bufferCount = 2;
     pipeline->info.vertex.attributeCount = shader->attributeCount;
@@ -6514,14 +6517,13 @@ static void lovrPassResolvePipeline(Pass* pass, DrawInfo* info, Draw* draw, Draw
       ShaderAttribute* attribute = &shader->attributes[i];
       bool found = false;
 
-      for (uint32_t j = 0; j < MAX(format->fieldCount, 1); j++) {
-        const DataField* field = format->fieldCount > 0 ? &format->fields[j] : format;
-        if (field->hash == attribute->hash) {
+      for (uint32_t j = 0; j < fieldCount; j++) {
+        if (fields[j].hash == attribute->hash) {
           pipeline->info.vertex.attributes[i] = (gpu_attribute) {
             .buffer = 0,
             .location = attribute->location,
-            .offset = field->offset,
-            .type = field->type
+            .offset = fields[j].offset,
+            .type = fields[j].type
           };
           found = true;
           break;
