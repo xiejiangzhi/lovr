@@ -652,6 +652,7 @@ bool gpu_texture_init_view(gpu_texture* texture, gpu_texture_view_info* info) {
   if (texture != info->source) {
     texture->handle = info->source->handle;
     texture->memory = NULL;
+    texture->imported = false;
     texture->layout = info->source->layout;
     texture->layers = info->layerCount ? info->layerCount : (info->source->layers - info->layerIndex);
     texture->format = info->source->format;
@@ -716,6 +717,7 @@ bool gpu_texture_init_view(gpu_texture* texture, gpu_texture_view_info* info) {
 void gpu_texture_destroy(gpu_texture* texture) {
   condemn(texture->view, VK_OBJECT_TYPE_IMAGE_VIEW);
   if (texture->imported) return;
+  if (!texture->memory) return;
   condemn(texture->handle, VK_OBJECT_TYPE_IMAGE);
   release(texture->memory);
 }
