@@ -115,7 +115,8 @@ uintptr_t gpu_vk_get_queue(uint32_t* queueFamilyIndex, uint32_t* queueIndex);
   X(xrPassthroughStartFB)\
   X(xrPassthroughPauseFB)\
   X(xrCreatePassthroughLayerFB)\
-  X(xrDestroyPassthroughLayerFB)
+  X(xrDestroyPassthroughLayerFB)\
+  X(xrGetPassthroughPreferencesMETA)
 
 #define XR_DECLARE(fn) static PFN_##fn fn;
 #define XR_LOAD(fn) xrGetInstanceProcAddr(state.instance, #fn, (PFN_xrVoidFunction*) &fn);
@@ -229,8 +230,10 @@ static struct {
     bool handInteraction;
     bool handTracking;
     bool handTrackingAim;
+    bool handTrackingDataSource;
     bool handTrackingElbow;
     bool handTrackingMesh;
+    bool handTrackingMotionRange;
     bool headless;
     bool keyboardTracking;
     bool layerDepthTest;
@@ -239,6 +242,7 @@ static struct {
     bool localFloor;
     bool ml2Controller;
     bool overlay;
+    bool passthroughPreferences;
     bool picoController;
     bool presence;
     bool questPassthrough;
@@ -393,6 +397,20 @@ static XrHandTrackerEXT getHandTracker(Device device) {
         XR_HAND_JOINT_SET_DEFAULT_EXT,
       .hand = device == DEVICE_HAND_RIGHT ? XR_HAND_RIGHT_EXT : XR_HAND_LEFT_EXT
     };
+
+    XrHandTrackingDataSourceInfoEXT sourceInfo = {
+      .type = XR_TYPE_HAND_TRACKING_DATA_SOURCE_INFO_EXT,
+      .requestedDataSourceCount = state.config.controllerSkeleton == SKELETON_NONE ? 1 : 2,
+      .requestedDataSources = (XrHandTrackingDataSourceEXT[2]) {
+        XR_HAND_TRACKING_DATA_SOURCE_UNOBSTRUCTED_EXT,
+        XR_HAND_TRACKING_DATA_SOURCE_CONTROLLER_EXT
+      }
+    };
+
+    if (state.features.handTrackingDataSource) {
+      sourceInfo.next = info.next;
+      info.next = &sourceInfo;
+    }
 
     if (XR_FAILED(xrCreateHandTrackerEXT(state.session, &info, tracker))) {
       return XR_NULL_HANDLE;
@@ -647,7 +665,9 @@ static bool openxr_init(HeadsetConfig* config) {
 #endif
       { "XR_EXT_eye_gaze_interaction", &state.features.gaze, true },
       { "XR_EXT_hand_interaction", &state.features.handInteraction, true },
+      { "XR_EXT_hand_joints_motion_range", &state.features.handTrackingMotionRange, true },
       { "XR_EXT_hand_tracking", &state.features.handTracking, true },
+      { "XR_EXT_hand_tracking_data_source", &state.features.handTrackingDataSource, true },
       { "XR_EXT_local_floor", &state.features.localFloor, true },
       { "XR_EXT_user_presence", &state.features.presence, true },
       { "XR_BD_controller_interaction", &state.features.picoController, true },
@@ -659,6 +679,7 @@ static bool openxr_init(HeadsetConfig* config) {
       { "XR_FB_keyboard_tracking", &state.features.keyboardTracking, true },
       { "XR_FB_passthrough", &state.features.questPassthrough, true },
       { "XR_META_automatic_layer_filter", &state.features.layerAutoFilter, true },
+      { "XR_META_passthrough_preferences", &state.features.passthroughPreferences, true },
       { "XR_ML_ml2_controller_interaction", &state.features.ml2Controller, true },
       { "XR_MND_headless", &state.features.headless, true },
       { "XR_MSFT_controller_model", &state.features.controllerModel, true },
@@ -1530,6 +1551,12 @@ static bool openxr_start(void) {
     }
   }
 
+  // On Quest, ask for the default passthrough mode at startup (will check preference and enable
+  // passthrough if needed)
+  if (state.features.passthroughPreferences && state.features.questPassthrough) {
+    lovrHeadsetInterface->setPassthrough(PASSTHROUGH_DEFAULT);
+  }
+
   if (state.features.refreshRate) {
     XRG(xrEnumerateDisplayRefreshRatesFB(state.session, 0, &state.refreshRateCount, NULL), "xrEnumerateDisplayRefreshRatesFB", stop);
     state.refreshRates = lovrMalloc(state.refreshRateCount * sizeof(float));
@@ -1636,6 +1663,10 @@ static XrEnvironmentBlendMode convertPassthroughMode(PassthroughMode mode) {
 }
 
 static PassthroughMode openxr_getPassthrough(void) {
+  if (state.features.questPassthrough) {
+    return state.passthroughActive ? PASSTHROUGH_BLEND : PASSTHROUGH_OPAQUE;
+  }
+
   switch (state.blendMode) {
     case XR_ENVIRONMENT_BLEND_MODE_OPAQUE: return PASSTHROUGH_OPAQUE;
     case XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND: return PASSTHROUGH_BLEND;
@@ -1648,6 +1679,26 @@ static bool openxr_setPassthrough(PassthroughMode mode) {
   if (state.features.questPassthrough) {
     if (mode == PASSTHROUGH_ADD) {
       return false;
+    }
+
+    if (mode == PASSTHROUGH_DEFAULT && state.features.passthroughPreferences) {
+      XrPassthroughPreferencesMETA preferences = {
+        .type = XR_TYPE_PASSTHROUGH_PREFERENCES_META
+      };
+
+      xrGetPassthroughPreferencesMETA(state.session, &preferences);
+
+      if (preferences.flags & XR_PASSTHROUGH_PREFERENCE_DEFAULT_TO_ACTIVE_BIT_META) {
+        mode = PASSTHROUGH_BLEND;
+      } else {
+        mode = PASSTHROUGH_OPAQUE;
+      }
+    }
+
+    bool enable = mode == PASSTHROUGH_BLEND || mode == PASSTHROUGH_TRANSPARENT;
+
+    if (state.passthroughActive == enable) {
+      return true;
     }
 
     if (!state.passthrough) {
@@ -1674,12 +1725,6 @@ static bool openxr_setPassthrough(PassthroughMode mode) {
         .type = XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB,
         .layerHandle = state.passthroughLayerHandle
       };
-    }
-
-    bool enable = mode == PASSTHROUGH_BLEND || mode == PASSTHROUGH_TRANSPARENT;
-
-    if (state.passthroughActive == enable) {
-      return true;
     }
 
     if (enable) {
@@ -2066,7 +2111,7 @@ static bool openxr_getAxis(Device device, DeviceAxis axis, float* value) {
   }
 }
 
-static bool openxr_getSkeleton(Device device, float* poses) {
+static bool openxr_getSkeleton(Device device, float* poses, SkeletonSource* source) {
   XrHandTrackerEXT tracker = getHandTracker(device);
 
   if (!tracker || state.frameState.predictedDisplayTime <= 0) {
@@ -2079,12 +2124,33 @@ static bool openxr_getSkeleton(Device device, float* poses) {
     .time = state.frameState.predictedDisplayTime
   };
 
+  XrHandJointsMotionRangeInfoEXT motionRange = {
+    .type = XR_TYPE_HAND_JOINTS_MOTION_RANGE_INFO_EXT,
+    .handJointsMotionRange = state.config.controllerSkeleton == SKELETON_CONTROLLER ?
+      XR_HAND_JOINTS_MOTION_RANGE_CONFORMING_TO_CONTROLLER_EXT :
+      XR_HAND_JOINTS_MOTION_RANGE_UNOBSTRUCTED_EXT
+  };
+
+  if (state.features.handTrackingMotionRange) {
+    motionRange.next = info.next;
+    info.next = &motionRange;
+  }
+
   XrHandJointLocationEXT joints[MAX_HAND_JOINTS];
   XrHandJointLocationsEXT hand = {
     .type = XR_TYPE_HAND_JOINT_LOCATIONS_EXT,
     .jointCount = 26 + state.features.handTrackingElbow,
     .jointLocations = joints
   };
+
+  XrHandTrackingDataSourceStateEXT sourceState = {
+    .type = XR_TYPE_HAND_TRACKING_DATA_SOURCE_STATE_EXT
+  };
+
+  if (state.features.handTrackingDataSource) {
+    sourceState.next = hand.next;
+    hand.next = &sourceState;
+  }
 
   if (XR_FAILED(xrLocateHandJointsEXT(tracker, &info, &hand)) || !hand.isActive) {
     return false;
@@ -2096,6 +2162,12 @@ static bool openxr_getSkeleton(Device device, float* poses) {
     pose[3] = joints[i].radius;
     memcpy(pose + 4, &joints[i].pose.orientation.x, 4 * sizeof(float));
     pose += 8;
+  }
+
+  if (state.features.handTrackingDataSource) {
+    *source = sourceState.dataSource == XR_HAND_TRACKING_DATA_SOURCE_CONTROLLER_EXT ? SOURCE_CONTROLLER : SOURCE_HAND;
+  } else {
+    *source = SOURCE_UNKNOWN;
   }
 
   return true;
@@ -2616,12 +2688,12 @@ static void openxr_setLayerPose(Layer* layer, float position[3], float orientati
   memcpy(&layer->info.pose.orientation.x, orientation, 4 * sizeof(float));
 }
 
-static void openxr_getLayerSize(Layer* layer, float* width, float* height) {
+static void openxr_getLayerDimensions(Layer* layer, float* width, float* height) {
   *width = layer->info.size.width;
   *height = layer->info.size.height;
 }
 
-static void openxr_setLayerSize(Layer* layer, float width, float height) {
+static void openxr_setLayerDimensions(Layer* layer, float width, float height) {
   layer->info.size.width = width;
   layer->info.size.height = height;
 }
@@ -3017,8 +3089,8 @@ HeadsetInterface lovrHeadsetOpenXRDriver = {
   .setLayers = openxr_setLayers,
   .getLayerPose = openxr_getLayerPose,
   .setLayerPose = openxr_setLayerPose,
-  .getLayerSize = openxr_getLayerSize,
-  .setLayerSize = openxr_setLayerSize,
+  .getLayerDimensions = openxr_getLayerDimensions,
+  .setLayerDimensions = openxr_setLayerDimensions,
   .getLayerViewMask = openxr_getLayerViewMask,
   .setLayerViewMask = openxr_setLayerViewMask,
   .getLayerViewport = openxr_getLayerViewport,

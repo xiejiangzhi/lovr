@@ -1351,6 +1351,7 @@ static int l_lovrGraphicsNewFont(lua_State* L) {
 
     info.rasterizer = lovrRasterizerCreate(blob, size, luax_readfile);
     lovrRelease(blob, lovrBlobDestroy);
+    luax_assert(L, info.rasterizer);
   } else {
     info.spread = luaL_optnumber(L, 2, info.spread);
     lovrRetain(info.rasterizer);
@@ -1479,6 +1480,7 @@ static int l_lovrGraphicsNewModel(lua_State* L) {
     Blob* blob = luax_readblob(L, 1, "Model");
     info.data = lovrModelDataCreate(blob, luax_readfile);
     lovrRelease(blob, lovrBlobDestroy);
+    luax_assert(L, info.data);
   } else {
     lovrRetain(info.data);
   }
@@ -1511,6 +1513,7 @@ static int l_lovrGraphicsNewPass(lua_State* L) {
     lua_pop(L, 1);
   }
   Pass* pass = lovrPassCreate(label);
+  luax_assert(L, pass);
   luax_pushtype(L, Pass, pass);
   lua_insert(L, 1);
   l_lovrPassSetCanvas(L);
