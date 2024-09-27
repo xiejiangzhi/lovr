@@ -2611,6 +2611,9 @@ Texture* lovrTextureCreateView(Texture* parent, const TextureViewInfo* info) {
 void lovrTextureDestroy(void* ref) {
   Texture* texture = ref;
   if (texture != state.window) {
+    if (texture->root == texture || texture->info.label != texture->root->info.label) {
+      lovrFree((char*) texture->info.label);
+    }
     flushTransfers();
     lovrRelease(texture->sampler, lovrSamplerDestroy);
     lovrRelease(texture->material, lovrMaterialDestroy);
@@ -2620,7 +2623,6 @@ void lovrTextureDestroy(void* ref) {
     if (texture->storageView && texture->storageView != texture->gpu) gpu_texture_destroy(texture->storageView), lovrFree(texture->storageView);
     if (texture->gpu) gpu_texture_destroy(texture->gpu);
   }
-  lovrFree((char*) texture->info.label);
   lovrFree(texture);
 }
 
