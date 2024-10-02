@@ -59,6 +59,7 @@ static struct {
   bool focused;
   float clipNear;
   float clipFar;
+  bool enableInput;
 } state;
 
 static void onFocus(bool focused) {
@@ -82,6 +83,8 @@ static bool simulator_init(HeadsetConfig* config) {
 
   state.focused = true;
   os_on_focus(onFocus);
+
+  state.enableInput = true;
 
   return true;
 }
@@ -434,87 +437,94 @@ static bool simulator_update(double* dt) {
   state.dt = t - state.time;
   state.time = t;
 
-  bool trigger = os_is_mouse_down(MOUSE_RIGHT);
-  state.triggerChanged = trigger != state.triggerDown;
-  state.triggerDown = trigger;
+  if (state.enableInput) {
+    bool trigger = os_is_mouse_down(MOUSE_RIGHT);
+    state.triggerChanged = trigger != state.triggerDown;
+    state.triggerDown = trigger;
 
-  bool click = os_is_mouse_down(MOUSE_LEFT);
-  os_set_mouse_mode(click ? MOUSE_MODE_GRABBED : MOUSE_MODE_NORMAL);
+    bool click = os_is_mouse_down(MOUSE_LEFT);
+    os_set_mouse_mode(click ? MOUSE_MODE_GRABBED : MOUSE_MODE_NORMAL);
 
-  double mxprev = state.mx;
-  double myprev = state.my;
+    double mxprev = state.mx;
+    double myprev = state.my;
 
-  os_get_mouse_position(&state.mx, &state.my);
+    os_get_mouse_position(&state.mx, &state.my);
 
-  if (click) {
-    state.pitch = CLAMP(state.pitch - (state.my - myprev) * TURNSPEED, -(float) M_PI / 2.f, (float) M_PI / 2.f);
-    state.yaw -= (state.mx - mxprev) * TURNSPEED;
-  } else {
-    state.mxHand = state.mx * state.config.supersample;
-    state.myHand = state.my * state.config.supersample;
+    if (click) {
+      state.pitch = CLAMP(state.pitch - (state.my - myprev) * TURNSPEED, -(float) M_PI / 2.f, (float) M_PI / 2.f);
+      state.yaw -= (state.mx - mxprev) * TURNSPEED;
+    } else {
+      state.mxHand = state.mx * state.config.supersample;
+      state.myHand = state.my * state.config.supersample;
+    }
+
+    // Head
+
+    float pitch[4], yaw[4], target[4];
+    quat_fromAngleAxis(pitch, state.pitch, 1.f, 0.f, 0.f);
+    quat_fromAngleAxis(yaw, state.yaw, 0.f, 1.f, 0.f);
+    quat_mul(target, yaw, pitch);
+    quat_slerp(state.headOrientation, target, 1.f - expf(-TURNSMOOTH * state.dt));
+
+    bool sprint = os_is_key_down(OS_KEY_LEFT_SHIFT) || os_is_key_down(OS_KEY_RIGHT_SHIFT);
+    bool slow = os_is_key_down(OS_KEY_LEFT_CONTROL) || os_is_key_down(OS_KEY_RIGHT_CONTROL);
+    bool front = os_is_key_down(OS_KEY_W) || os_is_key_down(OS_KEY_UP);
+    bool back = os_is_key_down(OS_KEY_S) || os_is_key_down(OS_KEY_DOWN);
+    bool left = os_is_key_down(OS_KEY_A) || os_is_key_down(OS_KEY_LEFT);
+    bool right = os_is_key_down(OS_KEY_D) || os_is_key_down(OS_KEY_RIGHT);
+    bool up = os_is_key_down(OS_KEY_Q);
+    bool down = os_is_key_down(OS_KEY_E);
+
+    float velocity[3];
+    velocity[0] = (left ? -1.f : right ? 1.f : 0.f);
+    velocity[1] = (down ? -1.f : up ? 1.f : 0.f);
+    velocity[2] = (front ? -1.f : back ? 1.f : 0.f);
+    vec3_scale(velocity, sprint ? SPRINTSPEED : (slow ? SLOWSPEED : MOVESPEED));
+    vec3_lerp(state.velocity, velocity, 1.f - expf(-MOVESMOOTH * state.dt));
+
+    vec3_scale(vec3_init(velocity, state.velocity), state.dt);
+    quat_rotate(state.headOrientation, velocity);
+    vec3_add(state.headPosition, velocity);
+
+    // Hand
+
+    float inverseProjection[16], angleLeft, angleRight, angleUp, angleDown;
+    simulator_getViewAngles(0, &angleLeft, &angleRight, &angleUp, &angleDown);
+    mat4_fov(inverseProjection, angleLeft, angleRight, angleUp, angleDown, state.clipNear, state.clipFar);
+    mat4_invert(inverseProjection);
+
+    float ray[3];
+    uint32_t width, height;
+    os_window_get_size(&width, &height);
+    width *= state.config.supersample;
+    height *= state.config.supersample;
+    vec3_set(ray, state.mxHand / width * 2.f - 1.f, state.myHand / height * 2.f - 1.f, 1.f);
+
+    mat4_mulPoint(inverseProjection, ray);
+    quat_rotate(state.headOrientation, ray);
+    vec3_normalize(ray);
+
+    state.distance = CLAMP(state.distance * (1.f + lovrSystemGetScrollDelta() * .05f), .05f, 10.f);
+
+    vec3_init(state.handPosition, ray);
+    vec3_scale(state.handPosition, state.distance);
+    vec3_add(state.handPosition, state.headPosition);
+    state.handPosition[1] += OFFSET;
+
+    float zero[3], y[3], basis[16];
+    vec3_set(zero, 0.f, 0.f, 0.f);
+    vec3_set(y, 0.f, 1.f, 0.f);
+    quat_rotate(state.headOrientation, y);
+    mat4_target(basis, zero, ray, y);
+    quat_fromMat4(state.handOrientation, basis);
   }
 
-  // Head
-
-  float pitch[4], yaw[4], target[4];
-  quat_fromAngleAxis(pitch, state.pitch, 1.f, 0.f, 0.f);
-  quat_fromAngleAxis(yaw, state.yaw, 0.f, 1.f, 0.f);
-  quat_mul(target, yaw, pitch);
-  quat_slerp(state.headOrientation, target, 1.f - expf(-TURNSMOOTH * state.dt));
-
-  bool sprint = os_is_key_down(OS_KEY_LEFT_SHIFT) || os_is_key_down(OS_KEY_RIGHT_SHIFT);
-  bool slow = os_is_key_down(OS_KEY_LEFT_CONTROL) || os_is_key_down(OS_KEY_RIGHT_CONTROL);
-  bool front = os_is_key_down(OS_KEY_W) || os_is_key_down(OS_KEY_UP);
-  bool back = os_is_key_down(OS_KEY_S) || os_is_key_down(OS_KEY_DOWN);
-  bool left = os_is_key_down(OS_KEY_A) || os_is_key_down(OS_KEY_LEFT);
-  bool right = os_is_key_down(OS_KEY_D) || os_is_key_down(OS_KEY_RIGHT);
-  bool up = os_is_key_down(OS_KEY_Q);
-  bool down = os_is_key_down(OS_KEY_E);
-
-  float velocity[3];
-  velocity[0] = (left ? -1.f : right ? 1.f : 0.f);
-  velocity[1] = (down ? -1.f : up ? 1.f : 0.f);
-  velocity[2] = (front ? -1.f : back ? 1.f : 0.f);
-  vec3_scale(velocity, sprint ? SPRINTSPEED : (slow ? SLOWSPEED : MOVESPEED));
-  vec3_lerp(state.velocity, velocity, 1.f - expf(-MOVESMOOTH * state.dt));
-
-  vec3_scale(vec3_init(velocity, state.velocity), state.dt);
-  quat_rotate(state.headOrientation, velocity);
-  vec3_add(state.headPosition, velocity);
-
-  // Hand
-
-  float inverseProjection[16], angleLeft, angleRight, angleUp, angleDown;
-  simulator_getViewAngles(0, &angleLeft, &angleRight, &angleUp, &angleDown);
-  mat4_fov(inverseProjection, angleLeft, angleRight, angleUp, angleDown, state.clipNear, state.clipFar);
-  mat4_invert(inverseProjection);
-
-  float ray[3];
-  uint32_t width, height;
-  os_window_get_size(&width, &height);
-  width *= state.config.supersample;
-  height *= state.config.supersample;
-  vec3_set(ray, state.mxHand / width * 2.f - 1.f, state.myHand / height * 2.f - 1.f, 1.f);
-
-  mat4_mulPoint(inverseProjection, ray);
-  quat_rotate(state.headOrientation, ray);
-  vec3_normalize(ray);
-
-  state.distance = CLAMP(state.distance * (1.f + lovrSystemGetScrollDelta() * .05f), .05f, 10.f);
-
-  vec3_init(state.handPosition, ray);
-  vec3_scale(state.handPosition, state.distance);
-  vec3_add(state.handPosition, state.headPosition);
-  state.handPosition[1] += OFFSET;
-
-  float zero[3], y[3], basis[16];
-  vec3_set(zero, 0.f, 0.f, 0.f);
-  vec3_set(y, 0.f, 1.f, 0.f);
-  quat_rotate(state.headOrientation, y);
-  mat4_target(basis, zero, ray, y);
-  quat_fromMat4(state.handOrientation, basis);
-
   *dt = state.dt;
+  return true;
+}
+
+static bool simulator_setEnableInput(bool enable) {
+  state.enableInput = enable;
   return true;
 }
 
@@ -572,5 +582,6 @@ HeadsetInterface lovrHeadsetSimulatorDriver = {
   .submit = simulator_submit,
   .isFocused = simulator_isFocused,
   .isMounted = simulator_isMounted,
-  .update = simulator_update
+  .update = simulator_update,
+  .setEnableInput = simulator_setEnableInput,
 };

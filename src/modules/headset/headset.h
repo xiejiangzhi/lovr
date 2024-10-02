@@ -216,6 +216,7 @@ typedef struct HeadsetInterface {
   bool (*isFocused)(void);
   bool (*isMounted)(void);
   bool (*update)(double* dt);
+  bool (*setEnableInput)(bool enable);
 } HeadsetInterface;
 
 // Available drivers

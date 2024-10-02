@@ -738,6 +738,18 @@ static int l_lovrHeadsetGetHandles(lua_State* L) {
   }
 }
 
+static int l_lovrHeadsetSetEnableInput(lua_State* L) {
+  if (lovrHeadsetInterface->setEnableInput) {
+    bool enable = lua_toboolean(L, 1);
+    bool success = lovrHeadsetInterface->setEnableInput(enable);
+    lua_pushboolean(L, success);
+    return 1;
+  } else {
+    return 0;
+  }
+}
+
+
 static const luaL_Reg lovrHeadset[] = {
   { "start", l_lovrHeadsetStart },
   { "getDriver", l_lovrHeadsetGetDriver },
@@ -792,6 +804,7 @@ static const luaL_Reg lovrHeadset[] = {
   { "getDeltaTime", l_lovrHeadsetGetDeltaTime },
   { "getHands", l_lovrHeadsetGetHands },
   { "getHandles", l_lovrHeadsetGetHandles },
+  { "setEnableInput", l_lovrHeadsetSetEnableInput },
   { NULL, NULL }
 };
 
