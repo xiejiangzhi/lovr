@@ -3494,7 +3494,7 @@ Shader* lovrShaderCreate(const ShaderInfo* info) {
       }
 
       if (!append) {
-        break;
+        continue;
       }
 
       static const gpu_flag_type flagTypes[] = {
