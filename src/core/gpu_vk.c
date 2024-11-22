@@ -176,6 +176,7 @@ typedef struct {
   bool formatList;
   bool renderPass2;
   bool synchronization2;
+  bool scalarBlockLayout;
 } gpu_extensions;
 
 // State
@@ -1654,30 +1655,22 @@ bool gpu_pipeline_init_graphics(gpu_pipeline* pipeline, gpu_pipeline_info* info)
     .pDynamicStates = dynamicStates
   };
 
-  uint32_t stackConstants[32];
+  gpu_flag_value stackConstants[32];
   VkSpecializationMapEntry stackEntries[32];
-  uint32_t* constants = stackConstants;
+  gpu_flag_value* constants = stackConstants;
   VkSpecializationMapEntry* entries = stackEntries;
 
   if (info->flagCount > COUNTOF(stackConstants)) {
-    constants = state.config.fnAlloc(info->flagCount * sizeof(uint32_t));
+    constants = state.config.fnAlloc(info->flagCount * sizeof(gpu_flag_value));
     ASSERT(constants, "Out of memory") return false;
     entries = state.config.fnAlloc(info->flagCount * sizeof(VkSpecializationMapEntry));
     ASSERT(entries, "Out of memory") return state.config.fnFree(constants), false;
   }
 
   for (uint32_t i = 0; i < info->flagCount; i++) {
-    gpu_shader_flag* flag = &info->flags[i];
-
-    switch (flag->type) {
-      case GPU_FLAG_B32: constants[i] = flag->value == 0. ? VK_FALSE : VK_TRUE; break;
-      case GPU_FLAG_I32: constants[i] = (uint32_t) flag->value; break;
-      case GPU_FLAG_U32: constants[i] = (uint32_t) flag->value; break;
-      case GPU_FLAG_F32: constants[i] = (float) flag->value; break;
-    }
-
+    constants[i] = info->flags[i].value;
     entries[i] = (VkSpecializationMapEntry) {
-      .constantID = flag->id,
+      .constantID = info->flags[i].id,
       .offset = i * sizeof(uint32_t),
       .size = sizeof(uint32_t)
     };
@@ -1686,7 +1679,7 @@ bool gpu_pipeline_init_graphics(gpu_pipeline* pipeline, gpu_pipeline_info* info)
   VkSpecializationInfo specialization = {
     .mapEntryCount = info->flagCount,
     .pMapEntries = entries,
-    .dataSize = info->flagCount * sizeof(uint32_t),
+    .dataSize = info->flagCount * sizeof(gpu_flag_value),
     .pData = (const void*) constants
   };
 
@@ -1738,30 +1731,22 @@ bool gpu_pipeline_init_graphics(gpu_pipeline* pipeline, gpu_pipeline_info* info)
 }
 
 bool gpu_pipeline_init_compute(gpu_pipeline* pipeline, gpu_compute_pipeline_info* info) {
-  uint32_t stackConstants[32];
+  gpu_flag_value stackConstants[32];
   VkSpecializationMapEntry stackEntries[32];
-  uint32_t* constants = stackConstants;
+  gpu_flag_value* constants = stackConstants;
   VkSpecializationMapEntry* entries = stackEntries;
 
   if (info->flagCount > COUNTOF(stackConstants)) {
-    constants = state.config.fnAlloc(info->flagCount * sizeof(uint32_t));
+    constants = state.config.fnAlloc(info->flagCount * sizeof(gpu_flag_value));
     ASSERT(constants, "Out of memory") return false;
     entries = state.config.fnAlloc(info->flagCount * sizeof(VkSpecializationMapEntry));
     ASSERT(entries, "Out of memory") return state.config.fnFree(constants), false;
   }
 
   for (uint32_t i = 0; i < info->flagCount; i++) {
-    gpu_shader_flag* flag = &info->flags[i];
-
-    switch (flag->type) {
-      case GPU_FLAG_B32: constants[i] = flag->value == 0. ? VK_FALSE : VK_TRUE; break;
-      case GPU_FLAG_I32: constants[i] = (uint32_t) flag->value; break;
-      case GPU_FLAG_U32: constants[i] = (uint32_t) flag->value; break;
-      case GPU_FLAG_F32: constants[i] = (float) flag->value; break;
-    }
-
+    constants[i] = info->flags[i].value;
     entries[i] = (VkSpecializationMapEntry) {
-      .constantID = flag->id,
+      .constantID = info->flags[i].id,
       .offset = i * sizeof(uint32_t),
       .size = sizeof(uint32_t)
     };
@@ -2390,7 +2375,8 @@ bool gpu_init(gpu_config* config) {
       { "VK_KHR_depth_stencil_resolve", true, &state.extensions.depthResolve },
       { "VK_KHR_shader_non_semantic_info", config->debug, &state.extensions.shaderDebug },
       { "VK_KHR_image_format_list", true, &state.extensions.formatList },
-      { "VK_KHR_synchronization2", true, &state.extensions.synchronization2 }
+      { "VK_KHR_synchronization2", true, &state.extensions.synchronization2 },
+      { "VK_EXT_scalar_block_layout", true, &state.extensions.scalarBlockLayout }
     };
 
     uint32_t extensionCount = 0;
@@ -2475,9 +2461,12 @@ bool gpu_init(gpu_config* config) {
 
     // Features
 
+    VkPhysicalDeviceScalarBlockLayoutFeaturesEXT scalarBlockLayoutFeatures = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES_EXT
+    };
+
     VkPhysicalDeviceSynchronization2FeaturesKHR synchronization2Features = {
-      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR,
-      .synchronization2 = true
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR
     };
 
     VkPhysicalDeviceShaderDrawParameterFeatures shaderDrawParameterFeatures = {
@@ -2528,9 +2517,14 @@ bool gpu_init(gpu_config* config) {
       config->features->int16 = (enable->shaderInt16 = supports->shaderInt16);
 
       // Extension "features"
-      if (config->features) {
-        config->features->depthResolve = state.extensions.depthResolve;
-        config->features->shaderDebug = state.extensions.shaderDebug;
+      config->features->depthResolve = state.extensions.depthResolve;
+      config->features->packedBuffers = state.extensions.scalarBlockLayout;
+      config->features->shaderDebug = state.extensions.shaderDebug;
+
+      if (state.extensions.scalarBlockLayout) {
+        scalarBlockLayoutFeatures.scalarBlockLayout = true;
+        scalarBlockLayoutFeatures.pNext = enabledFeatures.pNext;
+        enabledFeatures.pNext = &scalarBlockLayoutFeatures;
       }
 
       // Formats
