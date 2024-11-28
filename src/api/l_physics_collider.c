@@ -708,6 +708,7 @@ const luaL_Reg lovrCollider[] = {
 
   { "addLinearVelocity", l_lovrColliderAddLinearVelocity },
   { "scaleLinearVelocity", l_lovrColliderScaleLinearVelocity },
+  { "addAngularVelocity", l_lovrColliderAddAngularVelocity },
   { "scaleAngularVelocity", l_lovrColliderScaleAngularVelocity },
   { "scaleVelocity", l_lovrColliderScaleVelocity },
   { NULL, NULL }
