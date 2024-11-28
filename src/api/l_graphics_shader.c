@@ -84,6 +84,14 @@ static int l_lovrShaderHasVariable(lua_State* L) {
   return 1;
 }
 
+static int l_lovrShaderHasFlag(lua_State* L) {
+  Shader* shader = luax_checktype(L, 1, Shader);
+  const char* flag = luaL_checkstring(L, 2);
+  bool present = lovrShaderHasFlag(shader, flag);
+  lua_pushboolean(L, present);
+  return 1;
+}
+
 static int l_lovrShaderGetWorkgroupSize(lua_State* L) {
   Shader* shader = luax_checktype(L, 1, Shader);
 
@@ -147,6 +155,7 @@ const luaL_Reg lovrShader[] = {
   { "hasStage", l_lovrShaderHasStage },
   { "hasAttribute", l_lovrShaderHasAttribute },
   { "hasVariable", l_lovrShaderHasVariable },
+  { "hasFlag", l_lovrShaderHasFlag },
   { "getWorkgroupSize", l_lovrShaderGetWorkgroupSize },
   { "getBufferFormat", l_lovrShaderGetBufferFormat },
   { NULL, NULL }
