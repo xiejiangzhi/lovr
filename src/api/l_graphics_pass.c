@@ -1132,5 +1132,7 @@ const luaL_Reg lovrPass[] = {
   // Deprecated
   { "setCullMode", l_lovrPassSetFaceCull },
 
+  { "ViewCullTest", l_lovrPassViewCullTest },
+
   { NULL, NULL }
 };

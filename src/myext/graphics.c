@@ -1,5 +1,6 @@
 
-static bool lovrPassViewCullTest(Pass* pass, float* bounds) {
+// bound: { x, y, z, w, h, d }
+bool lovrPassViewCullTest(Pass* pass, float* bounds) {
   Canvas* canvas = &pass->canvas;
   Camera* camera = &pass->cameras[(pass->cameraCount - 1) * pass->canvas.views];
   typedef struct { float planes[6][4]; } Frustum;
@@ -32,26 +33,13 @@ static bool lovrPassViewCullTest(Pass* pass, float* bounds) {
 
   for (uint32_t i = 0; i < COUNTOF(corners); i++) {
     mat4_mulPoint(pass->transform, corners[i]);
-  }
-
-  uint32_t visible = canvas->views;
-
-  for (uint32_t v = 0; v < canvas->views; v++) {
-    for (uint32_t p = 0; p < 6; p++) {
-      bool inside = false;
-
-      for (uint32_t c = 0; c < COUNTOF(corners); c++) {
-        if (vec3_dot(corners[c], frusta[v].planes[p]) + frusta[v].planes[p][3] > 0.f) {
-          inside = true;
-          break;
+    for (uint32_t v = 0; v < canvas->views; v++) {
+      for (uint32_t p = 0; p < 6; p++) {
+        if (vec3_dot(corners[i], frusta[v].planes[p]) + frusta[v].planes[p][3] > 0.f) {
+          return true;
         }
-      }
-
-      if (!inside) {
-        visible--;
-        break;
       }
     }
   }
-  return visible;
+  return false;
 }

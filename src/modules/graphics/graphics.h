@@ -651,3 +651,5 @@ bool lovrPassSetTallyBuffer(Pass* pass, Buffer* buffer, uint32_t offset);
 
 bool lovrPassCompute(Pass* pass, uint32_t x, uint32_t y, uint32_t z, Buffer* indirect, uint32_t offset);
 void lovrPassBarrier(Pass* pass);
+
+#include "myext/graphics.h"
