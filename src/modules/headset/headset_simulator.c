@@ -132,6 +132,24 @@ static bool simulator_getDriverName(char* name, size_t length) {
   return true;
 }
 
+static void simulator_getFeatures(HeadsetFeatures* features) {
+  features->overlay = false;
+  features->proximity = false;
+  features->passthrough = false;
+  features->refreshRate = false;
+  features->depthSubmission = false;
+  features->eyeTracking = false;
+  features->handTracking = false;
+  features->handTrackingElbow = false;
+  features->keyboardTracking = false;
+  features->viveTrackers = false;
+  features->handModel = false;
+  features->controllerModel = false;
+  features->controllerSkeleton = false;
+  features->layerDepthTest = false;
+  features->layerFilter = false;
+}
+
 static bool simulator_getName(char* name, size_t length) {
   strncpy(name, "Simulator", length - 1);
   name[length - 1] = '\0';
@@ -552,6 +570,7 @@ HeadsetInterface lovrHeadsetSimulatorDriver = {
   .stop = simulator_stop,
   .destroy = simulator_destroy,
   .getDriverName = simulator_getDriverName,
+  .getFeatures = simulator_getFeatures,
   .getName = simulator_getName,
   .isSeated = simulator_isSeated,
   .getDisplayDimensions = simulator_getDisplayDimensions,
