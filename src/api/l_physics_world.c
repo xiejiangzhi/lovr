@@ -270,8 +270,10 @@ static int l_lovrWorldGetTags(lua_State* L) {
 static int l_lovrWorldGetColliderCount(lua_State* L) {
   World* world = luax_checkworld(L, 1);
   uint32_t count = lovrWorldGetColliderCount(world);
+  uint32_t active_count = lovrWorldGetActiveColliderCount(world);
   lua_pushinteger(L, count);
-  return 1;
+  lua_pushinteger(L, active_count);
+  return 2;
 }
 
 static int l_lovrWorldGetJointCount(lua_State* L) {

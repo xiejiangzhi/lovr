@@ -489,6 +489,10 @@ uint32_t lovrWorldGetColliderCount(World* world) {
   return JPH_PhysicsSystem_GetNumBodies(world->system);
 }
 
+uint32_t lovrWorldGetActiveColliderCount(World* world) {
+  return JPH_PhysicsSystem_GetNumActiveBodies(world->system, JPH_BodyType_Rigid);
+}
+
 uint32_t lovrWorldGetJointCount(World* world) {
   return world->jointCount; // Jolt doesn't expose this
 }

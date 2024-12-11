@@ -76,6 +76,7 @@ bool lovrWorldIsDestroyed(World* world);
 char** lovrWorldGetTags(World* world, uint32_t* count);
 uint32_t lovrWorldGetTagMask(World* world, const char* string, size_t length);
 uint32_t lovrWorldGetColliderCount(World* world);
+uint32_t lovrWorldGetActiveColliderCount(World* world);
 uint32_t lovrWorldGetJointCount(World* world);
 Collider* lovrWorldGetColliders(World* world, Collider* collider);
 Joint* lovrWorldGetJoints(World* world, Joint* joint);
