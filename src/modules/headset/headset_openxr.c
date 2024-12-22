@@ -1034,18 +1034,18 @@ static bool openxr_init(HeadsetConfig* config) {
   XR_INIT(xrEnumerateViewConfigurationViews(state.instance, state.system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &viewCount, NULL), "Failed to query view configurations");
   XR_INIT(xrEnumerateViewConfigurationViews(state.instance, state.system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 2, &viewCount, views), "Failed to query view configurations");
 
-  if ( // Only 2 views are supported, and since they're rendered together they must be identical
-    viewCount != 2 ||
-    views[0].recommendedSwapchainSampleCount != views[1].recommendedSwapchainSampleCount ||
-    views[0].recommendedImageRectWidth != views[1].recommendedImageRectWidth ||
-    views[0].recommendedImageRectHeight != views[1].recommendedImageRectHeight
-  ) {
+  if (viewCount != 2) {
     openxr_destroy();
     return false;
   }
 
-  state.width = MIN(views[0].recommendedImageRectWidth * config->supersample, views[0].maxImageRectWidth);
-  state.height = MIN(views[0].recommendedImageRectHeight * config->supersample, views[0].maxImageRectHeight);
+  uint32_t maxWidth = MIN(views[0].maxImageRectWidth, views[1].maxImageRectWidth);
+  uint32_t maxHeight = MIN(views[0].maxImageRectHeight, views[1].maxImageRectHeight);
+  uint32_t recommendedWidth = MIN(views[0].recommendedImageRectWidth, views[1].recommendedImageRectWidth);
+  uint32_t recommendedHeight = MIN(views[0].recommendedImageRectHeight, views[1].recommendedImageRectHeight);
+
+  state.width = MIN(recommendedWidth * config->supersample, maxWidth);
+  state.height = MIN(recommendedHeight * config->supersample, maxHeight);
 
   // Blend Modes
 
