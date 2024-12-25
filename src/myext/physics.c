@@ -21,7 +21,7 @@ bool lovrWorldQueryTriangle(
 ) {
   Shape* shape = lovrTriangleShapeCreate(vertices);
   float pose[7] = { 0, 0, 0, 0, 0, 0, 1 };
-  bool r = lovrWorldOverlapShape(world, shape, pose, filter, callback, userdata);
+  bool r = lovrWorldOverlapShape(world, shape, pose, 0.f, filter, callback, userdata);
   lovrShapeDestruct(shape);
   return r;
 }
