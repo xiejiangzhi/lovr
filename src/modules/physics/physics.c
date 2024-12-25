@@ -397,7 +397,7 @@ World* lovrWorldCreate(WorldInfo* info) {
   JPH_PhysicsSystem_GetPhysicsSettings(world->system, &settings);
   settings.allowSleeping = info->allowSleep;
   settings.baumgarte = CLAMP(info->stabilization, 0.f, 1.f);
-  settings.penetrationSlop = MAX(info->maxPenetration, 0.f);
+  settings.penetrationSlop = MAX(info->maxOverlap, 0.f);
   settings.minVelocityForRestitution = MAX(info->restitutionThreshold, 0.f);
   settings.numVelocitySteps = MAX(settings.numVelocitySteps, 2);
   settings.numPositionSteps = MAX(settings.numPositionSteps, 1);
@@ -651,7 +651,7 @@ static float overlapCallback(void* arg, const JPH_CollideShapeResult* result) {
   return ctx->callback(ctx->userdata, &hit);
 }
 
-bool lovrWorldOverlapShape(World* world, Shape* shape, float pose[7], uint32_t filter, OverlapCallback* callback, void* userdata) {
+bool lovrWorldOverlapShape(World* world, Shape* shape, float pose[7], float maxDistance, uint32_t filter, OverlapCallback* callback, void* userdata) {
   const JPH_NarrowPhaseQuery* query = JPH_PhysicsSystem_GetNarrowPhaseQueryNoLock(world->system);
 
   JPH_Vec3 centerOfMass;
@@ -670,10 +670,14 @@ bool lovrWorldOverlapShape(World* world, Shape* shape, float pose[7], uint32_t f
     .userdata = userdata
   };
 
+  JPH_CollideShapeSettings settings;
+  JPH_CollideShapeSettings_Init(&settings);
+  settings.maxSeparationDistance = maxDistance;
+
   JPH_BroadPhaseLayerFilter* layerFilter = getBroadPhaseLayerFilter(world, filter);
   JPH_ObjectLayerFilter* tagFilter = getObjectLayerFilter(world, filter);
 
-  return JPH_NarrowPhaseQuery_CollideShape(query, shape->handle, &scale, &transform, NULL, &offset, overlapCallback, &context, layerFilter, tagFilter, NULL, NULL);
+  return JPH_NarrowPhaseQuery_CollideShape(query, shape->handle, &scale, &transform, &settings, &offset, overlapCallback, &context, layerFilter, tagFilter, NULL, NULL);
 }
 
 typedef struct {
@@ -1437,11 +1441,7 @@ bool lovrColliderSetMass(Collider* collider, float mass) {
   lovrCheck(mass > 0.f, "Mass must be positive");
 
   if (collider->automaticMass) {
-    const JPH_Shape* shape = JPH_BodyInterface_GetShape(getBodyInterface(collider, READ), collider->id);
-    JPH_MassProperties properties;
-    JPH_Shape_GetMassProperties(shape, &properties);
-    JPH_MassProperties_ScaleToMass(&properties, mass);
-    JPH_MotionProperties_SetMassProperties(motion, dofs, &properties);
+    JPH_MotionProperties_ScaleToMass(motion, mass);
   } else {
     JPH_MotionProperties_SetInverseMass(motion, 1.f / mass);
   }

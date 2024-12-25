@@ -45,7 +45,7 @@ typedef struct {
   bool threadSafe;
   bool allowSleep;
   float stabilization;
-  float maxPenetration;
+  float maxOverlap;
   float restitutionThreshold;
   uint32_t velocitySteps;
   uint32_t positionSteps;
@@ -86,7 +86,7 @@ void lovrWorldUpdate(World* world, float dt);
 void lovrWorldInterpolate(World* world, float alpha);
 bool lovrWorldRaycast(World* world, float start[3], float end[3], uint32_t filter, CastCallback* callback, void* userdata);
 bool lovrWorldShapecast(World* world, Shape* shape, float pose[7], float end[3], uint32_t filter, CastCallback* callback, void* userdata);
-bool lovrWorldOverlapShape(World* world, Shape* shape, float pose[7], uint32_t filter, OverlapCallback* callback, void* userdata);
+bool lovrWorldOverlapShape(World* world, Shape* shape, float pose[7], float maxDistance, uint32_t filter, OverlapCallback* callback, void* userdata);
 bool lovrWorldQueryBox(World* world, float position[3], float size[3], uint32_t filter, QueryCallback* callback, void* userdata);
 bool lovrWorldQuerySphere(World* world, float position[3], float radius, uint32_t filter, QueryCallback* callback, void* userdata);
 bool lovrWorldDisableCollisionBetween(World* world, const char* tag1, const char* tag2);

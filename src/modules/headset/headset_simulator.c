@@ -27,7 +27,7 @@ struct Layer {
   float orientation[4];
   float width;
   float height;
-  ViewMask mask;
+  float curve;
   int32_t viewport[4];
   Texture* texture;
   Pass* pass;
@@ -42,6 +42,7 @@ static struct {
   Pass* pass;
   Layer* layers[MAX_LAYERS];
   uint32_t layerCount;
+  bool showMainLayer;
   float pitch;
   float yaw;
   float distance;
@@ -115,6 +116,7 @@ static bool simulator_start(void) {
   state.epoch = os_get_time();
   state.time = 0.;
   state.active = true;
+  state.showMainLayer = true;
   return true;
 }
 
@@ -154,6 +156,9 @@ static void simulator_getFeatures(HeadsetFeatures* features) {
   features->handModel = false;
   features->controllerModel = false;
   features->controllerSkeleton = false;
+  features->layerCube = false;
+  features->layerSphere = false;
+  features->layerCurve = false;
   features->layerDepthTest = false;
   features->layerFilter = false;
 }
@@ -187,6 +192,15 @@ static bool simulator_setRefreshRate(float refreshRate) {
 
 static const float* simulator_getRefreshRates(uint32_t* count) {
   return *count = 0, NULL;
+}
+
+static void simulator_getFoveation(FoveationLevel* level, bool* dynamic) {
+  *level = FOVEATION_NONE;
+  *dynamic = false;
+}
+
+static bool simulator_setFoveation(FoveationLevel level, bool dynamic) {
+  return level == FOVEATION_NONE;
 }
 
 static PassthroughMode simulator_getPassthrough(void) {
@@ -306,17 +320,18 @@ static bool simulator_animate(struct Model* model) {
   return false;
 }
 
-static Layer* simulator_newLayer(uint32_t width, uint32_t height, const LayerInfo* settings) {
+static Layer* simulator_newLayer(const LayerInfo* info) {
   Layer* layer = lovrCalloc(sizeof(Layer));
   layer->ref = 1;
-  layer->textureWidth = width;
-  layer->textureWeight = height;
+  layer->textureWidth = info->width;
+  layer->textureWeight = info->height;
   layer->texture = lovrTextureCreate(&(TextureInfo) {
     .format = FORMAT_RGBA8,
-    .width = width,
-    .height = height,
-    .layers = 1,
-    .usage = TEXTURE_RENDER,
+    .type = (info->type == LAYER_CUBE ? TEXTURE_CUBE : (info->stereo ? TEXTURE_ARRAY : TEXTURE_2D)),
+    .width = info->width,
+    .height = info->height,
+    .layers = (info->type == LAYER_CUBE ? 6 : 1) << info->stereo,
+    .usage = TEXTURE_RENDER | TEXTURE_TRANSFER,
     .srgb = true
   });
   layer->pass = lovrPassCreate("Layer");
@@ -330,12 +345,13 @@ static void simulator_destroyLayer(void* ref) {
   lovrFree(layer);
 }
 
-static Layer** simulator_getLayers(uint32_t* count) {
+static Layer** simulator_getLayers(uint32_t* count, bool* main) {
   *count = state.layerCount;
+  *main = state.showMainLayer;
   return state.layers;
 }
 
-static bool simulator_setLayers(Layer** layers, uint32_t count) {
+static bool simulator_setLayers(Layer** layers, uint32_t count, bool main) {
   lovrCheck(count <= MAX_LAYERS, "Too many layers");
 
   for (uint32_t i = 0; i < state.layerCount; i++) {
@@ -347,6 +363,8 @@ static bool simulator_setLayers(Layer** layers, uint32_t count) {
     lovrRetain(layers[i]);
     state.layers[i] = layers[i];
   }
+
+  state.showMainLayer = main;
 
   return true;
 }
@@ -371,12 +389,24 @@ static void simulator_setLayerDimensions(Layer* layer, float width, float height
   layer->height = height;
 }
 
-static ViewMask simulator_getLayerViewMask(Layer* layer) {
-  return layer->mask;
+static void simulator_getLayerColor(Layer* layer, float color[4]) {
+  color[0] = 1.f;
+  color[1] = 1.f;
+  color[2] = 1.f;
+  color[3] = 1.f;
 }
 
-static void simulator_setLayerViewMask(Layer* layer, ViewMask mask) {
-  layer->mask = mask;
+static void simulator_setLayerColor(Layer* layer, float color[4]) {
+  //
+}
+
+static float simulator_getLayerCurve(Layer* layer) {
+  return layer->curve;
+}
+
+static bool simulator_setLayerCurve(Layer* layer, float curve) {
+  layer->curve = curve;
+  return true;
 }
 
 static void simulator_getLayerViewport(Layer* layer, int32_t viewport[4]) {
@@ -424,6 +454,7 @@ static bool simulator_getPass(Pass** pass) {
       .height = height,
       .layers = 1,
       .mipmaps = 1,
+      .samples = 1,
       .usage = TEXTURE_RENDER | TEXTURE_SAMPLE
     });
 
@@ -431,8 +462,8 @@ static bool simulator_getPass(Pass** pass) {
       return false;
     }
 
-    Texture* textures[4] = { state.texture };
-    if (!lovrPassSetCanvas(state.pass, textures, NULL, state.depthFormat, state.config.antialias ? 4 : 1)) {
+    CanvasTexture color[4] = { [0].texture = state.texture };
+    if (!lovrPassSetCanvas(state.pass, color, NULL, state.depthFormat, NULL, state.config.antialias ? 4 : 1)) {
       return false;
     }
   }
@@ -594,6 +625,8 @@ HeadsetInterface lovrHeadsetSimulatorDriver = {
   .getRefreshRate = simulator_getRefreshRate,
   .setRefreshRate = simulator_setRefreshRate,
   .getRefreshRates = simulator_getRefreshRates,
+  .getFoveation = simulator_getFoveation,
+  .setFoveation = simulator_setFoveation,
   .getPassthrough = simulator_getPassthrough,
   .setPassthrough = simulator_setPassthrough,
   .isPassthroughSupported = simulator_isPassthroughSupported,
@@ -624,8 +657,10 @@ HeadsetInterface lovrHeadsetSimulatorDriver = {
   .setLayerPose = simulator_setLayerPose,
   .getLayerDimensions = simulator_getLayerDimensions,
   .setLayerDimensions = simulator_setLayerDimensions,
-  .getLayerViewMask = simulator_getLayerViewMask,
-  .setLayerViewMask = simulator_setLayerViewMask,
+  .getLayerCurve = simulator_getLayerCurve,
+  .setLayerCurve = simulator_setLayerCurve,
+  .getLayerColor = simulator_getLayerColor,
+  .setLayerColor = simulator_setLayerColor,
   .getLayerViewport = simulator_getLayerViewport,
   .setLayerViewport = simulator_setLayerViewport,
   .getLayerTexture = simulator_getLayerTexture,

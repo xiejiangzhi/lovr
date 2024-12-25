@@ -56,6 +56,7 @@ typedef struct {
   uint32_t textureSize3D;
   uint32_t textureSizeCube;
   uint32_t textureLayers;
+  uint32_t textureSamples;
   uint32_t renderSize[3];
   uint32_t uniformBuffersPerStage;
   uint32_t storageBuffersPerStage;
@@ -194,10 +195,11 @@ typedef enum {
 } TextureType;
 
 enum {
-  TEXTURE_SAMPLE   = (1 << 0),
-  TEXTURE_RENDER   = (1 << 1),
-  TEXTURE_STORAGE  = (1 << 2),
-  TEXTURE_TRANSFER = (1 << 3)
+  TEXTURE_SAMPLE    = (1 << 0),
+  TEXTURE_RENDER    = (1 << 1),
+  TEXTURE_STORAGE   = (1 << 2),
+  TEXTURE_TRANSFER  = (1 << 3),
+  TEXTURE_FOVEATION = (1 << 4)
 };
 
 typedef struct {
@@ -207,6 +209,7 @@ typedef struct {
   uint32_t height;
   uint32_t layers;
   uint32_t mipmaps;
+  uint32_t samples;
   uint32_t usage;
   bool srgb;
   bool xr;
@@ -288,6 +291,7 @@ typedef enum {
   SHADER_EQUIRECT,
   SHADER_FILL_2D,
   SHADER_FILL_ARRAY,
+  SHADER_MASK,
   SHADER_ANIMATOR,
   SHADER_BLENDER,
   SHADER_TALLY_MERGE,
@@ -518,6 +522,11 @@ typedef enum {
   LOAD_KEEP
 } LoadAction;
 
+typedef struct {
+  Texture* texture;
+  Texture* resolve;
+} CanvasTexture;
+
 typedef enum {
   STACK_TRANSFORM,
   STACK_STATE
@@ -573,8 +582,8 @@ void lovrPassReset(Pass* pass);
 const PassStats* lovrPassGetStats(Pass* pass);
 const char* lovrPassGetLabel(Pass* pass);
 
-void lovrPassGetCanvas(Pass* pass, Texture* color[4], Texture** depthTexture, uint32_t* depthFormat, uint32_t* samples);
-bool lovrPassSetCanvas(Pass* pass, Texture* color[4], Texture* depthTexture, uint32_t depthFormat, uint32_t samples);
+void lovrPassGetCanvas(Pass* pass, CanvasTexture color[4], CanvasTexture* depth, uint32_t* depthFormat, Texture** foveation, uint32_t* samples);
+bool lovrPassSetCanvas(Pass* pass, CanvasTexture color[4], CanvasTexture* depth, uint32_t depthFormat, Texture* foveation, uint32_t samples);
 void lovrPassGetClear(Pass* pass, LoadAction loads[4], float clears[4][4], LoadAction* depthLoad, float* depthClear);
 bool lovrPassSetClear(Pass* pass, LoadAction loads[4], float clears[4][4], LoadAction depthLoad, float depthClear);
 uint32_t lovrPassGetAttachmentCount(Pass* pass, bool* depth);

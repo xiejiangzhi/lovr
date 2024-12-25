@@ -34,6 +34,7 @@ local conf = {
     start = true,
     debug = false,
     seated = false,
+    mask = true,
     stencil = false,
     antialias = true,
     supersample = false,
@@ -214,6 +215,10 @@ function lovr.errhand(message)
     lovr.graphics.setBackgroundColor(.11, .10, .14)
   else
     lovr.graphics.setBackgroundColor(0, 0, 0, 0)
+  end
+
+  if lovr.headset then
+    lovr.headset.setLayers()
   end
 
   local font = lovr.graphics.getDefaultFont()
