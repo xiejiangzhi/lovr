@@ -84,6 +84,11 @@ group('physics', function()
       expect({ shape:raycast(-500, 100, 100, 500, 100, 100) }).to.equal({ 95, 100, 100, -1, 0, 0 }, 1e-6)
     end)
 
+    test('ConvexShape', function()
+      shape = lovr.physics.newConvexShape({ 1, 1, 0, -1, 1, 0, 0, 0, 0, 0, 0, 1 })
+      expect(shape:getPointCount()).to.equal(4)
+    end)
+
     group('MeshShape', function()
       if lovr.graphics then
         test('from Mesh', function()

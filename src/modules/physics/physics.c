@@ -2296,24 +2296,28 @@ ConvexShape* lovrConvexShapeClone(ConvexShape* parent, float scale) {
 }
 
 uint32_t lovrConvexShapeGetPointCount(ConvexShape* shape) {
-  return JPH_ConvexHullShape_GetNumPoints((JPH_ConvexHullShape*) shape->handle);
+  const JPH_ConvexHullShape* hull = (const JPH_ConvexHullShape*) JPH_DecoratedShape_GetInnerShape((const JPH_DecoratedShape*) shape->handle);
+  return JPH_ConvexHullShape_GetNumPoints(hull);
 }
 
 bool lovrConvexShapeGetPoint(ConvexShape* shape, uint32_t index, float point[3]) {
   lovrCheck(index < lovrConvexShapeGetPointCount(shape), "Invalid point index '%d'", index + 1);
+  const JPH_ConvexHullShape* hull = (const JPH_ConvexHullShape*) JPH_DecoratedShape_GetInnerShape((const JPH_DecoratedShape*) shape->handle);
   JPH_Vec3 v;
-  JPH_ConvexHullShape_GetPoint((JPH_ConvexHullShape*) shape->handle, index, &v);
+  JPH_ConvexHullShape_GetPoint(hull, index, &v);
   vec3_fromJolt(point, &v);
   return true;
 }
 
 uint32_t lovrConvexShapeGetFaceCount(ConvexShape* shape) {
-  return JPH_ConvexHullShape_GetNumFaces((JPH_ConvexHullShape*) shape->handle);
+  const JPH_ConvexHullShape* hull = (const JPH_ConvexHullShape*) JPH_DecoratedShape_GetInnerShape((const JPH_DecoratedShape*) shape->handle);
+  return JPH_ConvexHullShape_GetNumFaces(hull);
 }
 
 uint32_t lovrConvexShapeGetFace(ConvexShape* shape, uint32_t index, uint32_t* pointIndices, uint32_t capacity) {
   lovrCheck(index < lovrConvexShapeGetFaceCount(shape), "Invalid face index '%d'", index + 1);
-  return JPH_ConvexHullShape_GetFaceVertices((JPH_ConvexHullShape*) shape->handle, index, capacity, pointIndices);
+  const JPH_ConvexHullShape* hull = (const JPH_ConvexHullShape*) JPH_DecoratedShape_GetInnerShape((const JPH_DecoratedShape*) shape->handle);
+  return JPH_ConvexHullShape_GetFaceVertices(hull, index, capacity, pointIndices);
 }
 
 float lovrConvexShapeGetScale(ConvexShape* shape) {
