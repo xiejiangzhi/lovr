@@ -98,6 +98,7 @@ group('physics', function()
         mesh:setIndices({ 1, 2, 3, 1, 3, 4, 1, 2, 4, 2, 3, 4 })
         shape = lovr.physics.newConvexShape(mesh)
         expect(shape:getPointCount()).to.equal(4)
+        expect(shape:getVertices():getSize()).to.equal(12 * 8 * 4)
       end
     end)
 
