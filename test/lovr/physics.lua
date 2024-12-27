@@ -87,6 +87,16 @@ group('physics', function()
     test('ConvexShape', function()
       shape = lovr.physics.newConvexShape({ 1, 1, 0, -1, 1, 0, 0, 0, 0, 0, 0, 1 })
       expect(shape:getPointCount()).to.equal(4)
+
+      mesh = lovr.graphics.newMesh({
+        { 1, 1, 0 },
+        { -1, 1, 0 },
+        { 0, 0, 0 },
+        { 0, 0, 1 }
+      })
+      mesh:setIndices({ 1, 2, 3, 1, 3, 4, 1, 2, 4, 2, 3, 4 })
+      shape = lovr.physics.newConvexShape(mesh)
+      expect(shape:getPointCount()).to.equal(4)
     end)
 
     group('MeshShape', function()
