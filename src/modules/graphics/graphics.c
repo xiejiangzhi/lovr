@@ -4706,7 +4706,7 @@ bool lovrMeshGetTriangles(Mesh* mesh, float** vertices, uint32_t** indices, uint
     *indices = lovrMalloc(*indexCount * sizeof(uint32_t));
     if (mesh->indexBuffer->info.format->type == TYPE_U16 || mesh->indexBuffer->info.format->type == TYPE_INDEX16) {
       for (uint32_t i = 0; i < mesh->indexCount; i++) {
-        *indices[i] = (uint32_t) ((uint16_t*) mesh->indices)[i];
+        (*indices)[i] = (uint32_t) ((uint16_t*) mesh->indices)[i];
       }
     } else {
       memcpy(*indices, mesh->indices, mesh->indexCount * sizeof(uint32_t));
