@@ -1,6 +1,7 @@
 #include "api.h"
 #include "physics/physics.h"
 #include "data/image.h"
+#include "data/blob.h"
 #include "core/maf.h"
 #include "util.h"
 #include <stdlib.h>
@@ -565,6 +566,21 @@ static int l_lovrConvexShapeGetFace(lua_State* L) {
   return 1;
 }
 
+static int l_lovrConvexShapeGetVertices(lua_State* L) {
+  ConvexShape* convex = luax_checktype(L, 1, ConvexShape);
+  uint32_t icount, maxFaceVcount;
+  lovrConvexShapeGetIndicesCount(convex, &icount, &maxFaceVcount);
+  // pos + normal + UV
+  uint32_t size = icount * 8 * sizeof(float);
+  uint16_t* vertices = lovrMalloc(size);
+  luax_assert(L, lovrConvexShapeGetVertices(convex, vertices, maxFaceVcount));
+
+  Blob* blob = lovrBlobCreate(vertices, size, "ConvexIndices");
+  luax_pushtype(L, Blob, blob);
+  lovrRelease(blob, lovrBlobDestroy);
+  return 1;
+}
+
 static int l_lovrConvexShapeGetScale(lua_State* L) {
   ConvexShape* convex = luax_checktype(L, 1, ConvexShape);
   float scale = lovrConvexShapeGetScale(convex);
@@ -578,6 +594,7 @@ const luaL_Reg lovrConvexShape[] = {
   { "getPoint", l_lovrConvexShapeGetPoint },
   { "getFaceCount", l_lovrConvexShapeGetFaceCount },
   { "getFace", l_lovrConvexShapeGetFace },
+  { "getVertices", l_lovrConvexShapeGetVertices },
   { "getScale", l_lovrConvexShapeGetScale },
   { NULL, NULL }
 };

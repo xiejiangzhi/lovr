@@ -262,6 +262,8 @@ uint32_t lovrConvexShapeGetPointCount(ConvexShape* shape);
 bool lovrConvexShapeGetPoint(ConvexShape* shape, uint32_t index, float point[3]);
 uint32_t lovrConvexShapeGetFaceCount(ConvexShape* shape);
 uint32_t lovrConvexShapeGetFace(ConvexShape* shape, uint32_t index, uint32_t* pointIndices, uint32_t capacity);
+bool lovrConvexShapeGetIndicesCount(ConvexShape* shape, uint32_t* icount, uint32_t* maxFaceVcount);
+bool lovrConvexShapeGetVertices(ConvexShape* shape, float* vertices, uint32_t maxFaceVcount);
 float lovrConvexShapeGetScale(ConvexShape* shape);
 
 MeshShape* lovrMeshShapeCreate(uint32_t vertexCount, float vertices[], uint32_t indexCount, uint32_t indices[], float scale);
