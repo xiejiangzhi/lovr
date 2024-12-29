@@ -16,6 +16,7 @@ dev
 - Add `controller` field to the table returned by `lovr.headset.getSkeleton`.
 - Add support for BMFont in `Font` and `Rasterizer`.
 - Add `File` object and `lovr.filesystem.newFile`.
+- Add `Pass:polygon`.
 - Add `--watch` CLI flag, `lovr.filechanged` event, and `lovr.filesystem.watch/unwatch`.
 - Add `--simulator` CLI flag to force use of simulator headset driver.
 - Add `lovr.headset.stop`, `lovr.headset.isActive`, and `t.headset.start`.

@@ -87,6 +87,11 @@ group('physics', function()
     test('ConvexShape', function()
       shape = lovr.physics.newConvexShape({ 1, 1, 0, -1, 1, 0, 0, 0, 0, 0, 0, 1 })
       expect(shape:getPointCount()).to.equal(4)
+      expect(shape:getFaceCount()).to.equal(4)
+      expect(shape:getFace(1)).to.equal({ 1, 2, 3 })
+      expect(shape:getFace(2)).to.equal({ 2, 4, 3 })
+      expect(shape:getFace(3)).to.equal({ 4, 1, 3 })
+      expect(shape:getFace(4)).to.equal({ 1, 4, 2 })
 
       if lovr.graphics then
         mesh = lovr.graphics.newMesh({

@@ -3399,10 +3399,6 @@ Shader* lovrShaderCreate(const ShaderInfo* info) {
         }
       }
 
-      if (info->raw && *set != resourceSet) {
-        continue;
-      }
-
       static const gpu_slot_type types[] = {
         [SPV_UNIFORM_BUFFER] = GPU_SLOT_UNIFORM_BUFFER,
         [SPV_STORAGE_BUFFER] = GPU_SLOT_STORAGE_BUFFER,
@@ -3450,7 +3446,7 @@ Shader* lovrShaderCreate(const ShaderInfo* info) {
 
       // Move resources into user set and give them auto-incremented binding numbers
       // Default shaders refer to resources with explicit binding numbers, so leave those alone
-      if (!info->isDefault && !info->raw) {
+      if (!info->isDefault) {
         *set = resourceSet;
         *binding = index;
       }

@@ -96,6 +96,9 @@ static void luax_fielderror(lua_State* L, int index, const DataField* field, boo
     lua_concat(L, 3);
   }
 
+  const char* name = lua_tostring(L, -1);
+  lua_pop(L, 1);
+
   const char* kind;
   const char* expected;
   if (arr && field->length > 0) {
@@ -112,13 +115,13 @@ static void luax_fielderror(lua_State* L, int index, const DataField* field, boo
     expected = "number";
   }
 
-  const char* name = lua_tostring(L, -1);
   const char* typename = luaL_typename(L, index);
   luaL_error(L, "Bad type for %s %s: %s expected, got %s", kind, name, expected, typename);
 }
 
 static void luax_checkfieldn(lua_State* L, int index, const DataField* field, void* data) {
   DataPointer p = { .raw = data };
+  if (index < 0) index += lua_gettop(L) + 1;
   for (uint32_t i = 0; i < typeComponents[field->type]; i++) {
     luax_fieldcheck(L, lua_type(L, index + i) == LUA_TNUMBER, index + i, field, false);
     double x = lua_tonumber(L, index + i);
@@ -248,6 +251,14 @@ static void luax_checkstruct(lua_State* L, int index, const DataField* structure
 
     if (lua_isnil(L, -1)) {
       memset(data + field->offset, 0, MAX(field->length, 1) * field->stride);
+    } else if (typeComponents[field->type] > 1 && lua_type(L, -1) == LUA_TNUMBER) {
+      // Need to special case situation where number is provided for vector field,
+      // luax_checkbufferdata doesn't handle this properly
+      int n = typeComponents[field->type];
+      for (int i = 1; i < n; i++) {
+        lua_pushvalue(L, -1);
+      }
+      luax_checkbufferdata(L, -n, field, data + field->offset);
     } else {
       luax_checkbufferdata(L, -1, field, data + field->offset);
     }
@@ -310,7 +321,7 @@ void luax_checkbufferdata(lua_State* L, int index, const DataField* field, char*
     luax_checkarray(L, index, 1, (int) field->length, field, data);
   } else if (field->fieldCount > 0) {
     luax_checkstruct(L, index, field, data);
-  } else if (typeComponents[field->type] == 1) {
+  } else if (type == LUA_TNUMBER) {
     luax_checkfieldn(L, index, field, data);
   } else if (type == LUA_TUSERDATA || type == LUA_TLIGHTUSERDATA) {
     luax_checkfieldv(L, index, field, data);

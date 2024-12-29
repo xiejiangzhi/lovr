@@ -557,7 +557,7 @@ static int l_lovrConvexShapeGetFace(lua_State* L) {
   uint32_t* indices = count > COUNTOF(stack) ? lovrMalloc(count * sizeof(uint32_t)) : stack;
   lovrConvexShapeGetFace(convex, index, indices, count);
   for (uint32_t i = 0; i < count; i++) {
-    lua_pushinteger(L, indices[i]);
+    lua_pushinteger(L, indices[i] + 1);
     lua_rawseti(L, -2, i + 1);
   }
   if (indices != stack) {
