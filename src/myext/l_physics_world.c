@@ -21,13 +21,14 @@ static int l_lovrWorldQueryTriangle(lua_State* L) {
   return ret_args;
 }
 
-// static int l_lovrWorldNewCharacter(lua_State* L) {
-//   World* world = luax_checkworld(L, 1);
-//   float position[3];
-//   luax_readvec3(L, 2, position, NULL);
-//   Character* character = lovrCharacterCreate(world, position, NULL);
-//   luax_assert(L, character);
-//   luax_pushtype(L, Character, character);
-//   lovrRelease(Character, lovrCharacterDestroy);
-//   return 1;
-// }
+static int l_lovrWorldNewPlaneCollider(lua_State* L) {
+  World* world = luax_checkworld(L, 1);
+  PlaneShape* shape = luax_newplaneshape(L, 2);
+  float position[3] = { 0.f, 0.f, 0.f };
+  Collider* collider = lovrColliderCreate(world, position, shape);
+  lovrRelease(shape, lovrShapeDestroy);
+  luax_assert(L, collider);
+  luax_pushtype(L, Collider, collider);
+  lovrRelease(collider, lovrColliderDestroy);
+  return 1;
+}

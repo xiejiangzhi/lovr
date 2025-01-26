@@ -12,6 +12,7 @@ StringEntry lovrShapeType[] = {
   [SHAPE_CONVEX] = ENTRY("convex"),
   [SHAPE_MESH] = ENTRY("mesh"),
   [SHAPE_TERRAIN] = ENTRY("terrain"),
+  [SHAPE_PLANE] = ENTRY("plane"),
   [SHAPE_TRIANGLE] = ENTRY("triangle"),
   { 0 }
 };
@@ -310,6 +311,8 @@ static int l_lovrPhysicsNewSliderJoint(lua_State* L) {
   return 1;
 }
 
+#include "myext/l_physics.c"
+
 static const luaL_Reg lovrPhysics[] = {
   { "newWorld", l_lovrPhysicsNewWorld },
   { "newBoxShape", l_lovrPhysicsNewBoxShape },
@@ -319,6 +322,7 @@ static const luaL_Reg lovrPhysics[] = {
   { "newConvexShape", l_lovrPhysicsNewConvexShape },
   { "newMeshShape", l_lovrPhysicsNewMeshShape },
   { "newTerrainShape", l_lovrPhysicsNewTerrainShape },
+  { "newPlaneShape", l_lovrPhysicsNewPlaneShape },
   { "newWeldJoint", l_lovrPhysicsNewWeldJoint },
   { "newBallJoint", l_lovrPhysicsNewBallJoint },
   { "newConeJoint", l_lovrPhysicsNewConeJoint },
@@ -338,6 +342,7 @@ extern const luaL_Reg lovrCylinderShape[];
 extern const luaL_Reg lovrConvexShape[];
 extern const luaL_Reg lovrMeshShape[];
 extern const luaL_Reg lovrTerrainShape[];
+extern const luaL_Reg lovrPlaneShape[];
 extern const luaL_Reg lovrWeldJoint[];
 extern const luaL_Reg lovrBallJoint[];
 extern const luaL_Reg lovrConeJoint[];
@@ -366,6 +371,7 @@ int luaopen_lovr_physics(lua_State* L) {
   luax_registertype(L, ConvexShape);
   luax_registertype(L, MeshShape);
   luax_registertype(L, TerrainShape);
+  luax_registertype(L, PlaneShape);
   luax_registertype(L, WeldJoint);
   luax_registertype(L, BallJoint);
   luax_registertype(L, ConeJoint);

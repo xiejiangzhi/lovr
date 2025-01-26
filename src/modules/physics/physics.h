@@ -213,7 +213,8 @@ typedef enum {
   SHAPE_CONVEX,
   SHAPE_MESH,
   SHAPE_TERRAIN,
-  SHAPE_TRIANGLE
+  SHAPE_PLANE,
+  SHAPE_TRIANGLE,
 } ShapeType;
 
 void lovrShapeDestroy(void* ref);
@@ -280,6 +281,7 @@ TerrainShape* lovrTerrainShapeCreate(float* vertices, uint32_t n, float scaleXZ,
 #define lovrConvexShapeDestroy lovrShapeDestroy
 #define lovrMeshShapeDestroy lovrShapeDestroy
 #define lovrTerrainShapeDestroy lovrShapeDestroy
+#define lovrPlaneShapeDestroy lovrShapeDestroy
 
 // Joints
 

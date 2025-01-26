@@ -16,7 +16,7 @@ void luax_pushshape(lua_State* L, Shape* shape) {
     case SHAPE_CONVEX: luax_pushtype(L, ConvexShape, shape); break;
     case SHAPE_MESH: luax_pushtype(L, MeshShape, shape); break;
     case SHAPE_TERRAIN: luax_pushtype(L, TerrainShape, shape); break;
-    case SHAPE_TRIANGLE: luax_pushtype(L, TriangleShape, shape); break;
+    case SHAPE_PLANE: luax_pushtype(L, PlaneShape, shape); break;
     default: lovrUnreachable();
   }
 }
@@ -32,7 +32,8 @@ static Shape* luax_toshape(lua_State* L, int index) {
       hash64("CylinderShape", strlen("CylinderShape")),
       hash64("ConvexShape", strlen("ConvexShape")),
       hash64("MeshShape", strlen("MeshShape")),
-      hash64("TerrainShape", strlen("TerrainShape"))
+      hash64("TerrainShape", strlen("TerrainShape")),
+      hash64("PlaneShape", strlen("PlaneShape"))
     };
 
     for (size_t i = 0; i < COUNTOF(hashes); i++) {
@@ -613,6 +614,11 @@ const luaL_Reg lovrMeshShape[] = {
 };
 
 const luaL_Reg lovrTerrainShape[] = {
+  lovrShape,
+  { NULL, NULL }
+};
+
+const luaL_Reg lovrPlaneShape[] = {
   lovrShape,
   { NULL, NULL }
 };

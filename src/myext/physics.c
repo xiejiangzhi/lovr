@@ -26,7 +26,13 @@ bool lovrWorldQueryTriangle(
   return r;
 }
 
-// bool lovrCharacterCreate(
-//   World* world, Shape* shape, float position[3], float orientation[4],
-// ) {
-// }
+PlaneShape* lovrPlaneShapeCreate(float normal[3], float half_size) {
+  PlaneShape* shape = lovrCalloc(sizeof(PlaneShape));
+  shape->ref = 1;
+  shape->type = SHAPE_PLANE;
+  JPH_Plane plane = { .normal = { normal[0], normal[1], normal[2] }, .distance = 0 };
+  shape->handle = (JPH_Shape*) JPH_PlaneShape_Create(&plane, NULL, half_size);
+  JPH_Shape_SetUserData(shape->handle, (uint64_t) (uintptr_t) shape);
+  quat_identity(shape->rotation);
+  return shape;
+}

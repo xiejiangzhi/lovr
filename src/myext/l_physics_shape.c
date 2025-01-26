@@ -1,4 +1,13 @@
 
+Shape* luax_newplaneshape(lua_State* L, int index) {
+  float normal[3];
+  index = luax_readvec3(L, index, normal, NULL);
+  float hsize = luax_optfloat(L, index, 1000);
+  Shape* shape = lovrPlaneShapeCreate(normal, hsize);
+  luax_assert(L, shape);
+  return shape;
+}
+
 // static bool queryCallback(Shape* shape, void* userdata) {
 //   lua_State* L = userdata;
 //   lua_pushvalue(L, -1);
