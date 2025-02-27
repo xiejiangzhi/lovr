@@ -4,43 +4,70 @@ Changelog
 dev
 ---
 
+### Fix
+
+- Fix `ConvexShape` scale not working when created from a table of points.
+- Fix `ConvexShape:getPoint` to apply the shape's center of mass and scale.
+- Fix memory leak with `ConvexShape` and `MeshShape`.
+
+v0.18.0 - 2025-02-14
+---
+
 ### Add
 
-- Add `Layer` object, `lovr.headset.newLayer`, and `lovr.headset.get/setLayers`.
-- Add `lovr.headset.get/setFoveation`.
-- Add `t.headset.mask`.
-- Add back `lovr.headset.isMounted` and the `lovr.mount` callback.
-- Add `stylus` Device, `nib` DeviceButton, and `nib` DeviceAxis.
-- Add support for Logitech MX Ink input.
-- Add `t.headset.controllerskeleton` to control how controllers return hand tracking data.
-- Add `controller` field to the table returned by `lovr.headset.getSkeleton`.
-- Add support for BMFont in `Font` and `Rasterizer`.
-- Add `File` object and `lovr.filesystem.newFile`.
-- Add `Pass:polygon`.
+#### General
+
+- Add support for declaring objects as to-be-closed variables in Lua 5.4.
+
+#### Filesystem
+
 - Add `--watch` CLI flag, `lovr.filechanged` event, and `lovr.filesystem.watch/unwatch`.
-- Add `--simulator` CLI flag to force use of simulator headset driver.
-- Add `lovr.headset.stop`, `lovr.headset.isActive`, and `t.headset.start`.
-- Add `t.headset.debug` to enable additional messages from the VR runtime.
-- Add `lovr.headset.getFeatures`.
-- Add `Model:resetBlendShapes`.
-- Add `lovr.system.wasMousePressed` and `lovr.system.wasMouseReleased`.
-- Add `lovr.system.get/setClipboardText`.
-- Add `KeyCode`s for numpad keys.
+- Add `File` object and `lovr.filesystem.newFile`.
+- Add `lovr.filesystem.getBundlePath` (for internal boot code).
+- Add `lovr.filesystem.setSource` (for internal boot code).
+
+#### Graphics
+
+- Add `Pass:polygon`.
+- Add `Shader:hasVariable`.
+- Add support for BMFont in `Font` and `Rasterizer`.
 - Add support for `uniform` variables in shader code.
 - Add support for cubemap array textures.
 - Add support for transfer operations on texture views.
 - Add support for nesting texture views (creating a view of a view).
 - Add `sn10x3` `DataType`.
+- Add `border` `WrapMode`.
+- Add support for loading glTF models with 8 bit indices.
 - Add support for `d24` texture format.
 - Add support for `SampleID`, `SampleMaskIn`, `SampleMask`, and `SamplePosition` in pixel shaders.
+- Add support for `layout(scalar)` buffers and `packedBuffers` graphics feature.
+- Add `raw` flag to `lovr.graphics.newShader`.
+- Add `Texture:getLabel`, `Shader:getLabel`, and `Pass:getLabel`.
+- Add `Model:resetBlendShapes`.
+
+#### Headset
+
+- Add `Layer` object, `lovr.headset.newLayer`, and `lovr.headset.get/setLayers`.
+- Add `lovr.headset.setBackground`.
+- Add `stylus` Device, `nib` DeviceButton, and `nib` DeviceAxis.
+- Add support for Logitech MX Ink input.
+- Add `lovr.headset.get/setFoveation`.
+- Add `t.headset.controllerskeleton` to control how controllers return hand tracking data.
+- Add `controller` field to the table returned by `lovr.headset.getSkeleton`.
+- Add `t.headset.mask`.
+- Add back `lovr.headset.isMounted` and the `lovr.mount` callback.
+- Add `lovr.headset.stop`, `lovr.headset.isActive`, and `t.headset.start`.
+- Add `lovr.headset.getFeatures`.
+- Add `t.headset.debug` to enable additional messages from the VR runtime.
+- Add `--simulator` CLI flag to force use of simulator headset driver.
+- Add `lovr.headset.getHandles`.
+
+#### Math
+
 - Add `Quat:get/setEuler`.
-- Add `lovr.system.openConsole` (for internal Lua code).
-- Add `lovr.filesystem.getBundlePath` (for internal Lua code).
-- Add `lovr.filesystem.setSource` (for internal Lua code).
-- Add table support to `Channel:push`.
-- Add `lovr.thread.newChannel`.
-- Add `t.thread.workers` to configure number of worker threads.
-- Add support for declaring objects as to-be-closed variables in Lua 5.4.
+
+#### Physics
+
 - Add variant of `lovr.physics.newWorld` that takes a table of settings.
 - Add `World:interpolate`.
 - Add `World:get/setCallbacks` and `Contact` object.
@@ -76,13 +103,20 @@ dev
 - Add `Shape:get/setOffset`.
 - Add motor support to `HingeJoint` and `SliderJoint`.
 - Add support for creating a `MeshShape` from a `ModelData`.
-- Add `Texture:getLabel`, `Shader:getLabel`, and `Pass:getLabel`.
-- Add `Shader:hasVariable`.
-- Add `lovr.headset.getFeatures`.
-- Add `lovr.headset.getHandles`.
-- Add `raw` flag to `lovr.graphics.newShader`.
-- Add `border` `WrapMode`.
-- Add support for `layout(scalar)` buffers and `packedBuffers` graphics feature.
+
+#### System
+
+- Add `lovr.system.isWindowVisible` and `lovr.system.isWindowFocused`.
+- Add `lovr.system.wasMousePressed` and `lovr.system.wasMouseReleased`.
+- Add `lovr.system.get/setClipboardText`.
+- Add `lovr.system.openConsole` (for internal Lua code).
+- Add `KeyCode`s for numpad keys.
+
+#### Thread
+
+- Add table support to `Channel:push`.
+- Add `lovr.thread.newChannel`.
+- Add `t.thread.workers` to configure number of worker threads.
 
 ### Change
 
@@ -120,6 +154,8 @@ dev
 - Change `Image:get/set/mapPixel` to support `r16f`, `rg16f`, and `rgba16f`.
 - Change `Image:getPixel` to return 1 for alpha when the format doesn't have an alpha component.
 - Change stack size of `state` stack (used with `Pass:push/pop`) from 4 to 8.
+- Change `lovr.focus` and `lovr.visible` to also get called for window events.
+- Change `lovr.focus` and `lovr.visible` to have an extra parameter for the display type.
 
 ### Fix
 
@@ -140,7 +176,6 @@ dev
 
 ### Deprecate
 
-- Deprecate `Texture:getSampleCount`.
 - Deprecate `World:get/setTightness` (use `stabilization` option when creating World).
 - Deprecate `World:get/setLinearDamping` (use `Collider:get/setLinearDamping`).
 - Deprecate `World:get/setAngularDamping` (use `Collider:get/setAngularDamping`).

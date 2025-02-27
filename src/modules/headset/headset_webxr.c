@@ -36,8 +36,8 @@ extern bool webxr_vibrate(Device device, float strength, float duration, float f
 extern void webxr_stopVibration(Device device);
 extern struct ModelData* webxr_newModelData(Device device, bool animated);
 extern bool webxr_animate(struct Model* model);
-extern bool webxr_getTexture(Texture** texture);
-extern bool webxr_getPass(Pass** pass);
+extern bool webxr_getTexture(struct Texture** texture);
+extern bool webxr_getPass(struct Pass** pass);
 extern bool webxr_submit(void);
 extern bool webxr_isActive(void);
 extern bool webxr_isVisible(void);

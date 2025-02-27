@@ -218,6 +218,7 @@ else
   lua_cflags += '-fPIC'
   lua_cflags += '-Wno-empty-body'
   lua_lflags += '-shared'
+  lua_lflags += '-z global'
   lua_lflags += '-lm'
   lua_src = {
     'lapi.c', 'lauxlib.c', 'lbaselib.c', 'lcode.c', 'ldblib.c', 'ldebug.c', 'ldo.c', 'ldump.c',

@@ -3,7 +3,7 @@ lovr = require 'lovr'
 local lovr = lovr
 
 local conf = {
-  version = '0.17.1',
+  version = '0.18.0',
   identity = 'default',
   saveprecedence = true,
   modules = {

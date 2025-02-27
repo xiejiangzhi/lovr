@@ -1066,12 +1066,12 @@ static int l_lovrPassCompute(lua_State* L) {
   Buffer* buffer = luax_totype(L, 2, Buffer);
   if (buffer) {
     uint32_t offset = lua_tointeger(L, 3);
-    lovrPassCompute(pass, 0, 0, 0, buffer, offset);
+    luax_assert(L, lovrPassCompute(pass, 0, 0, 0, buffer, offset));
   } else {
     uint32_t x = luax_optu32(L, 2, 1);
     uint32_t y = luax_optu32(L, 3, 1);
     uint32_t z = luax_optu32(L, 4, 1);
-    lovrPassCompute(pass, x, y, z, NULL, 0);
+    luax_assert(L, lovrPassCompute(pass, x, y, z, NULL, 0));
   }
   return 0;
 }

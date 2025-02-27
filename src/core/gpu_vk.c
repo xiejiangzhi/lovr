@@ -1,5 +1,7 @@
 #include "gpu.h"
 #include <string.h>
+#include <threads.h>
+#include <stdatomic.h>
 
 #ifdef _WIN32
 #define THREAD_LOCAL __declspec(thread)
@@ -84,6 +86,7 @@ struct gpu_tally {
 
 struct gpu_stream {
   VkCommandBuffer commands;
+  gpu_stream* next;
 };
 
 size_t gpu_sizeof_buffer(void) { return sizeof(gpu_buffer); }
@@ -98,6 +101,8 @@ size_t gpu_sizeof_pipeline(void) { return sizeof(gpu_pipeline); }
 size_t gpu_sizeof_tally(void) { return sizeof(gpu_tally); }
 
 // Internals
+
+#define TICK_DEPTH 2
 
 struct gpu_memory {
   VkDeviceMemory handle;
@@ -157,11 +162,18 @@ typedef struct {
 } gpu_surface;
 
 typedef struct {
-  VkCommandPool pool;
-  gpu_stream streams[64];
-  VkSemaphore semaphores[2];
+  VkSemaphore acquireSemaphore;
+  VkSemaphore presentSemaphore;
   VkFence fence;
 } gpu_tick;
+
+typedef struct gpu_stream_pool {
+  struct gpu_stream_pool* next;
+  VkCommandPool handle;
+  gpu_stream* head;
+  gpu_stream* tail;
+  uint32_t tick;
+} gpu_stream_pool;
 
 typedef struct {
   bool portability;
@@ -183,6 +195,7 @@ typedef struct {
 // State
 
 static THREAD_LOCAL struct {
+  gpu_stream_pool streamPools[TICK_DEPTH];
   char error[256];
 } thread;
 
@@ -201,9 +214,10 @@ static struct {
   gpu_allocator allocators[GPU_MEMORY_COUNT];
   uint8_t allocatorLookup[GPU_MEMORY_COUNT];
   gpu_memory memory[1024];
-  uint32_t streamCount;
-  uint32_t tick[2];
-  gpu_tick ticks[2];
+  uint32_t tick;
+  uint32_t lastTickFinished;
+  gpu_tick ticks[TICK_DEPTH];
+  gpu_stream_pool* streamPools;
   gpu_morgue morgue;
 } state;
 
@@ -219,7 +233,7 @@ enum { LINEAR, SRGB };
 #define LOG(s) if (state.config.fnLog) state.config.fnLog(state.config.userdata, s)
 #define VK(f, s) if (!vkcheck(f, s))
 #define ASSERT(c, s) if (!(c) && (error(s), true))
-#define TICK_MASK (COUNTOF(state.ticks) - 1)
+#define TICK_MASK (TICK_DEPTH - 1)
 #define MORGUE_MASK (COUNTOF(state.morgue.data) - 1)
 
 static gpu_memory* allocate(gpu_memory_type type, VkMemoryRequirements info, VkDeviceSize* offset);
@@ -924,8 +938,8 @@ bool gpu_surface_acquire(gpu_texture** texture) {
   }
 
   gpu_surface* surface = &state.surface;
-  gpu_tick* tick = &state.ticks[state.tick[CPU] & TICK_MASK];
-  VkResult result = vkAcquireNextImageKHR(state.device, surface->swapchain, UINT64_MAX, tick->semaphores[0], VK_NULL_HANDLE, &surface->imageIndex);
+  VkSemaphore semaphore = state.ticks[state.tick & TICK_MASK].acquireSemaphore;
+  VkResult result = vkAcquireNextImageKHR(state.device, surface->swapchain, UINT64_MAX, semaphore, VK_NULL_HANDLE, &surface->imageIndex);
 
   if (result == VK_ERROR_OUT_OF_DATE_KHR) {
     surface->imageIndex = ~0u;
@@ -937,13 +951,13 @@ bool gpu_surface_acquire(gpu_texture** texture) {
     return false;
   }
 
-  surface->semaphore = tick->semaphores[0];
   *texture = &surface->images[surface->imageIndex];
+  surface->semaphore = semaphore;
   return true;
 }
 
 bool gpu_surface_present(void) {
-  VkSemaphore semaphore = state.ticks[state.tick[CPU] & TICK_MASK].semaphores[1];
+  VkSemaphore semaphore = state.ticks[state.tick & TICK_MASK].presentSemaphore;
 
   VkSubmitInfo submit = {
     .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -1857,10 +1871,58 @@ void gpu_tally_destroy(gpu_tally* tally) {
 // Stream
 
 gpu_stream* gpu_stream_begin(const char* label) {
-  gpu_tick* tick = &state.ticks[state.tick[CPU] & TICK_MASK];
-  ASSERT(state.streamCount < COUNTOF(tick->streams), "Too many passes") return NULL;
-  gpu_stream* stream = &tick->streams[state.streamCount];
-  nickname(stream->commands, VK_OBJECT_TYPE_COMMAND_BUFFER, label);
+  gpu_stream_pool* pool = &thread.streamPools[state.tick & TICK_MASK];
+
+  if (!pool->handle) {
+    VkCommandPoolCreateInfo poolInfo = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+      .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+      .queueFamilyIndex = state.queueFamilyIndex
+    };
+
+    VK(vkCreateCommandPool(state.device, &poolInfo, NULL, &pool->handle), "vkCreateCommandPool") return NULL;
+
+    pool->next = state.streamPools;
+    while (!atomic_compare_exchange_strong(&state.streamPools, &pool->next, pool)) {
+      continue;
+    }
+
+    pool->head = NULL;
+    pool->tail = NULL;
+    pool->tick = state.tick;
+  }
+
+  if (pool->tick != state.tick) {
+    VK(vkResetCommandPool(state.device, pool->handle, 0), "vkResetCommandPool") return NULL;
+    pool->tick = state.tick;
+    pool->tail = NULL;
+  }
+
+  gpu_stream* stream = pool->tail ? pool->tail->next : pool->head;
+
+  if (!stream) {
+    stream = state.config.fnAlloc(sizeof(gpu_stream));
+    ASSERT(stream, "Out of memory") return NULL;
+    stream->next = NULL;
+
+    VkCommandBufferAllocateInfo info = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+      .commandPool = pool->handle,
+      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+      .commandBufferCount = 1
+    };
+
+    VK(vkAllocateCommandBuffers(state.device, &info, &stream->commands), "vkAllocateCommandBuffers") {
+      state.config.fnFree(stream);
+      return NULL;
+    }
+
+    if (pool->tail) {
+      pool->tail->next = stream;
+    } else {
+      pool->head = stream;
+    }
+  }
 
   VkCommandBufferBeginInfo beginfo = {
     .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1868,7 +1930,8 @@ gpu_stream* gpu_stream_begin(const char* label) {
   };
 
   VK(vkBeginCommandBuffer(stream->commands, &beginfo), "vkBeginCommandBuffer") return NULL;
-  state.streamCount++;
+  nickname(stream->commands, VK_OBJECT_TYPE_COMMAND_BUFFER, label);
+  pool->tail = stream;
   return stream;
 }
 
@@ -2806,39 +2869,20 @@ bool gpu_init(gpu_config* config) {
     }
   }
 
-  // Ticks
-  for (uint32_t i = 0; i < COUNTOF(state.ticks); i++) {
-    VkCommandPoolCreateInfo poolInfo = {
-      .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-      .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
-      .queueFamilyIndex = state.queueFamilyIndex
-    };
+  // Per-tick resources
+  for (uint32_t i = 0; i < TICK_DEPTH; i++) {
+    gpu_tick* tick = &state.ticks[i];
 
-    VK(vkCreateCommandPool(state.device, &poolInfo, NULL, &state.ticks[i].pool), "vkCreateCommandPool") goto fail;
-
-    VkCommandBufferAllocateInfo allocateInfo = {
-      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-      .commandPool = state.ticks[i].pool,
-      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-      .commandBufferCount = COUNTOF(state.ticks[i].streams)
-    };
-
-    VkCommandBuffer* commandBuffers = &state.ticks[i].streams[0].commands;
-    VK(vkAllocateCommandBuffers(state.device, &allocateInfo, commandBuffers), "vkAllocateCommandBuffers") goto fail;
-
-    VkSemaphoreCreateInfo semaphoreInfo = {
-      .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
-    };
-
-    VK(vkCreateSemaphore(state.device, &semaphoreInfo, NULL, &state.ticks[i].semaphores[0]), "vkCreateSemaphore") goto fail;
-    VK(vkCreateSemaphore(state.device, &semaphoreInfo, NULL, &state.ticks[i].semaphores[1]), "vkCreateSemaphore") goto fail;
+    VkSemaphoreCreateInfo semaphoreInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+    VK(vkCreateSemaphore(state.device, &semaphoreInfo, NULL, &tick->acquireSemaphore), "vkCreateSemaphore") goto fail;
+    VK(vkCreateSemaphore(state.device, &semaphoreInfo, NULL, &tick->presentSemaphore), "vkCreateSemaphore") goto fail;
 
     VkFenceCreateInfo fenceInfo = {
       .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
       .flags = VK_FENCE_CREATE_SIGNALED_BIT
     };
 
-    VK(vkCreateFence(state.device, &fenceInfo, NULL, &state.ticks[i].fence), "vkCreateFence") goto fail;
+    VK(vkCreateFence(state.device, &fenceInfo, NULL, &tick->fence), "vkCreateFence") goto fail;
   }
 
   // Pipeline cache
@@ -2860,7 +2904,7 @@ bool gpu_init(gpu_config* config) {
 
   VK(vkCreatePipelineCache(state.device, &cacheInfo, NULL, &state.pipelineCache), "vkCreatePipelineCache") goto fail;
 
-  state.tick[CPU] = COUNTOF(state.ticks) - 1;
+  state.tick = TICK_DEPTH - 1;
   return true;
 
 fail:
@@ -2870,14 +2914,24 @@ fail:
 
 void gpu_destroy(void) {
   if (state.device) vkDeviceWaitIdle(state.device);
-  state.tick[GPU] = state.tick[CPU];
+  state.lastTickFinished = state.tick;
   expunge();
+  for (gpu_stream_pool* pool = state.streamPools; pool; pool = pool->next) {
+    vkDestroyCommandPool(state.device, pool->handle, NULL);
+    for (gpu_stream* stream = pool->head, *next; stream; stream = next) {
+      next = stream->next;
+      state.config.fnFree(stream);
+    }
+    pool->handle = VK_NULL_HANDLE;
+    pool->head = NULL;
+    pool->tail = NULL;
+    pool->tick = 0;
+  }
   if (state.pipelineCache) vkDestroyPipelineCache(state.device, state.pipelineCache, NULL);
-  for (uint32_t i = 0; i < COUNTOF(state.ticks); i++) {
+  for (uint32_t i = 0; i < TICK_DEPTH; i++) {
     gpu_tick* tick = &state.ticks[i];
-    if (tick->pool) vkDestroyCommandPool(state.device, tick->pool, NULL);
-    if (tick->semaphores[0]) vkDestroySemaphore(state.device, tick->semaphores[0], NULL);
-    if (tick->semaphores[1]) vkDestroySemaphore(state.device, tick->semaphores[1], NULL);
+    if (tick->acquireSemaphore) vkDestroySemaphore(state.device, tick->acquireSemaphore, NULL);
+    if (tick->presentSemaphore) vkDestroySemaphore(state.device, tick->presentSemaphore, NULL);
     if (tick->fence) vkDestroyFence(state.device, tick->fence, NULL);
   }
   for (uint32_t i = 0; i < COUNTOF(state.memory); i++) {
@@ -2903,29 +2957,39 @@ const char* gpu_get_error(void) {
   return thread.error;
 }
 
-bool gpu_begin(uint32_t* t) {
-  uint32_t nextTick = state.tick[CPU] + 1;
-  if (!gpu_wait_tick(nextTick - COUNTOF(state.ticks), NULL)) {
-    return false;
+bool gpu_begin(uint32_t* tick) {
+  uint32_t nextTick = state.tick + 1;
+  uint32_t pendingTick = nextTick - TICK_DEPTH;
+  VkFence fence = state.ticks[pendingTick & TICK_MASK].fence;
+
+  // Wait for the fence if needed
+  if (state.lastTickFinished < pendingTick) {
+    VK(vkWaitForFences(state.device, 1, &fence, VK_FALSE, ~0ull), "vkWaitForFences") return false;
+    state.lastTickFinished = pendingTick;
   }
 
-  gpu_tick* tick = &state.ticks[nextTick & TICK_MASK];
-  VK(vkResetFences(state.device, 1, &tick->fence), "vkResetFences") return false;
-  VK(vkResetCommandPool(state.device, tick->pool, 0), "vkResetCommandPool") return false;
-  state.streamCount = 0;
+  // Reset the fence
+  VK(vkResetFences(state.device, 1, &fence), "vkResetFences") return false;
+
+  // Free any destroyed resources that are no longer in use
   expunge();
 
-  state.tick[CPU] = nextTick;
-  if (t) *t = nextTick;
+  if (tick) *tick = nextTick;
+  state.tick = nextTick;
   return true;
 }
 
 bool gpu_submit(gpu_stream** streams, uint32_t count) {
-  gpu_tick* tick = &state.ticks[state.tick[CPU] & TICK_MASK];
+  VkCommandBuffer stack[64];
+  VkCommandBuffer* commandBuffers = stack;
 
-  VkCommandBuffer commands[COUNTOF(tick->streams)];
+  if (count > COUNTOF(stack)) {
+    commandBuffers = state.config.fnAlloc(count * sizeof(VkCommandBuffer));
+    ASSERT(commandBuffers, "Out of memory") return false;
+  }
+
   for (uint32_t i = 0; i < count; i++) {
-    commands[i] = streams[i]->commands;
+    commandBuffers[i] = streams[i]->commands;
   }
 
   VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR;
@@ -2936,24 +3000,29 @@ bool gpu_submit(gpu_stream** streams, uint32_t count) {
     .pWaitSemaphores = &state.surface.semaphore,
     .pWaitDstStageMask = &waitStage,
     .commandBufferCount = count,
-    .pCommandBuffers = commands
+    .pCommandBuffers = commandBuffers
   };
 
-  VK(vkQueueSubmit(state.queue, 1, &submit, tick->fence), "vkQueueSubmit") return false;
+  VkFence fence = state.ticks[state.tick & TICK_MASK].fence;
+  VK(vkQueueSubmit(state.queue, 1, &submit, fence), "vkQueueSubmit") {
+    if (commandBuffers != stack) state.config.fnFree(commandBuffers);
+    return false;
+  }
+
   state.surface.semaphore = VK_NULL_HANDLE;
   return true;
 }
 
 bool gpu_is_complete(uint32_t tick) {
-  return state.tick[GPU] >= tick;
+  return state.lastTickFinished >= tick;
 }
 
 bool gpu_wait_tick(uint32_t tick, bool* waited) {
-  if (state.tick[GPU] < tick) {
+  if (state.lastTickFinished < tick && tick < state.tick) {
     VkFence fence = state.ticks[tick & TICK_MASK].fence;
     VK(vkWaitForFences(state.device, 1, &fence, VK_FALSE, ~0ull), "vkWaitForFences") return false;
+    state.lastTickFinished = tick;
     if (waited) *waited = true;
-    state.tick[GPU] = tick;
     return true;
   } else {
     if (waited) *waited = false;
@@ -2963,7 +3032,7 @@ bool gpu_wait_tick(uint32_t tick, bool* waited) {
 
 bool gpu_wait_idle(void) {
   VK(vkDeviceWaitIdle(state.device), "vkDeviceWaitIdle") return false;
-  state.tick[GPU] = state.tick[CPU];
+  state.lastTickFinished = state.tick;
   return true;
 }
 
@@ -3028,13 +3097,13 @@ static gpu_memory* allocate(gpu_memory_type type, VkMemoryRequirements info, VkD
         .memoryTypeIndex = allocator->memoryType
       };
 
-      VK(vkAllocateMemory(state.device, &memoryInfo, NULL, &memory->handle), "Failed to allocate GPU memory") {
+      VK(vkAllocateMemory(state.device, &memoryInfo, NULL, &memory->handle), "vkAllocateMemory") {
         allocator->block = NULL;
         return NULL;
       }
 
       if (allocator->memoryFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
-        VK(vkMapMemory(state.device, memory->handle, 0, VK_WHOLE_SIZE, 0, &memory->pointer), "Failed to map memory") {
+        VK(vkMapMemory(state.device, memory->handle, 0, VK_WHOLE_SIZE, 0, &memory->pointer), "vkMapMemory") {
           vkFreeMemory(state.device, memory->handle, NULL);
           memory->handle = NULL;
           return NULL;
@@ -3087,12 +3156,12 @@ static void condemn(void* handle, VkObjectType type) {
     ASSERT(morgue->head - morgue->tail < COUNTOF(morgue->data), "Morgue overflow!") return;
   }
 
-  morgue->data[morgue->head++ & MORGUE_MASK] = (gpu_victim) { handle, type, state.tick[CPU] };
+  morgue->data[morgue->head++ & MORGUE_MASK] = (gpu_victim) { handle, type, state.tick };
 }
 
 static void expunge(void) {
   gpu_morgue* morgue = &state.morgue;
-  while (morgue->tail != morgue->head && state.tick[GPU] >= morgue->data[morgue->tail & MORGUE_MASK].tick) {
+  while (morgue->tail != morgue->head && state.lastTickFinished >= morgue->data[morgue->tail & MORGUE_MASK].tick) {
     gpu_victim* victim = &morgue->data[morgue->tail++ & MORGUE_MASK];
     switch (victim->type) {
       case VK_OBJECT_TYPE_BUFFER: vkDestroyBuffer(state.device, victim->handle, NULL); break;

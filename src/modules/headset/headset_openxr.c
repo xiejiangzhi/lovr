@@ -142,10 +142,11 @@ XR_FOREACH_PLATFORM(XR_DECLARE)
 
 enum {
   ACTION_NONE,
-  ACTION_PINCH_POSE,
-  ACTION_POKE_POSE,
   ACTION_GRIP_POSE,
   ACTION_POINTER_POSE,
+  ACTION_PINCH_POSE,
+  ACTION_POKE_POSE,
+  ACTION_PALM_POSE,
   ACTION_TRACKER_POSE,
   ACTION_STYLUS_POSE,
   ACTION_GAZE_POSE,
@@ -198,9 +199,6 @@ struct Layer {
   union {
     XrCompositionLayerBaseHeader header;
     XrCompositionLayerQuad quad;
-    XrCompositionLayerCubeKHR cube;
-    XrCompositionLayerEquirectKHR equirect;
-    XrCompositionLayerEquirect2KHR equirect2;
     XrCompositionLayerCylinderKHR cylinder;
   };
   XrCompositionLayerColorScaleBiasKHR color;
@@ -209,16 +207,17 @@ struct Layer {
 };
 
 enum {
-  COLOR,
-  DEPTH
+  SWAPCHAIN_COLOR,
+  SWAPCHAIN_DEPTH,
+  SWAPCHAIN_BACKGROUND
 };
 
 enum {
-  FLAG_STEREO = (1 << 0),
-  FLAG_DEPTH = (1 << 1),
-  FLAG_CUBE = (1 << 2),
-  FLAG_STATIC = (1 << 3),
-  FLAG_FOVEATED = (1 << 4)
+  STEREO = (1 << 0),
+  DEPTH = (1 << 1),
+  CUBE = (1 << 2),
+  STATIC = (1 << 3),
+  FOVEATED = (1 << 4)
 };
 
 static struct {
@@ -236,11 +235,17 @@ static struct {
   XrSpace spaces[MAX_DEVICES];
   TextureFormat depthFormat;
   Pass* pass;
-  Swapchain swapchains[2];
+  Swapchain swapchains[3];
   XrCompositionLayerProjection layer;
   XrCompositionLayerProjectionView layerViews[2];
   XrCompositionLayerDepthInfoKHR depthInfo[2];
   XrCompositionLayerPassthroughFB passthroughLayer;
+  union {
+    XrCompositionLayerBaseHeader header;
+    XrCompositionLayerCubeKHR cube;
+    XrCompositionLayerEquirectKHR equirect;
+    XrCompositionLayerEquirect2KHR equirect2;
+  } background;
   Layer* layers[MAX_LAYERS];
   uint32_t layerCount;
   bool showMainLayer;
@@ -276,7 +281,6 @@ static struct {
     bool gaze;
     bool handInteraction;
     bool handTracking;
-    bool handTrackingAim;
     bool handTrackingDataSource;
     bool handTrackingElbow;
     bool handTrackingMesh;
@@ -295,6 +299,7 @@ static struct {
     bool ml2Controller;
     bool mxInk;
     bool overlay;
+    bool palmPose;
     bool passthroughPreferences;
     bool picoController;
     bool presence;
@@ -430,15 +435,18 @@ static XrAction getPoseActionForDevice(Device device) {
     case DEVICE_HAND_LEFT_GRIP:
     case DEVICE_HAND_RIGHT_GRIP:
       return state.actions[ACTION_GRIP_POSE];
+    case DEVICE_HAND_LEFT_POINT:
+    case DEVICE_HAND_RIGHT_POINT:
+      return state.actions[ACTION_POINTER_POSE];
     case DEVICE_HAND_LEFT_PINCH:
     case DEVICE_HAND_RIGHT_PINCH:
       return state.extensions.handInteraction ? state.actions[ACTION_PINCH_POSE] : XR_NULL_HANDLE;
     case DEVICE_HAND_LEFT_POKE:
     case DEVICE_HAND_RIGHT_POKE:
       return state.extensions.handInteraction ? state.actions[ACTION_POKE_POSE] : XR_NULL_HANDLE;
-    case DEVICE_HAND_LEFT_POINT:
-    case DEVICE_HAND_RIGHT_POINT:
-      return state.actions[ACTION_POINTER_POSE];
+    case DEVICE_HAND_LEFT_PALM:
+    case DEVICE_HAND_RIGHT_PALM:
+      return state.extensions.palmPose ? state.actions[ACTION_PALM_POSE] : XR_NULL_HANDLE;
     case DEVICE_ELBOW_LEFT:
     case DEVICE_ELBOW_RIGHT:
     case DEVICE_SHOULDER_LEFT:
@@ -607,11 +615,11 @@ static bool loadVisibilityMask(void) {
 }
 
 static bool swapchain_init(Swapchain* swapchain, uint32_t width, uint32_t height, uint32_t flags) {
-  bool stereo = flags & FLAG_STEREO;
-  bool depth = flags & FLAG_DEPTH;
-  bool cube = flags & FLAG_CUBE;
-  bool immutable = flags & FLAG_STATIC;
-  bool foveated = flags & FLAG_FOVEATED;
+  bool stereo = flags & STEREO;
+  bool depth = flags & DEPTH;
+  bool cube = flags & CUBE;
+  bool immutable = flags & STATIC;
+  bool foveated = flags & FOVEATED;
 
   XrSwapchainCreateInfo info = {
     .type = XR_TYPE_SWAPCHAIN_CREATE_INFO,
@@ -891,6 +899,7 @@ static bool openxr_init(HeadsetConfig* config) {
     { "XR_EXT_hand_tracking", &state.extensions.handTracking, true },
     { "XR_EXT_hand_tracking_data_source", &state.extensions.handTrackingDataSource, true },
     { "XR_EXT_local_floor", &state.extensions.localFloor, true },
+    { "XR_EXT_palm_pose", &state.extensions.palmPose, true },
     { "XR_EXT_user_presence", &state.extensions.presence, true },
     { "XR_BD_controller_interaction", &state.extensions.picoController, true },
     { "XR_FB_composition_layer_depth_test", &state.extensions.layerDepthTest, true },
@@ -899,7 +908,6 @@ static bool openxr_init(HeadsetConfig* config) {
     { "XR_FB_foveation", &state.extensions.foveation, true },
     { "XR_FB_foveation_configuration", &state.extensions.foveationConfig, true },
     { "XR_FB_foveation_vulkan", &state.extensions.foveationVulkan, true },
-    { "XR_FB_hand_tracking_aim", &state.extensions.handTrackingAim, true },
     { "XR_FB_hand_tracking_mesh", &state.extensions.handTrackingMesh, true },
     { "XR_FB_keyboard_tracking", &state.extensions.keyboardTracking, true },
     { "XR_FB_passthrough", &state.extensions.questPassthrough, true },
@@ -1072,10 +1080,12 @@ static bool openxr_init(HeadsetConfig* config) {
   state.actionFilters[DEVICE_HAND_LEFT_POINT] = state.actionFilters[DEVICE_HAND_LEFT];
   state.actionFilters[DEVICE_HAND_LEFT_PINCH] = state.actionFilters[DEVICE_HAND_LEFT];
   state.actionFilters[DEVICE_HAND_LEFT_POKE] = state.actionFilters[DEVICE_HAND_LEFT];
+  state.actionFilters[DEVICE_HAND_LEFT_PALM] = state.actionFilters[DEVICE_HAND_LEFT];
   state.actionFilters[DEVICE_HAND_RIGHT_GRIP] = state.actionFilters[DEVICE_HAND_RIGHT];
   state.actionFilters[DEVICE_HAND_RIGHT_POINT] = state.actionFilters[DEVICE_HAND_RIGHT];
   state.actionFilters[DEVICE_HAND_RIGHT_PINCH] = state.actionFilters[DEVICE_HAND_RIGHT];
   state.actionFilters[DEVICE_HAND_RIGHT_POKE] = state.actionFilters[DEVICE_HAND_RIGHT];
+  state.actionFilters[DEVICE_HAND_RIGHT_PALM] = state.actionFilters[DEVICE_HAND_RIGHT];
 
   if (state.extensions.viveTrackers) {
     XR_INIT(xrStringToPath(state.instance, "/user/vive_tracker_htcx/role/left_elbow", &state.actionFilters[DEVICE_ELBOW_LEFT]), "Failed to create path");
@@ -1114,10 +1124,11 @@ static bool openxr_init(HeadsetConfig* config) {
 
   XrActionCreateInfo actionInfo[] = {
     { 0, NULL },
-    { 0, NULL, "pinch_pose",       XR_ACTION_TYPE_POSE_INPUT,       2, hands, "Pinch Pose" },
-    { 0, NULL, "poke_pose",        XR_ACTION_TYPE_POSE_INPUT,       2, hands, "Poke Pose" },
     { 0, NULL, "grip_pose",        XR_ACTION_TYPE_POSE_INPUT,       2, hands, "Grip Pose" },
     { 0, NULL, "pointer_pose",     XR_ACTION_TYPE_POSE_INPUT,       2, hands, "Pointer Pose" },
+    { 0, NULL, "pinch_pose",       XR_ACTION_TYPE_POSE_INPUT,       2, hands, "Pinch Pose" },
+    { 0, NULL, "poke_pose",        XR_ACTION_TYPE_POSE_INPUT,       2, hands, "Poke Pose" },
+    { 0, NULL, "palm_pose",        XR_ACTION_TYPE_POSE_INPUT,       2, hands, "Palm Pose" },
     { 0, NULL, "tracker_pose",     XR_ACTION_TYPE_POSE_INPUT,       12, trackers, "Tracker Pose" },
     { 0, NULL, "stylus_pose",      XR_ACTION_TYPE_POSE_INPUT,       0, NULL, "Stylus Pose" },
     { 0, NULL, "gaze_pose",        XR_ACTION_TYPE_POSE_INPUT,       0, NULL, "Gaze Pose" },
@@ -1179,6 +1190,7 @@ static bool openxr_init(HeadsetConfig* config) {
     PROFILE_TRACKER,
     PROFILE_MX_INK,
     PROFILE_GAZE,
+    PROFILE_HAND,
     MAX_PROFILES
   };
 
@@ -1194,7 +1206,8 @@ static bool openxr_init(HeadsetConfig* config) {
     [PROFILE_PICO4] = "/interaction_profiles/bytedance/pico4_controller",
     [PROFILE_TRACKER] = "/interaction_profiles/htc/vive_tracker_htcx",
     [PROFILE_MX_INK] = "/interaction_profiles/logitech/mx_ink_stylus_logitech",
-    [PROFILE_GAZE] = "/interaction_profiles/ext/eye_gaze_interaction"
+    [PROFILE_GAZE] = "/interaction_profiles/ext/eye_gaze_interaction",
+    [PROFILE_HAND] = "/interaction_profiles/ext/hand_interaction_ext"
   };
 
   typedef struct {
@@ -1204,14 +1217,16 @@ static bool openxr_init(HeadsetConfig* config) {
 
   Binding* bindings[] = {
     [PROFILE_SIMPLE] = (Binding[]) {
-      { ACTION_PINCH_POSE, "/user/hand/left/input/pinch_ext/pose" },
-      { ACTION_PINCH_POSE, "/user/hand/right/input/pinch_ext/pose" },
-      { ACTION_POKE_POSE, "/user/hand/left/input/poke_ext/pose" },
-      { ACTION_POKE_POSE, "/user/hand/right/input/poke_ext/pose" },
       { ACTION_GRIP_POSE, "/user/hand/left/input/grip/pose" },
       { ACTION_GRIP_POSE, "/user/hand/right/input/grip/pose" },
       { ACTION_POINTER_POSE, "/user/hand/left/input/aim/pose" },
       { ACTION_POINTER_POSE, "/user/hand/right/input/aim/pose" },
+      { ACTION_PINCH_POSE, "/user/hand/left/input/pinch_ext/pose" },
+      { ACTION_PINCH_POSE, "/user/hand/right/input/pinch_ext/pose" },
+      { ACTION_POKE_POSE, "/user/hand/left/input/poke_ext/pose" },
+      { ACTION_POKE_POSE, "/user/hand/right/input/poke_ext/pose" },
+      { ACTION_PALM_POSE, "/user/hand/left/input/palm_ext/pose" },
+      { ACTION_PALM_POSE, "/user/hand/right/input/palm_ext/pose" },
       { ACTION_TRIGGER_DOWN, "/user/hand/left/input/select/click" },
       { ACTION_TRIGGER_DOWN, "/user/hand/right/input/select/click" },
       { ACTION_MENU_DOWN, "/user/hand/left/input/menu/click" },
@@ -1221,14 +1236,16 @@ static bool openxr_init(HeadsetConfig* config) {
       { 0, NULL }
     },
     [PROFILE_VIVE] = (Binding[]) {
-      { ACTION_PINCH_POSE, "/user/hand/left/input/pinch_ext/pose" },
-      { ACTION_PINCH_POSE, "/user/hand/right/input/pinch_ext/pose" },
-      { ACTION_POKE_POSE, "/user/hand/left/input/poke_ext/pose" },
-      { ACTION_POKE_POSE, "/user/hand/right/input/poke_ext/pose" },
       { ACTION_GRIP_POSE, "/user/hand/left/input/grip/pose" },
       { ACTION_GRIP_POSE, "/user/hand/right/input/grip/pose" },
       { ACTION_POINTER_POSE, "/user/hand/left/input/aim/pose" },
       { ACTION_POINTER_POSE, "/user/hand/right/input/aim/pose" },
+      { ACTION_PINCH_POSE, "/user/hand/left/input/pinch_ext/pose" },
+      { ACTION_PINCH_POSE, "/user/hand/right/input/pinch_ext/pose" },
+      { ACTION_POKE_POSE, "/user/hand/left/input/poke_ext/pose" },
+      { ACTION_POKE_POSE, "/user/hand/right/input/poke_ext/pose" },
+      { ACTION_PALM_POSE, "/user/hand/left/input/palm_ext/pose" },
+      { ACTION_PALM_POSE, "/user/hand/right/input/palm_ext/pose" },
       { ACTION_TRIGGER_DOWN, "/user/hand/left/input/trigger/click" },
       { ACTION_TRIGGER_DOWN, "/user/hand/right/input/trigger/click" },
       { ACTION_TRIGGER_AXIS, "/user/hand/left/input/trigger/value" },
@@ -1248,14 +1265,16 @@ static bool openxr_init(HeadsetConfig* config) {
       { 0, NULL }
     },
     [PROFILE_TOUCH] = (Binding[]) {
-      { ACTION_PINCH_POSE, "/user/hand/left/input/pinch_ext/pose" },
-      { ACTION_PINCH_POSE, "/user/hand/right/input/pinch_ext/pose" },
-      { ACTION_POKE_POSE, "/user/hand/left/input/poke_ext/pose" },
-      { ACTION_POKE_POSE, "/user/hand/right/input/poke_ext/pose" },
       { ACTION_GRIP_POSE, "/user/hand/left/input/grip/pose" },
       { ACTION_GRIP_POSE, "/user/hand/right/input/grip/pose" },
       { ACTION_POINTER_POSE, "/user/hand/left/input/aim/pose" },
       { ACTION_POINTER_POSE, "/user/hand/right/input/aim/pose" },
+      { ACTION_PINCH_POSE, "/user/hand/left/input/pinch_ext/pose" },
+      { ACTION_PINCH_POSE, "/user/hand/right/input/pinch_ext/pose" },
+      { ACTION_POKE_POSE, "/user/hand/left/input/poke_ext/pose" },
+      { ACTION_POKE_POSE, "/user/hand/right/input/poke_ext/pose" },
+      { ACTION_PALM_POSE, "/user/hand/left/input/palm_ext/pose" },
+      { ACTION_PALM_POSE, "/user/hand/right/input/palm_ext/pose" },
       { ACTION_TRIGGER_DOWN, "/user/hand/left/input/trigger/value" },
       { ACTION_TRIGGER_DOWN, "/user/hand/right/input/trigger/value" },
       { ACTION_TRIGGER_TOUCH, "/user/hand/left/input/trigger/touch" },
@@ -1289,14 +1308,16 @@ static bool openxr_init(HeadsetConfig* config) {
       { 0, NULL }
     },
     [PROFILE_GO] = (Binding[]) {
-      { ACTION_PINCH_POSE, "/user/hand/left/input/pinch_ext/pose" },
-      { ACTION_PINCH_POSE, "/user/hand/right/input/pinch_ext/pose" },
-      { ACTION_POKE_POSE, "/user/hand/left/input/poke_ext/pose" },
-      { ACTION_POKE_POSE, "/user/hand/right/input/poke_ext/pose" },
       { ACTION_GRIP_POSE, "/user/hand/left/input/grip/pose" },
       { ACTION_GRIP_POSE, "/user/hand/right/input/grip/pose" },
       { ACTION_POINTER_POSE, "/user/hand/left/input/aim/pose" },
       { ACTION_POINTER_POSE, "/user/hand/right/input/aim/pose" },
+      { ACTION_PINCH_POSE, "/user/hand/left/input/pinch_ext/pose" },
+      { ACTION_PINCH_POSE, "/user/hand/right/input/pinch_ext/pose" },
+      { ACTION_POKE_POSE, "/user/hand/left/input/poke_ext/pose" },
+      { ACTION_POKE_POSE, "/user/hand/right/input/poke_ext/pose" },
+      { ACTION_PALM_POSE, "/user/hand/left/input/palm_ext/pose" },
+      { ACTION_PALM_POSE, "/user/hand/right/input/palm_ext/pose" },
       { ACTION_TRIGGER_DOWN, "/user/hand/left/input/trigger/click" },
       { ACTION_TRIGGER_DOWN, "/user/hand/right/input/trigger/click" },
       { ACTION_TRACKPAD_DOWN, "/user/hand/left/input/trackpad/click" },
@@ -1308,14 +1329,16 @@ static bool openxr_init(HeadsetConfig* config) {
       { 0, NULL }
     },
     [PROFILE_INDEX] = (Binding[]) {
-      { ACTION_PINCH_POSE, "/user/hand/left/input/pinch_ext/pose" },
-      { ACTION_PINCH_POSE, "/user/hand/right/input/pinch_ext/pose" },
-      { ACTION_POKE_POSE, "/user/hand/left/input/poke_ext/pose" },
-      { ACTION_POKE_POSE, "/user/hand/right/input/poke_ext/pose" },
       { ACTION_GRIP_POSE, "/user/hand/left/input/grip/pose" },
       { ACTION_GRIP_POSE, "/user/hand/right/input/grip/pose" },
       { ACTION_POINTER_POSE, "/user/hand/left/input/aim/pose" },
       { ACTION_POINTER_POSE, "/user/hand/right/input/aim/pose" },
+      { ACTION_PINCH_POSE, "/user/hand/left/input/pinch_ext/pose" },
+      { ACTION_PINCH_POSE, "/user/hand/right/input/pinch_ext/pose" },
+      { ACTION_POKE_POSE, "/user/hand/left/input/poke_ext/pose" },
+      { ACTION_POKE_POSE, "/user/hand/right/input/poke_ext/pose" },
+      { ACTION_PALM_POSE, "/user/hand/left/input/palm_ext/pose" },
+      { ACTION_PALM_POSE, "/user/hand/right/input/palm_ext/pose" },
       { ACTION_TRIGGER_DOWN, "/user/hand/left/input/trigger/click" },
       { ACTION_TRIGGER_DOWN, "/user/hand/right/input/trigger/click" },
       { ACTION_TRIGGER_TOUCH, "/user/hand/left/input/trigger/touch" },
@@ -1353,14 +1376,16 @@ static bool openxr_init(HeadsetConfig* config) {
       { 0, NULL }
     },
     [PROFILE_WMR] = (Binding[]) {
-      { ACTION_PINCH_POSE, "/user/hand/left/input/pinch_ext/pose" },
-      { ACTION_PINCH_POSE, "/user/hand/right/input/pinch_ext/pose" },
-      { ACTION_POKE_POSE, "/user/hand/left/input/poke_ext/pose" },
-      { ACTION_POKE_POSE, "/user/hand/right/input/poke_ext/pose" },
       { ACTION_GRIP_POSE, "/user/hand/left/input/grip/pose" },
       { ACTION_GRIP_POSE, "/user/hand/right/input/grip/pose" },
       { ACTION_POINTER_POSE, "/user/hand/left/input/aim/pose" },
       { ACTION_POINTER_POSE, "/user/hand/right/input/aim/pose" },
+      { ACTION_PINCH_POSE, "/user/hand/left/input/pinch_ext/pose" },
+      { ACTION_PINCH_POSE, "/user/hand/right/input/pinch_ext/pose" },
+      { ACTION_POKE_POSE, "/user/hand/left/input/poke_ext/pose" },
+      { ACTION_POKE_POSE, "/user/hand/right/input/poke_ext/pose" },
+      { ACTION_PALM_POSE, "/user/hand/left/input/palm_ext/pose" },
+      { ACTION_PALM_POSE, "/user/hand/right/input/palm_ext/pose" },
       { ACTION_TRIGGER_DOWN, "/user/hand/left/input/trigger/value" },
       { ACTION_TRIGGER_DOWN, "/user/hand/right/input/trigger/value" },
       { ACTION_TRIGGER_AXIS, "/user/hand/left/input/trigger/value" },
@@ -1386,14 +1411,16 @@ static bool openxr_init(HeadsetConfig* config) {
       { 0, NULL }
     },
     [PROFILE_ML2] = (Binding[]) {
-      { ACTION_PINCH_POSE, "/user/hand/left/input/pinch_ext/pose" },
-      { ACTION_PINCH_POSE, "/user/hand/right/input/pinch_ext/pose" },
-      { ACTION_POKE_POSE, "/user/hand/left/input/poke_ext/pose" },
-      { ACTION_POKE_POSE, "/user/hand/right/input/poke_ext/pose" },
       { ACTION_GRIP_POSE, "/user/hand/left/input/grip/pose" },
       { ACTION_GRIP_POSE, "/user/hand/right/input/grip/pose" },
       { ACTION_POINTER_POSE, "/user/hand/left/input/aim/pose" },
       { ACTION_POINTER_POSE, "/user/hand/right/input/aim/pose" },
+      { ACTION_PINCH_POSE, "/user/hand/left/input/pinch_ext/pose" },
+      { ACTION_PINCH_POSE, "/user/hand/right/input/pinch_ext/pose" },
+      { ACTION_POKE_POSE, "/user/hand/left/input/poke_ext/pose" },
+      { ACTION_POKE_POSE, "/user/hand/right/input/poke_ext/pose" },
+      { ACTION_PALM_POSE, "/user/hand/left/input/palm_ext/pose" },
+      { ACTION_PALM_POSE, "/user/hand/right/input/palm_ext/pose" },
       { ACTION_TRIGGER_DOWN, "/user/hand/left/input/trigger/click" },
       { ACTION_TRIGGER_DOWN, "/user/hand/right/input/trigger/click" },
       { ACTION_TRIGGER_AXIS, "/user/hand/left/input/trigger/value" },
@@ -1413,14 +1440,16 @@ static bool openxr_init(HeadsetConfig* config) {
       { 0, NULL }
     },
     [PROFILE_PICO_NEO3] = (Binding[]) {
-      { ACTION_PINCH_POSE, "/user/hand/left/input/pinch_ext/pose" },
-      { ACTION_PINCH_POSE, "/user/hand/right/input/pinch_ext/pose" },
-      { ACTION_POKE_POSE, "/user/hand/left/input/poke_ext/pose" },
-      { ACTION_POKE_POSE, "/user/hand/right/input/poke_ext/pose" },
       { ACTION_GRIP_POSE, "/user/hand/left/input/grip/pose" },
       { ACTION_GRIP_POSE, "/user/hand/right/input/grip/pose" },
       { ACTION_POINTER_POSE, "/user/hand/left/input/aim/pose" },
       { ACTION_POINTER_POSE, "/user/hand/right/input/aim/pose" },
+      { ACTION_PINCH_POSE, "/user/hand/left/input/pinch_ext/pose" },
+      { ACTION_PINCH_POSE, "/user/hand/right/input/pinch_ext/pose" },
+      { ACTION_POKE_POSE, "/user/hand/left/input/poke_ext/pose" },
+      { ACTION_POKE_POSE, "/user/hand/right/input/poke_ext/pose" },
+      { ACTION_PALM_POSE, "/user/hand/left/input/palm_ext/pose" },
+      { ACTION_PALM_POSE, "/user/hand/right/input/palm_ext/pose" },
       { ACTION_TRIGGER_DOWN, "/user/hand/left/input/trigger/click" },
       { ACTION_TRIGGER_DOWN, "/user/hand/right/input/trigger/click" },
       { ACTION_TRIGGER_TOUCH, "/user/hand/left/input/trigger/touch" },
@@ -1452,14 +1481,16 @@ static bool openxr_init(HeadsetConfig* config) {
       { 0, NULL }
     },
     [PROFILE_PICO4] = (Binding[]) {
-      { ACTION_PINCH_POSE, "/user/hand/left/input/pinch_ext/pose" },
-      { ACTION_PINCH_POSE, "/user/hand/right/input/pinch_ext/pose" },
-      { ACTION_POKE_POSE, "/user/hand/left/input/poke_ext/pose" },
-      { ACTION_POKE_POSE, "/user/hand/right/input/poke_ext/pose" },
       { ACTION_GRIP_POSE, "/user/hand/left/input/grip/pose" },
       { ACTION_GRIP_POSE, "/user/hand/right/input/grip/pose" },
       { ACTION_POINTER_POSE, "/user/hand/left/input/aim/pose" },
       { ACTION_POINTER_POSE, "/user/hand/right/input/aim/pose" },
+      { ACTION_PINCH_POSE, "/user/hand/left/input/pinch_ext/pose" },
+      { ACTION_PINCH_POSE, "/user/hand/right/input/pinch_ext/pose" },
+      { ACTION_POKE_POSE, "/user/hand/left/input/poke_ext/pose" },
+      { ACTION_POKE_POSE, "/user/hand/right/input/poke_ext/pose" },
+      { ACTION_PALM_POSE, "/user/hand/left/input/palm_ext/pose" },
+      { ACTION_PALM_POSE, "/user/hand/right/input/palm_ext/pose" },
       { ACTION_TRIGGER_DOWN, "/user/hand/left/input/trigger/value" },
       { ACTION_TRIGGER_DOWN, "/user/hand/right/input/trigger/value" },
       { ACTION_TRIGGER_TOUCH, "/user/hand/left/input/trigger/touch" },
@@ -1521,70 +1552,123 @@ static bool openxr_init(HeadsetConfig* config) {
       { ACTION_NIB_FORCE, "/user/hand/left/input/tip_logitech/force" },
       { ACTION_NIB_FORCE, "/user/hand/right/input/tip_logitech/force" },
       { ACTION_STYLUS_VIBRATE, "/user/hand/left/output/haptic" },
-      { ACTION_STYLUS_VIBRATE, "/user/hand/right/output/haptic" }
+      { ACTION_STYLUS_VIBRATE, "/user/hand/right/output/haptic" },
+      { 0, NULL }
     },
     [PROFILE_GAZE] = (Binding[]) {
       { ACTION_GAZE_POSE, "/user/eyes_ext/input/gaze_ext/pose" },
       { 0, NULL }
+    },
+    [PROFILE_HAND] = (Binding[]) {
+      { ACTION_GRIP_POSE, "/user/hand/left/input/grip/pose" },
+      { ACTION_GRIP_POSE, "/user/hand/right/input/grip/pose" },
+      { ACTION_POINTER_POSE, "/user/hand/left/input/aim/pose" },
+      { ACTION_POINTER_POSE, "/user/hand/right/input/aim/pose" },
+      { ACTION_PINCH_POSE, "/user/hand/left/input/pinch_ext/pose" },
+      { ACTION_PINCH_POSE, "/user/hand/right/input/pinch_ext/pose" },
+      { ACTION_POKE_POSE, "/user/hand/left/input/poke_ext/pose" },
+      { ACTION_POKE_POSE, "/user/hand/right/input/poke_ext/pose" },
+      { ACTION_PALM_POSE, "/user/hand/left/input/palm_ext/pose" },
+      { ACTION_PALM_POSE, "/user/hand/right/input/palm_ext/pose" },
+      { ACTION_TRIGGER_DOWN, "/user/hand/left/input/pinch_ext/value" },
+      { ACTION_TRIGGER_DOWN, "/user/hand/right/input/pinch_ext/value" },
+      { ACTION_TRIGGER_AXIS, "/user/hand/left/input/pinch_ext/value" },
+      { ACTION_TRIGGER_AXIS, "/user/hand/right/input/pinch_ext/value" },
+      { ACTION_GRIP_DOWN, "/user/hand/left/input/grasp_ext/value" },
+      { ACTION_GRIP_DOWN, "/user/hand/right/input/grasp_ext/value" },
+      { ACTION_GRIP_AXIS, "/user/hand/left/input/grasp_ext/value" },
+      { ACTION_GRIP_AXIS, "/user/hand/right/input/grasp_ext/value" },
+      { 0, NULL }
     }
   };
 
+  uint32_t bindingCount[MAX_PROFILES] = { 0 };
+
+  for (uint32_t i = 0; i < MAX_PROFILES; i++) {
+    for (uint32_t j = 0; bindings[i][j].path; j++) {
+      bindingCount[i]++;
+    }
+  }
+
   // Don't suggest bindings for unsupported input profiles
+
   if (!state.extensions.ml2Controller) {
-    bindings[PROFILE_ML2][0].path = NULL;
+    bindingCount[PROFILE_ML2] = 0;
   }
 
   if (!state.extensions.picoController) {
-    bindings[PROFILE_PICO_NEO3][0].path = NULL;
-    bindings[PROFILE_PICO4][0].path = NULL;
+    bindingCount[PROFILE_PICO_NEO3] = 0;
+    bindingCount[PROFILE_PICO4] = 0;
   }
 
   if (!state.extensions.viveTrackers) {
-    bindings[PROFILE_TRACKER][0].path = NULL;
+    bindingCount[PROFILE_TRACKER] = 0;
   }
 
   if (!state.extensions.mxInk) {
-    bindings[PROFILE_MX_INK][0].path = NULL;
+    bindingCount[PROFILE_MX_INK] = 0;
   }
 
   if (!state.extensions.gaze) {
-    bindings[PROFILE_GAZE][0].path = NULL;
+    bindingCount[PROFILE_GAZE] = 0;
   }
 
-  // For this to work, pinch/poke need to be the first paths in the interaction profile
   if (!state.extensions.handInteraction) {
-    bindings[PROFILE_SIMPLE] += 4;
-    bindings[PROFILE_VIVE] += 4;
-    bindings[PROFILE_TOUCH] += 4;
-    bindings[PROFILE_GO] += 4;
-    bindings[PROFILE_INDEX] += 4;
-    bindings[PROFILE_WMR] += 4;
-    if (state.extensions.ml2Controller) bindings[PROFILE_ML2] += 4;
-    if (state.extensions.picoController) bindings[PROFILE_PICO_NEO3] += 4;
-    if (state.extensions.picoController) bindings[PROFILE_PICO4] += 4;
+    bindingCount[PROFILE_HAND] = 0;
+  }
+
+  // Remove bindings for unsupported extensions
+
+  #define REMOVE_BINDINGS(bindings, length, index, count)\
+    if (index < length - count) memmove(&bindings[index], &bindings[index + count], (length - index - count) * sizeof(Binding));
+
+  if (!state.extensions.handInteraction) {
+    for (uint32_t i = 0; i < MAX_PROFILES; i++) {
+      for (uint32_t j = 0; j < bindingCount[i]; j++) {
+        if (bindings[i][j].action == ACTION_PINCH_POSE || bindings[i][j].action == ACTION_POKE_POSE) {
+          REMOVE_BINDINGS(bindings[i], bindingCount[i], j, 2);
+          bindingCount[i] -= 2;
+          i--;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!state.extensions.palmPose) {
+    for (uint32_t i = 0; i < MAX_PROFILES; i++) {
+      for (uint32_t j = 0; j < bindingCount[i]; j++) {
+        if (bindings[i][j].action == ACTION_PALM_POSE) {
+          REMOVE_BINDINGS(bindings[i], bindingCount[i], j, 2);
+          bindingCount[i] -= 2;
+          break;
+        }
+      }
+    }
   }
 
   XrPath path;
   XrActionSuggestedBinding suggestedBindings[64];
-  for (uint32_t i = 0, count = 0; i < MAX_PROFILES; i++, count = 0) {
-    for (uint32_t j = 0; bindings[i][j].path; j++, count++) {
+  for (uint32_t i = 0; i < MAX_PROFILES; i++) {
+    if (bindingCount[i] == 0) continue;
+
+    for (uint32_t j = 0; j < bindingCount[i]; j++) {
       XR_INIT(xrStringToPath(state.instance, bindings[i][j].path, &path), "Failed to create path");
       suggestedBindings[j].action = state.actions[bindings[i][j].action];
       suggestedBindings[j].binding = path;
     }
 
-    if (count > 0) {
-      XR_INIT(xrStringToPath(state.instance, interactionProfilePaths[i], &path), "Failed to create path");
-      result = (xrSuggestInteractionProfileBindings(state.instance, &(XrInteractionProfileSuggestedBinding) {
-        .type = XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING,
-        .interactionProfile = path,
-        .countSuggestedBindings = count,
-        .suggestedBindings = suggestedBindings
-      }));
+    XR_INIT(xrStringToPath(state.instance, interactionProfilePaths[i], &path), "Failed to create path");
 
-      if (XR_FAILED(result)) {
-        lovrLog(LOG_WARN, "XR", "Failed to suggest input bindings for %s", interactionProfilePaths[i]);
-      }
+    result = (xrSuggestInteractionProfileBindings(state.instance, &(XrInteractionProfileSuggestedBinding) {
+      .type = XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING,
+      .interactionProfile = path,
+      .countSuggestedBindings = bindingCount[i],
+      .suggestedBindings = suggestedBindings
+    }));
+
+    if (XR_FAILED(result)) {
+      lovrLog(LOG_WARN, "XR", "Failed to suggest input bindings for %s", interactionProfilePaths[i]);
     }
   }
 
@@ -1743,17 +1827,17 @@ static bool openxr_start(void) {
       }
     }
 
-    uint32_t flags = FLAG_STEREO | (state.extensions.foveation ? FLAG_FOVEATED : 0);
+    uint32_t flags = STEREO | (state.extensions.foveation ? FOVEATED : 0);
 
     lovrAssertGoto(stop, supportsColor, "This VR runtime does not support sRGB rgba8 textures");
-    if (!swapchain_init(&state.swapchains[COLOR], state.width, state.height, flags)) {
+    if (!swapchain_init(&state.swapchains[SWAPCHAIN_COLOR], state.width, state.height, flags)) {
       goto stop;
     }
 
     GraphicsFeatures features;
     lovrGraphicsGetFeatures(&features);
     if (state.extensions.depth && supportsDepth && features.depthResolve) {
-      if (!swapchain_init(&state.swapchains[DEPTH], state.width, state.height, FLAG_STEREO | FLAG_DEPTH)) {
+      if (!swapchain_init(&state.swapchains[SWAPCHAIN_DEPTH], state.width, state.height, STEREO | DEPTH)) {
         goto stop;
       }
     } else {
@@ -1770,12 +1854,12 @@ static bool openxr_start(void) {
     // Pre-init composition layer views
     state.layerViews[0] = (XrCompositionLayerProjectionView) {
       .type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW,
-      .subImage = { state.swapchains[COLOR].handle, { { 0, 0 }, { state.width, state.height } }, 0 }
+      .subImage = { state.swapchains[SWAPCHAIN_COLOR].handle, { { 0, 0 }, { state.width, state.height } }, 0 }
     };
 
     state.layerViews[1] = (XrCompositionLayerProjectionView) {
       .type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW,
-      .subImage = { state.swapchains[COLOR].handle, { { 0, 0 }, { state.width, state.height } }, 1 }
+      .subImage = { state.swapchains[SWAPCHAIN_COLOR].handle, { { 0, 0 }, { state.width, state.height } }, 1 }
     };
 
     if (state.extensions.depth) {
@@ -1783,7 +1867,7 @@ static bool openxr_start(void) {
         state.layerViews[i].next = &state.depthInfo[i];
         state.depthInfo[i] = (XrCompositionLayerDepthInfoKHR) {
           .type = XR_TYPE_COMPOSITION_LAYER_DEPTH_INFO_KHR,
-          .subImage.swapchain = state.swapchains[DEPTH].handle,
+          .subImage.swapchain = state.swapchains[SWAPCHAIN_DEPTH].handle,
           .subImage.imageRect = state.layerViews[i].subImage.imageRect,
           .subImage.imageArrayIndex = i,
           .minDepth = 0.f,
@@ -1924,8 +2008,9 @@ static void openxr_getFeatures(HeadsetFeatures* features) {
   features->handModel = state.extensions.handTrackingMesh;
   features->controllerModel = state.extensions.controllerModel;
   features->controllerSkeleton = state.extensions.handTrackingDataSource && state.extensions.handTrackingMotionRange;
-  features->layerCube = state.extensions.layerCube;
-  features->layerSphere = state.extensions.layerEquirect || state.extensions.layerEquirect2;
+  features->cubeBackground = state.extensions.layerCube;
+  features->equirectBackground = state.extensions.layerEquirect || state.extensions.layerEquirect2;
+  features->layerColor = state.extensions.layerColor;
   features->layerCurve = state.extensions.layerCurve;
   features->layerDepthTest = state.extensions.layerDepthTest;
   features->layerFilter = state.extensions.layerSettings && state.extensions.layerAutoFilter;
@@ -2013,7 +2098,7 @@ static bool openxr_setFoveation(FoveationLevel level, bool dynamic) {
     .profile = profile
   };
 
-  if (XR_FAILED(xrUpdateSwapchainFB(state.swapchains[COLOR].handle, (XrSwapchainStateBaseHeaderFB*) &foveationState))) {
+  if (XR_FAILED(xrUpdateSwapchainFB(state.swapchains[SWAPCHAIN_COLOR].handle, (XrSwapchainStateBaseHeaderFB*) &foveationState))) {
     return false;
   }
 
@@ -2280,65 +2365,40 @@ static bool openxr_getPose(Device device, float* position, float* orientation) {
     }
   }
 
-  // If there's no space to locate, or the pose action isn't active, fall back to alternative
-  // methods, e.g. hand tracking can sometimes be used for grip/aim/elbow devices
+  // If there's no space, or the pose action isn't active, fall back to hand tracking for some devices
   if (!state.spaces[device] || (action && !poseState.isActive)) {
-    bool point = false;
-    bool elbow = false;
-
-    if (state.extensions.handTrackingAim && (device == DEVICE_HAND_LEFT_POINT || device == DEVICE_HAND_RIGHT_POINT)) {
-      device = DEVICE_HAND_LEFT + (device == DEVICE_HAND_RIGHT_POINT);
-      point = true;
-    }
-
     if (state.extensions.handTrackingElbow && (device == DEVICE_ELBOW_LEFT || device == DEVICE_ELBOW_RIGHT)) {
-      device = DEVICE_HAND_LEFT + (device == DEVICE_ELBOW_RIGHT);
-      elbow = true;
-    }
+      XrHandTrackerEXT tracker = getHandTracker(device == DEVICE_ELBOW_LEFT ? DEVICE_HAND_LEFT : DEVICE_HAND_RIGHT);
 
-    XrHandTrackerEXT tracker = getHandTracker(device);
+      if (!tracker) {
+        return false;
+      }
 
-    if (!tracker) {
-      return false;
-    }
+      XrHandJointsLocateInfoEXT info = {
+        .type = XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT,
+        .baseSpace = state.referenceSpace,
+        .time = state.frameState.predictedDisplayTime
+      };
 
-    XrHandJointsLocateInfoEXT info = {
-      .type = XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT,
-      .baseSpace = state.referenceSpace,
-      .time = state.frameState.predictedDisplayTime
-    };
+      XrHandJointLocationEXT joints[MAX_HAND_JOINTS];
+      XrHandJointLocationsEXT hand = {
+        .type = XR_TYPE_HAND_JOINT_LOCATIONS_EXT,
+        .jointCount = 26 + state.extensions.handTrackingElbow,
+        .jointLocations = joints
+      };
 
-    XrHandJointLocationEXT joints[MAX_HAND_JOINTS];
-    XrHandJointLocationsEXT hand = {
-      .type = XR_TYPE_HAND_JOINT_LOCATIONS_EXT,
-      .jointCount = 26 + state.extensions.handTrackingElbow,
-      .jointLocations = joints
-    };
+      if (XR_FAILED(xrLocateHandJointsEXT(tracker, &info, &hand))) {
+        return false;
+      }
 
-    XrHandTrackingAimStateFB aimState = {
-      .type = XR_TYPE_HAND_TRACKING_AIM_STATE_FB
-    };
-
-    if (point) {
-      hand.next = &aimState;
-    }
-
-    if (XR_FAILED(xrLocateHandJointsEXT(tracker, &info, &hand)) || !hand.isActive) {
-      return false;
-    }
-
-    XrPosef* pose;
-    if (point) {
-      pose = &aimState.aimPose;
-    } else if (elbow) {
+      XrPosef* pose;
       pose = &joints[XR_HAND_FOREARM_JOINT_ELBOW_ULTRALEAP].pose;
-    } else {
-      pose = &joints[XR_HAND_JOINT_WRIST_EXT].pose;
+      memcpy(orientation, &pose->orientation, 4 * sizeof(float));
+      memcpy(position, &pose->position, 3 * sizeof(float));
+      return hand.isActive;
     }
 
-    memcpy(orientation, &pose->orientation, 4 * sizeof(float));
-    memcpy(position, &pose->position, 3 * sizeof(float));
-    return true;
+    return false;
   }
 
   XrSpaceLocation location = { .type = XR_TYPE_SPACE_LOCATION };
@@ -2502,47 +2562,12 @@ static bool openxr_getAxis(Device device, DeviceAxis axis, float* value) {
   } else {
     XrActionStateFloat actionState = { .type = XR_TYPE_ACTION_STATE_FLOAT };
 
-    XrResult result = xrGetActionStateFloat(state.session, &info, &actionState);
-
-    if (XR_FAILED(result) || !actionState.isActive) {
-      if (axis == AXIS_TRIGGER && state.extensions.handTrackingAim) { // Try FB extension for pinch
-        XrHandTrackerEXT tracker = getHandTracker(device);
-
-        if (!tracker) {
-          return false;
-        }
-
-        XrHandJointsLocateInfoEXT info = {
-          .type = XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT,
-          .baseSpace = state.referenceSpace,
-          .time = state.frameState.predictedDisplayTime
-        };
-
-        XrHandTrackingAimStateFB aimState = {
-          .type = XR_TYPE_HAND_TRACKING_AIM_STATE_FB
-        };
-
-        XrHandJointLocationEXT joints[MAX_HAND_JOINTS];
-        XrHandJointLocationsEXT hand = {
-          .type = XR_TYPE_HAND_JOINT_LOCATIONS_EXT,
-          .next = &aimState,
-          .jointCount = 26 + state.extensions.handTrackingElbow,
-          .jointLocations = joints
-        };
-
-        if (XR_FAILED(xrLocateHandJointsEXT(tracker, &info, &hand))) {
-          return false;
-        }
-
-        *value = aimState.pinchStrengthIndex;
-        return true;
-      }
-
+    if (XR_FAILED(xrGetActionStateFloat(state.session, &info, &actionState))) {
       return false;
     }
 
     *value = actionState.currentState;
-    return true;
+    return actionState.isActive;
   }
 }
 
@@ -2777,7 +2802,7 @@ static ModelData* openxr_newModelDataFB(XrHandTrackerEXT tracker, bool animated)
   model->attributes[2] = (ModelAttribute) { .buffer = 2, .type = F32, .components = 2 };
   model->attributes[3] = (ModelAttribute) { .buffer = 3, .type = I16, .components = 4 };
   model->attributes[4] = (ModelAttribute) { .buffer = 4, .type = F32, .components = 4 };
-  model->attributes[5] = (ModelAttribute) { .buffer = 5, .type = U16, .count = indexCount };
+  model->attributes[5] = (ModelAttribute) { .buffer = 5, .type = U16, .components = 1, .count = indexCount };
 
   model->primitives[0] = (ModelPrimitive) {
     .mode = DRAW_TRIANGLE_LIST,
@@ -3044,74 +3069,78 @@ static bool openxr_animate(Model* model) {
   }
 }
 
-static Layer* openxr_newLayer(const LayerInfo* info) {
-  lovrCheck(info->type != LAYER_CUBE || state.extensions.layerCube, "This headset does not support cube layers");
-  lovrCheck(info->type != LAYER_CUBE || info->width == info->height, "Cube layers must be square");
-  lovrCheck(info->type != LAYER_SPHERE || state.extensions.layerEquirect || state.extensions.layerEquirect2, "This headset does not support sphere layers");
+static Texture* openxr_setBackground(uint32_t width, uint32_t height, uint32_t layers) {
+  Swapchain* swapchain = &state.swapchains[SWAPCHAIN_BACKGROUND];
 
+  if (width == 0 && height == 0) {
+    swapchain_destroy(swapchain);
+    memset(swapchain, 0, sizeof(Swapchain));
+    return NULL;
+  }
+
+  lovrCheck(state.extensions.layerCube || layers != 6, "This headset does not support cubemap backgrounds");
+  lovrCheck(state.extensions.layerEquirect || state.extensions.layerEquirect2 || layers != 1, "This headset does not support equirectangular backgrounds");
+
+  if (!swapchain_init(swapchain, width, height, STATIC | (layers == 6 ? CUBE : 0))) {
+    return NULL;
+  }
+
+  if (!swapchain_acquire(swapchain)) {
+    swapchain_destroy(swapchain);
+    memset(swapchain, 0, sizeof(Swapchain));
+    return NULL;
+  }
+
+  if (layers == 6) {
+    state.background.cube = (XrCompositionLayerCubeKHR) {
+      .type = XR_TYPE_COMPOSITION_LAYER_CUBE_KHR,
+      .eyeVisibility = XR_EYE_VISIBILITY_BOTH,
+      .swapchain = swapchain->handle,
+      .orientation.w = 1.f
+    };
+  } else if (state.extensions.layerEquirect2) {
+    state.background.equirect2 = (XrCompositionLayerEquirect2KHR) {
+      .type = XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR,
+      .eyeVisibility = XR_EYE_VISIBILITY_BOTH,
+      .subImage = { swapchain->handle, { 0, 0, width, height }, 0 },
+      .pose.orientation.w = 1.f,
+      .centralHorizontalAngle = 2.f * (float) M_PI,
+      .upperVerticalAngle = (float) M_PI * .5f,
+      .lowerVerticalAngle = (float) -M_PI * .5f
+    };
+  } else {
+    state.background.equirect = (XrCompositionLayerEquirectKHR) {
+      .type = XR_TYPE_COMPOSITION_LAYER_EQUIRECT_KHR,
+      .eyeVisibility = XR_EYE_VISIBILITY_BOTH,
+      .subImage = { swapchain->handle, { 0, 0, width, height }, 0 },
+      .pose.orientation.w = 1.f,
+      .scale = { 1.f, 1.f }
+    };
+  }
+
+  return state.swapchains[SWAPCHAIN_BACKGROUND].textures[0];
+}
+
+static Layer* openxr_newLayer(const LayerInfo* info) {
   Layer* layer = lovrCalloc(sizeof(Layer));
   layer->ref = 1;
   layer->info = *info;
 
-  uint32_t flags =
-    (info->stereo ? FLAG_STEREO : 0) |
-    (info->type == LAYER_CUBE ? FLAG_CUBE : 0) |
-    (info->immutable ? FLAG_STATIC : 0);
+  uint32_t flags = (info->stereo ? STEREO : 0) | (info->immutable ? STATIC : 0);
 
   if (!swapchain_init(&layer->swapchain, info->width, info->height, flags)) {
     lovrLayerDestroy(layer);
     return NULL;
   }
 
-  XrCompositionLayerFlags layerFlags = info->transparent ? XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT : 0;
-  XrEyeVisibility eyes = info->stereo ? XR_EYE_VISIBILITY_LEFT : XR_EYE_VISIBILITY_BOTH;
-  XrSwapchainSubImage subimage = { layer->swapchain.handle, { 0, 0, info->width, info->height }, 0 };
-
-  switch (info->type) {
-    case LAYER_QUAD:
-      layer->quad = (XrCompositionLayerQuad) {
-        .type = XR_TYPE_COMPOSITION_LAYER_QUAD,
-        .layerFlags = layerFlags,
-        .eyeVisibility = eyes,
-        .subImage = subimage,
-        .pose.orientation.w = 1.f,
-        .size = { 1.f, 1.f }
-      };
-      break;
-    case LAYER_CUBE:
-      layer->cube = (XrCompositionLayerCubeKHR) {
-        .type = XR_TYPE_COMPOSITION_LAYER_CUBE_KHR,
-        .layerFlags = layerFlags,
-        .eyeVisibility = eyes,
-        .swapchain = layer->swapchain.handle,
-        .orientation.w = 1.f
-      };
-      break;
-    case LAYER_SPHERE:
-      if (state.extensions.layerEquirect2) {
-        layer->equirect2 = (XrCompositionLayerEquirect2KHR) {
-          .type = XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR,
-          .layerFlags = layerFlags,
-          .eyeVisibility = eyes,
-          .subImage = subimage,
-          .pose.orientation.w = 1.f,
-          .centralHorizontalAngle = 2.f * (float) M_PI,
-          .upperVerticalAngle = (float) M_PI * .5f,
-          .lowerVerticalAngle = (float) -M_PI * .5f
-        };
-      } else {
-        layer->equirect = (XrCompositionLayerEquirectKHR) {
-          .type = XR_TYPE_COMPOSITION_LAYER_EQUIRECT_KHR,
-          .layerFlags = layerFlags,
-          .eyeVisibility = eyes,
-          .subImage = subimage,
-          .pose.orientation.w = 1.f,
-          .scale = { 1.f, 1.f }
-        };
-      }
-      break;
-    default: lovrUnreachable();
-  }
+  layer->quad = (XrCompositionLayerQuad) {
+    .type = XR_TYPE_COMPOSITION_LAYER_QUAD,
+    .layerFlags = info->transparent ? XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT : 0,
+    .eyeVisibility = info->stereo ? XR_EYE_VISIBILITY_LEFT : XR_EYE_VISIBILITY_BOTH,
+    .subImage = { layer->swapchain.handle, { 0, 0, info->width, info->height }, 0 },
+    .pose.orientation.w = 1.f,
+    .size = { 1.f, 1.f }
+  };
 
   if (state.extensions.layerColor) {
     layer->color.type = XR_TYPE_COMPOSITION_LAYER_COLOR_SCALE_BIAS_KHR;
@@ -3123,7 +3152,7 @@ static Layer* openxr_newLayer(const LayerInfo* info) {
     layer->header.next = &layer->color;
   }
 
-  if (info->type == LAYER_QUAD && state.extensions.layerDepthTest) {
+  if (state.extensions.layerDepthTest) {
     layer->depthTest.type = XR_TYPE_COMPOSITION_LAYER_DEPTH_TEST_FB;
     layer->depthTest.next = layer->header.next;
     layer->depthTest.depthMask = XR_TRUE;
@@ -3131,7 +3160,7 @@ static Layer* openxr_newLayer(const LayerInfo* info) {
     layer->header.next = &layer->depthTest;
   }
 
-  if (info->type == LAYER_QUAD && info->filter && state.extensions.layerSettings && state.extensions.layerAutoFilter) {
+  if (info->filter && state.extensions.layerSettings && state.extensions.layerAutoFilter) {
     layer->settings.type = XR_TYPE_COMPOSITION_LAYER_SETTINGS_FB;
     layer->settings.next = layer->header.next;
     layer->settings.layerFlags |= XR_COMPOSITION_LAYER_SETTINGS_NORMAL_SUPER_SAMPLING_BIT_FB;
@@ -3198,91 +3227,50 @@ static bool openxr_setLayers(Layer** layers, uint32_t count, bool main) {
 }
 
 static void openxr_getLayerPose(Layer* layer, float* position, float* orientation) {
-  switch (layer->info.type) {
-    case LAYER_QUAD:
-      if (layer->curve == 0.f) {
-        memcpy(position, &layer->quad.pose.position.x, 3 * sizeof(float));
-        memcpy(orientation, &layer->quad.pose.orientation.x, 4 * sizeof(float));
-      } else {
-        memcpy(position, &layer->cylinder.pose.position, 3 * sizeof(float));
-        memcpy(orientation, &layer->cylinder.pose.orientation.x, 4 * sizeof(float));
-        float direction[3] = { 0.f, 0.f, -1.f };
-        quat_rotate(orientation, direction);
-        vec3_scale(direction, layer->cylinder.radius);
-        vec3_add(position, direction);
-      }
-      break;
-    case LAYER_CUBE:
-      vec3_set(position, 0.f, 0.f, 0.f);
-      quat_init(orientation, &layer->quad.pose.orientation.x);
-    case LAYER_SPHERE:
-      if (state.extensions.layerEquirect2) {
-        memcpy(position, &layer->equirect2.pose.position.x, 3 * sizeof(float));
-        memcpy(orientation, &layer->equirect2.pose.orientation.x, 4 * sizeof(float));
-      } else {
-        memcpy(position, &layer->equirect.pose.position.x, 3 * sizeof(float));
-        memcpy(orientation, &layer->equirect.pose.orientation.x, 4 * sizeof(float));
-      }
-      break;
-    default: lovrUnreachable();
+  if (layer->curve == 0.f) {
+    memcpy(position, &layer->quad.pose.position.x, 3 * sizeof(float));
+    memcpy(orientation, &layer->quad.pose.orientation.x, 4 * sizeof(float));
+  } else {
+    memcpy(position, &layer->cylinder.pose.position, 3 * sizeof(float));
+    memcpy(orientation, &layer->cylinder.pose.orientation.x, 4 * sizeof(float));
+    float direction[3] = { 0.f, 0.f, -1.f };
+    quat_rotate(orientation, direction);
+    vec3_scale(direction, layer->cylinder.radius);
+    vec3_add(position, direction);
   }
 }
 
 static void openxr_setLayerPose(Layer* layer, float* position, float* orientation) {
-  switch (layer->info.type) {
-    case LAYER_QUAD:
-      if (layer->curve == 0.f) {
-        memcpy(&layer->quad.pose.position.x, position, 3 * sizeof(float));
-        memcpy(&layer->quad.pose.orientation.x, orientation, 4 * sizeof(float));
-      } else {
-        memcpy(&layer->cylinder.pose.position.x, position, 3 * sizeof(float));
-        memcpy(&layer->cylinder.pose.orientation.x, orientation, 4 * sizeof(float));
-        float direction[3] = { 0.f, 0.f, 1.f };
-        quat_rotate(orientation, direction);
-        vec3_scale(direction, layer->cylinder.radius);
-        vec3_add(&layer->cylinder.pose.position.x, direction);
-      }
-      break;
-    case LAYER_CUBE:
-      memcpy(&layer->cube.orientation.x, orientation, 4 * sizeof(float));
-      break;
-    case LAYER_SPHERE:
-      if (state.extensions.layerEquirect2) {
-        memcpy(&layer->equirect2.pose.position.x, position, 3 * sizeof(float));
-        memcpy(&layer->equirect2.pose.orientation.x, orientation, 4 * sizeof(float));
-      } else {
-        memcpy(&layer->equirect.pose.position.x, position, 3 * sizeof(float));
-        memcpy(&layer->equirect.pose.orientation.x, orientation, 4 * sizeof(float));
-      }
-      break;
-    default: lovrUnreachable();
+  if (layer->curve == 0.f) {
+    memcpy(&layer->quad.pose.position.x, position, 3 * sizeof(float));
+    memcpy(&layer->quad.pose.orientation.x, orientation, 4 * sizeof(float));
+  } else {
+    memcpy(&layer->cylinder.pose.position.x, position, 3 * sizeof(float));
+    memcpy(&layer->cylinder.pose.orientation.x, orientation, 4 * sizeof(float));
+    float direction[3] = { 0.f, 0.f, 1.f };
+    quat_rotate(orientation, direction);
+    vec3_scale(direction, layer->cylinder.radius);
+    vec3_add(&layer->cylinder.pose.position.x, direction);
   }
 }
 
 static void openxr_getLayerDimensions(Layer* layer, float* width, float* height) {
-  if (layer->info.type == LAYER_QUAD) {
-    if (layer->curve == 0.f) {
-      *width = layer->quad.size.width;
-      *height = layer->quad.size.height;
-    } else {
-      *width = layer->cylinder.radius * layer->cylinder.centralAngle;
-      *height = layer->cylinder.radius * layer->cylinder.centralAngle / layer->cylinder.aspectRatio;
-    }
+  if (layer->curve == 0.f) {
+    *width = layer->quad.size.width;
+    *height = layer->quad.size.height;
   } else {
-    *width = 0.f;
-    *height = 0.f;
+    *width = layer->cylinder.radius * layer->cylinder.centralAngle;
+    *height = layer->cylinder.radius * layer->cylinder.centralAngle / layer->cylinder.aspectRatio;
   }
 }
 
 static void openxr_setLayerDimensions(Layer* layer, float width, float height) {
-  if (layer->info.type == LAYER_QUAD) {
-    if (layer->curve == 0.f) {
-      layer->quad.size.width = width;
-      layer->quad.size.height = height;
-    } else {
-      layer->cylinder.centralAngle = width / layer->cylinder.radius;
-      layer->cylinder.aspectRatio = width / height;
-    }
+  if (layer->curve == 0.f) {
+    layer->quad.size.width = width;
+    layer->quad.size.height = height;
+  } else {
+    layer->cylinder.centralAngle = width / layer->cylinder.radius;
+    layer->cylinder.aspectRatio = width / height;
   }
 }
 
@@ -3291,44 +3279,43 @@ static float openxr_getLayerCurve(Layer* layer) {
 }
 
 static bool openxr_setLayerCurve(Layer* layer, float curve) {
+  if (!state.extensions.layerCurve) return true;
   if (curve < 1e-3) curve = 0.f;
 
-  if (layer->info.type == LAYER_QUAD) {
-    XrPosef quadPose;
-    openxr_getLayerPose(layer, &quadPose.position.x, &quadPose.orientation.x);
+  XrPosef quadPose;
+  openxr_getLayerPose(layer, &quadPose.position.x, &quadPose.orientation.x);
 
-    float width, height;
-    openxr_getLayerDimensions(layer, &width, &height);
+  float width, height;
+  openxr_getLayerDimensions(layer, &width, &height);
 
-    bool wasCylinder = layer->curve > 0.f;
-    layer->curve = curve;
+  bool wasCylinder = layer->curve > 0.f;
+  layer->curve = curve;
 
-    if (curve > 0.f) {
-      if (!wasCylinder) {
-        layer->cylinder = (XrCompositionLayerCylinderKHR) {
-          .type = XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR,
-          .layerFlags = layer->quad.layerFlags,
-          .eyeVisibility = layer->quad.eyeVisibility,
-          .subImage = layer->quad.subImage,
-          .aspectRatio = width / height
-        };
-      }
-
-      float minRadius = width / (2.f * (float) M_PI);
-      layer->cylinder.radius = MAX(1.f / curve, minRadius);
-      layer->cylinder.centralAngle = width / layer->cylinder.radius;
-      openxr_setLayerPose(layer, &quadPose.position.x, &quadPose.orientation.x);
-    } else if (wasCylinder) {
-      layer->quad = (XrCompositionLayerQuad) {
-        .type = XR_TYPE_COMPOSITION_LAYER_QUAD,
-        .layerFlags = layer->cylinder.layerFlags,
-        .eyeVisibility = layer->cylinder.eyeVisibility,
-        .subImage = layer->cylinder.subImage,
-        .pose = quadPose,
-        .size.width = layer->cylinder.radius * layer->cylinder.centralAngle,
-        .size.height = layer->cylinder.radius * layer->cylinder.centralAngle / layer->cylinder.aspectRatio
+  if (curve > 0.f) {
+    if (!wasCylinder) {
+      layer->cylinder = (XrCompositionLayerCylinderKHR) {
+        .type = XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR,
+        .layerFlags = layer->quad.layerFlags,
+        .eyeVisibility = layer->quad.eyeVisibility,
+        .subImage = layer->quad.subImage,
+        .aspectRatio = width / height
       };
     }
+
+    float minRadius = width / (2.f * (float) M_PI);
+    layer->cylinder.radius = MAX(1.f / curve, minRadius);
+    layer->cylinder.centralAngle = width / layer->cylinder.radius;
+    openxr_setLayerPose(layer, &quadPose.position.x, &quadPose.orientation.x);
+  } else if (wasCylinder) {
+    layer->quad = (XrCompositionLayerQuad) {
+      .type = XR_TYPE_COMPOSITION_LAYER_QUAD,
+      .layerFlags = layer->cylinder.layerFlags,
+      .eyeVisibility = layer->cylinder.eyeVisibility,
+      .subImage = layer->cylinder.subImage,
+      .pose = quadPose,
+      .size.width = layer->cylinder.radius * layer->cylinder.centralAngle,
+      .size.height = layer->cylinder.radius * layer->cylinder.centralAngle / layer->cylinder.aspectRatio
+    };
   }
 
   return true;
@@ -3349,39 +3336,14 @@ static void openxr_setLayerColor(Layer* layer, float color[4]) {
 }
 
 static void openxr_getLayerViewport(Layer* layer, int32_t* viewport) {
-  switch (layer->info.type) {
-    case LAYER_QUAD:
-      viewport[0] = layer->quad.subImage.imageRect.offset.x;
-      viewport[1] = layer->quad.subImage.imageRect.offset.y;
-      viewport[2] = layer->quad.subImage.imageRect.extent.width;
-      viewport[3] = layer->quad.subImage.imageRect.extent.height;
-      break;
-    case LAYER_CUBE:
-      viewport[0] = 0;
-      viewport[1] = 0;
-      viewport[2] = 0;
-      viewport[3] = 0;
-      break;
-    case LAYER_SPHERE:;
-      XrSwapchainSubImage* subimage = state.extensions.layerEquirect2 ? &layer->equirect2.subImage : &layer->equirect.subImage;
-      viewport[0] = subimage->imageRect.offset.x;
-      viewport[1] = subimage->imageRect.offset.y;
-      viewport[2] = subimage->imageRect.extent.width;
-      viewport[3] = subimage->imageRect.extent.height;
-      break;
-    default: lovrUnreachable();
-  }
+  viewport[0] = layer->quad.subImage.imageRect.offset.x;
+  viewport[1] = layer->quad.subImage.imageRect.offset.y;
+  viewport[2] = layer->quad.subImage.imageRect.extent.width;
+  viewport[3] = layer->quad.subImage.imageRect.extent.height;
 }
 
 static void openxr_setLayerViewport(Layer* layer, int32_t* viewport) {
-  XrSwapchainSubImage* subimage = NULL;
-
-  switch (layer->info.type) {
-    case LAYER_QUAD: subimage = &layer->quad.subImage; break;
-    case LAYER_SPHERE: subimage = state.extensions.layerEquirect2 ? &layer->equirect2.subImage : &layer->equirect.subImage; break;
-    default: return;
-  }
-
+  XrSwapchainSubImage* subimage = layer->curve == 0.f ? &layer->quad.subImage : &layer->cylinder.subImage;
   subimage->imageRect.offset.x = viewport[0];
   subimage->imageRect.offset.y = viewport[1];
   subimage->imageRect.extent.width = viewport[2] ? viewport[2] : layer->info.width - viewport[0];
@@ -3401,32 +3363,13 @@ static Pass* openxr_getLayerPass(Layer* layer) {
     return NULL;
   }
 
-  if (layer->info.type == LAYER_CUBE) {
-    float viewMatrix[6][16];
-    float origin[3] = { 0.f, 0.f, 0.f };
-    mat4_lookAt(viewMatrix[0], origin, (float[3]) { -1.f,  0.f,  0.f }, (float[3]) { 0.f, 1.f,  0.f });
-    mat4_lookAt(viewMatrix[1], origin, (float[3]) {  1.f,  0.f,  0.f }, (float[3]) { 0.f, 1.f,  0.f });
-    mat4_lookAt(viewMatrix[2], origin, (float[3]) {  0.f,  1.f,  0.f }, (float[3]) { 0.f, 0.f, -1.f });
-    mat4_lookAt(viewMatrix[3], origin, (float[3]) {  0.f, -1.f,  0.f }, (float[3]) { 0.f, 0.f,  1.f });
-    mat4_lookAt(viewMatrix[4], origin, (float[3]) {  0.f,  0.f,  1.f }, (float[3]) { 0.f, 1.f,  0.f });
-    mat4_lookAt(viewMatrix[5], origin, (float[3]) {  0.f,  0.f, -1.f }, (float[3]) { 0.f, 1.f,  0.f });
+  float viewMatrix[16] = MAT4_IDENTITY;
+  float projection[16];
+  mat4_orthographic(projection, 0, layer->info.width, 0, layer->info.height, -1.f, 1.f);
 
-    float projection[16];
-    mat4_perspective(projection, (float) M_PI / 2.f, 1.f, state.clipNear, state.clipFar);
-
-    for (uint32_t i = 0; i < 6 << layer->info.stereo; i++) {
-      lovrPassSetViewMatrix(layer->pass, i, viewMatrix[i % 6]);
-      lovrPassSetProjection(layer->pass, i, projection);
-    }
-  } else {
-    float viewMatrix[16] = MAT4_IDENTITY;
-    float projection[16];
-    mat4_orthographic(projection, 0, layer->info.width, 0, layer->info.height, -1.f, 1.f);
-
-    for (uint32_t i = 0; i < 1 << layer->info.stereo; i++) {
-      lovrPassSetViewMatrix(layer->pass, i, viewMatrix);
-      lovrPassSetProjection(layer->pass, i, projection);
-    }
+  for (uint32_t i = 0; i < 1u << layer->info.stereo; i++) {
+    lovrPassSetViewMatrix(layer->pass, i, viewMatrix);
+    lovrPassSetProjection(layer->pass, i, projection);
   }
 
   return layer->pass;
@@ -3449,7 +3392,7 @@ static bool openxr_getTexture(Texture** texture) {
     return true;
   }
 
-  *texture = swapchain_acquire(&state.swapchains[COLOR]);
+  *texture = swapchain_acquire(&state.swapchains[SWAPCHAIN_COLOR]);
   return *texture != NULL;
 }
 
@@ -3470,7 +3413,7 @@ static bool openxr_getDepthTexture(Texture** texture) {
     return true;
   }
 
-  *texture = swapchain_acquire(&state.swapchains[DEPTH]);
+  *texture = swapchain_acquire(&state.swapchains[SWAPCHAIN_DEPTH]);
   return *texture != NULL;
 }
 
@@ -3492,7 +3435,7 @@ static bool openxr_getPass(Pass** pass) {
     return true;
   }
 
-  Texture* foveation = state.swapchains[COLOR].foveationTextures[state.swapchains[COLOR].textureIndex];
+  Texture* foveation = state.swapchains[SWAPCHAIN_COLOR].foveationTextures[state.swapchains[SWAPCHAIN_COLOR].textureIndex];
 
   if (!lovrPassSetCanvas(state.pass, color, &depth, state.depthFormat, foveation, state.config.antialias ? 4 : 1)) {
     return false;
@@ -3563,13 +3506,10 @@ static bool openxr_submit(void) {
     state.began = true;
   }
 
-  XrCompositionLayerBaseHeader const* layers[MAX_LAYERS + 2];
+  XrCompositionLayerBaseHeader const* layers[MAX_LAYERS + 3];
 
   union {
     XrCompositionLayerQuad quad;
-    XrCompositionLayerCubeKHR cube;
-    XrCompositionLayerEquirectKHR equirect;
-    XrCompositionLayerEquirect2KHR equirect2;
     XrCompositionLayerCylinderKHR cylinder;
   } stereoLayers[MAX_LAYERS];
 
@@ -3587,48 +3527,19 @@ static bool openxr_submit(void) {
   };
 
   if (state.frameState.shouldRender) {
-    swapchain_release(&state.swapchains[COLOR]);
-    swapchain_release(&state.swapchains[DEPTH]);
+    swapchain_release(&state.swapchains[SWAPCHAIN_COLOR]);
+    swapchain_release(&state.swapchains[SWAPCHAIN_DEPTH]);
 
     // Passthrough layer
     if (state.passthroughActive) {
       layers[info.layerCount++] = (const XrCompositionLayerBaseHeader*) &state.passthroughLayer;
     }
 
-    // Background layers (currently just all the cube/sphere layers)
-    for (uint32_t i = 0; i < state.layerCount; i++) {
-      Layer* layer = state.layers[i];
-
-      if (layer->info.type != LAYER_CUBE && layer->info.type != LAYER_SPHERE) continue;
-
-      layers[info.layerCount++] = (const XrCompositionLayerBaseHeader*) &layer->header;
-      layer->header.space = state.referenceSpace;
-      swapchain_release(&layer->swapchain);
-
-      // Stereo layers require 2 composition layers (gr?).  We make a temporary copy of the layer's
-      // data and change it to show up in the right eye with the second texture array layer.
-      if (layer->info.stereo) {
-        layers[info.layerCount++] = (const XrCompositionLayerBaseHeader*) &stereoLayers[i];
-        switch (layer->info.type) {
-          case LAYER_CUBE:
-            stereoLayers[i].cube = layer->cube;
-            stereoLayers[i].cube.eyeVisibility = XR_EYE_VISIBILITY_RIGHT;
-            stereoLayers[i].cube.imageArrayIndex = 1;
-            break;
-          case LAYER_SPHERE:
-            if (state.extensions.layerEquirect2) {
-              stereoLayers[i].equirect2 = layer->equirect2;
-              stereoLayers[i].equirect2.eyeVisibility = XR_EYE_VISIBILITY_RIGHT;
-              stereoLayers[i].equirect2.subImage.imageArrayIndex = 1;
-            } else {
-              stereoLayers[i].equirect = layer->equirect;
-              stereoLayers[i].equirect.eyeVisibility = XR_EYE_VISIBILITY_RIGHT;
-              stereoLayers[i].equirect.subImage.imageArrayIndex = 1;
-            }
-            break;
-          default: lovrUnreachable();
-        }
-      }
+    // Background layer
+    if (state.swapchains[SWAPCHAIN_BACKGROUND].handle) {
+      layers[info.layerCount++] = (const XrCompositionLayerBaseHeader*) &state.background.header;
+      state.background.header.space = state.referenceSpace;
+      swapchain_release(&state.swapchains[SWAPCHAIN_BACKGROUND]);
     }
 
     // Main layer
@@ -3661,11 +3572,9 @@ static bool openxr_submit(void) {
       layers[info.layerCount++] = (const XrCompositionLayerBaseHeader*) &state.layer;
     }
 
-    // Foreground layers (currently just all the quad layers)
+    // Quad layers
     for (uint32_t i = 0; i < state.layerCount; i++) {
       Layer* layer = state.layers[i];
-
-      if (layer->info.type != LAYER_QUAD) continue;
 
       layers[info.layerCount++] = (const XrCompositionLayerBaseHeader*) &layer->header;
       layer->header.space = state.referenceSpace;
@@ -3752,13 +3661,17 @@ static bool openxr_update(double* dt) {
         bool wasVisible = state.sessionState >= XR_SESSION_STATE_VISIBLE;
         bool isVisible = event->state >= XR_SESSION_STATE_VISIBLE;
         if (wasVisible != isVisible) {
-          lovrEventPush((Event) { .type = EVENT_VISIBLE, .data.boolean.value = isVisible });
+          lovrEventPush((Event) { .type = EVENT_VISIBLE, .data.visible.visible = isVisible });
         }
 
         bool wasFocused = state.sessionState == XR_SESSION_STATE_FOCUSED;
         bool isFocused = event->state == XR_SESSION_STATE_FOCUSED;
         if (wasFocused != isFocused) {
-          lovrEventPush((Event) { .type = EVENT_FOCUS, .data.boolean.value = isFocused });
+          lovrEventPush((Event) {
+            .type = EVENT_FOCUS,
+            .data.focus.focused = isFocused,
+            .data.focus.display = DISPLAY_HEADSET
+          });
         }
 
         state.sessionState = event->state;
@@ -3780,7 +3693,7 @@ static bool openxr_update(double* dt) {
       case XR_TYPE_EVENT_DATA_USER_PRESENCE_CHANGED_EXT: {
         XrEventDataUserPresenceChangedEXT* event = (XrEventDataUserPresenceChangedEXT*) &e;
         state.mounted = event->isUserPresent;
-        lovrEventPush((Event) { .type = EVENT_MOUNT, .data.boolean.value = state.mounted });
+        lovrEventPush((Event) { .type = EVENT_MOUNT, .data.mount.mounted = state.mounted });
         break;
       }
       default: break;
@@ -3867,6 +3780,7 @@ HeadsetInterface lovrHeadsetOpenXRDriver = {
   .stopVibration = openxr_stopVibration,
   .newModelData = openxr_newModelData,
   .animate = openxr_animate,
+  .setBackground = openxr_setBackground,
   .newLayer = openxr_newLayer,
   .destroyLayer = openxr_destroyLayer,
   .getLayers = openxr_getLayers,

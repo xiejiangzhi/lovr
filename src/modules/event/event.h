@@ -10,6 +10,11 @@ struct Thread;
 struct Variant;
 
 typedef enum {
+  DISPLAY_HEADSET,
+  DISPLAY_WINDOW
+} DisplayType;
+
+typedef enum {
   EVENT_QUIT,
   EVENT_RESTART,
   EVENT_VISIBLE,
@@ -86,8 +91,18 @@ typedef struct {
 } QuitEvent;
 
 typedef struct {
-  bool value;
-} BoolEvent;
+  bool visible;
+  DisplayType display;
+} VisibleEvent;
+
+typedef struct {
+  bool focused;
+  DisplayType display;
+} FocusEvent;
+
+typedef struct {
+  bool mounted;
+} MountEvent;
 
 typedef struct {
   uint32_t width;
@@ -142,7 +157,9 @@ typedef struct {
 
 typedef union {
   QuitEvent quit;
-  BoolEvent boolean;
+  VisibleEvent visible;
+  FocusEvent focus;
+  MountEvent mount;
   ResizeEvent resize;
   KeyEvent key;
   TextEvent text;

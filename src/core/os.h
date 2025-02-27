@@ -143,6 +143,7 @@ typedef enum {
 } os_permission;
 
 typedef void fn_quit(void);
+typedef void fn_visible(bool visible);
 typedef void fn_focus(bool focused);
 typedef void fn_resize(uint32_t width, uint32_t height);
 typedef void fn_key(os_button_action action, os_key key, uint32_t scancode, bool repeat);
@@ -173,6 +174,7 @@ void os_thread_detach(void);
 
 void os_poll_events(void);
 void os_on_quit(fn_quit* callback);
+void os_on_visible(fn_visible* callback);
 void os_on_focus(fn_focus* callback);
 void os_on_resize(fn_resize* callback);
 void os_on_key(fn_key* callback);
@@ -184,6 +186,8 @@ void os_on_permission(fn_permission* callback);
 
 bool os_window_open(const os_window_config* config);
 bool os_window_is_open(void);
+bool os_window_is_visible(void);
+bool os_window_is_focused(void);
 void os_window_get_size(uint32_t* width, uint32_t* height);
 float os_window_get_pixel_density(void);
 void os_window_message_box(const char* message);

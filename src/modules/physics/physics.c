@@ -643,8 +643,7 @@ static float overlapCallback(void* arg, const JPH_CollideShapeResult* result) {
   OverlapResult hit;
   OverlapContext* ctx = arg;
   hit.collider = (Collider*) (uintptr_t) JPH_BodyInterface_GetUserData(ctx->world->bodyInterfaceNoLock, result->bodyID2);
-  hit.shape = subshapeToShape(hit.collider, result->subShapeID2, NULL);
-  hit.triangle = ~0u;
+  hit.shape = subshapeToShape(hit.collider, result->subShapeID2, &hit.triangle);
   vec3_fromJolt(hit.position, &result->contactPointOn2);
   vec3_fromJolt(hit.normal, &result->penetrationAxis);
   vec3_scale(vec3_normalize(hit.normal), result->penetrationDepth);
@@ -673,6 +672,7 @@ bool lovrWorldOverlapShape(World* world, Shape* shape, float pose[7], float maxD
   JPH_CollideShapeSettings settings;
   JPH_CollideShapeSettings_Init(&settings);
   settings.maxSeparationDistance = maxDistance;
+  settings.backFaceMode = JPH_BackFaceMode_CollideWithBackFaces;
 
   JPH_BroadPhaseLayerFilter* layerFilter = getBroadPhaseLayerFilter(world, filter);
   JPH_ObjectLayerFilter* tagFilter = getObjectLayerFilter(world, filter);
@@ -2067,8 +2067,6 @@ static void inverseTransformRay(float* origin, float* direction, float* position
 }
 
 bool lovrShapeContainsPoint(Shape* shape, float point[3]) {
-  float inverseRotation[4];
-
   if (shape->collider) {
     float position[3], orientation[4];
     lovrColliderGetPose(shape->collider, position, orientation);
@@ -2090,7 +2088,7 @@ bool lovrShapeRaycast(Shape* shape, float start[3], float end[3], CastResult* hi
   vec3_init(direction, end);
   vec3_sub(direction, start);
 
-  float position[3], orientation[4], inverseRotation[4];
+  float position[3], orientation[4];
 
   if (shape->collider) {
     lovrColliderGetPose(shape->collider, position, orientation);
@@ -2284,6 +2282,7 @@ ConvexShape* lovrConvexShapeCreate(float points[], uint32_t count, float scale) 
   shape->handle = (JPH_Shape*) JPH_ScaledShape_Create(hull, vec3_toJolt(scale3));
   JPH_Shape_SetUserData(shape->handle, (uint64_t) (uintptr_t) shape);
   quat_identity(shape->rotation);
+  JPH_Shape_Destroy(hull);
   return shape;
 }
 
@@ -2307,9 +2306,15 @@ uint32_t lovrConvexShapeGetPointCount(ConvexShape* shape) {
 bool lovrConvexShapeGetPoint(ConvexShape* shape, uint32_t index, float point[3]) {
   lovrCheck(index < lovrConvexShapeGetPointCount(shape), "Invalid point index '%d'", index + 1);
   const JPH_ConvexHullShape* hull = (const JPH_ConvexHullShape*) JPH_DecoratedShape_GetInnerShape((const JPH_DecoratedShape*) shape->handle);
+  JPH_Vec3 scale;
+  JPH_ScaledShape_GetScale((JPH_ScaledShape*) shape->handle, &scale);
+  JPH_Vec3 center;
+  JPH_Shape_GetCenterOfMass((JPH_Shape*) hull, &center);
   JPH_Vec3 v;
   JPH_ConvexHullShape_GetPoint(hull, index, &v);
   vec3_fromJolt(point, &v);
+  vec3_add(point, &center.x);
+  vec3_scale(point, scale.x);
   return true;
 }
 
@@ -2406,15 +2411,16 @@ MeshShape* lovrMeshShapeCreate(uint32_t vertexCount, float* vertices, uint32_t i
 
   JPH_MeshShapeSettings* settings = JPH_MeshShapeSettings_Create2((const JPH_Vec3*) vertices, vertexCount, triangles, triangleCount);
   JPH_MeshShapeSettings_SetPerTriangleUserData(settings, true);
-  JPH_MeshShape* mesh = JPH_MeshShapeSettings_CreateShape(settings);
+  JPH_Shape* mesh = (JPH_Shape*) JPH_MeshShapeSettings_CreateShape(settings);
   JPH_ShapeSettings_Destroy((JPH_ShapeSettings*) settings);
   lovrFree(triangles);
 
   // We wrap MeshShapes in ScaledShapes so that clones can have unique userdata
   float scale3[3] = { scale, scale, scale };
-  shape->handle = (JPH_Shape*) JPH_ScaledShape_Create((JPH_Shape*) mesh, vec3_toJolt(scale3));
+  shape->handle = (JPH_Shape*) JPH_ScaledShape_Create(mesh, vec3_toJolt(scale3));
   JPH_Shape_SetUserData(shape->handle, (uint64_t) (uintptr_t) shape);
   quat_identity(shape->rotation);
+  JPH_Shape_Destroy(mesh);
   return shape;
 }
 

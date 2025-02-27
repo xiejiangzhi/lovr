@@ -25,11 +25,11 @@ Features
 - **Cross-Platform** - Runs on Windows, macOS, Linux, and Android.
 - **Cross-Device** - Supports Vive/Index, Oculus Rift/Quest, Windows MR, and has a VR simulator.
 - **Beginner-friendly** - Simple VR scenes can be created in just a few lines of Lua.
-- **Fast** - Writen in C11 and scripted with LuaJIT, includes optimized single-pass stereo rendering.
+- **Fast** - Written in C11 and scripted with LuaJIT, includes optimized single-pass stereo rendering.
 - **Asset Import** - Supports 3D models (glTF, OBJ), skeletal animation, HDR textures, cubemaps, fonts, etc.
 - **Spatialized Audio** - Audio is automatically spatialized using HRTFs.
 - **Vector Library** - Efficient first-class support for 3D vectors, quaternions, and matrices.
-- **3D Rigid Body Physics** - Including 4 collider shapes, triangle mesh colliders, and 4 joint types.
+- **3D Rigid Body Physics** - Including 7 collider shapes, triangle mesh colliders, and 6 joint types.
 - **Compute Shaders** - For high performance GPU tasks, like particles.
 
 Getting Started

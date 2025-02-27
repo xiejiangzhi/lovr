@@ -10,6 +10,7 @@
 
 static struct {
   fn_quit* onQuitRequest;
+  fn_visible* onWindowVisible;
   fn_focus* onWindowFocus;
   fn_resize* onWindowResize;
   fn_key* onKeyboardEvent;
@@ -30,6 +31,14 @@ static const char* onBeforeUnload(int type, const void* unused, void* userdata) 
     state.onQuitRequest();
   }
   return NULL;
+}
+
+static EM_BOOL onVisibilityChanged(int type, const EmscriptenVisibilityChangeEvent* visibility, void* userdata) {
+  if (state.onWindowVisible) {
+    state.onWindowVisible(!visibility->hidden);
+    return true;
+  }
+  return false;
 }
 
 static EM_BOOL onFocusChanged(int type, const EmscriptenFocusEvent* data, void* userdata) {
@@ -198,6 +207,7 @@ static EM_BOOL onKeyEvent(int type, const EmscriptenKeyboardEvent* data, void* u
 
 bool os_init(void) {
   emscripten_set_beforeunload_callback(NULL, onBeforeUnload);
+  emscripten_set_visibilitychange_callback(CANVAS, true, onVisibilityChanged);
   emscripten_set_focus_callback(CANVAS, NULL, true, onFocusChanged);
   emscripten_set_blur_callback(CANVAS, NULL, true, onFocusChanged);
   emscripten_set_resize_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, NULL, true, onResize);
@@ -216,6 +226,7 @@ bool os_init(void) {
 
 void os_destroy(void) {
   emscripten_set_beforeunload_callback(NULL, NULL);
+  emscripten_set_visibilitychange_callback(CANVAS, true, NULL);
   emscripten_set_focus_callback(CANVAS, NULL, true, NULL);
   emscripten_set_blur_callback(CANVAS, NULL, true, NULL);
   emscripten_set_resize_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, NULL, true, NULL);
@@ -330,6 +341,16 @@ bool os_window_is_open(void) {
   return true;
 }
 
+bool os_window_is_visible(void) {
+  EmscriptenVisibilityChangeEvent visibility;
+  emscripten_get_visibility_status(&visibility);
+  return !visibility.hidden;
+}
+
+bool os_window_is_focused(void) {
+  return true;
+}
+
 void os_window_get_size(uint32_t* width, uint32_t* height) {
   *width = state.width;
   *height = state.height;
@@ -341,6 +362,10 @@ float os_window_get_pixel_density(void) {
 
 void os_on_quit(fn_quit* callback) {
   state.onQuitRequest = callback;
+}
+
+void os_on_visible(fn_visible* callback) {
+  state.onWindowVisible = callback;
 }
 
 void os_on_focus(fn_focus* callback) {

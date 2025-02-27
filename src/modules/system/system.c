@@ -84,6 +84,22 @@ static void onQuit(void) {
   });
 }
 
+static void onVisible(bool visible) {
+  lovrEventPush((Event) {
+    .type = EVENT_VISIBLE,
+    .data.visible.visible = visible,
+    .data.visible.display = DISPLAY_WINDOW
+  });
+}
+
+static void onFocus(bool focused) {
+  lovrEventPush((Event) {
+    .type = EVENT_FOCUS,
+    .data.focus.focused = focused,
+    .data.focus.display = DISPLAY_WINDOW
+  });
+}
+
 bool lovrSystemInit(void) {
   if (atomic_fetch_add(&state.ref, 1)) return false;
   os_on_key(onKey);
@@ -123,11 +139,21 @@ void lovrSystemRequestPermission(Permission permission) {
 bool lovrSystemOpenWindow(os_window_config* window) {
   lovrAssert(os_window_open(window), "Could not open window");
   os_on_quit(onQuit);
+  os_on_visible(onVisible);
+  os_on_focus(onFocus);
   return true;
 }
 
 bool lovrSystemIsWindowOpen(void) {
   return os_window_is_open();
+}
+
+bool lovrSystemIsWindowVisible(void) {
+  return os_window_is_visible();
+}
+
+bool lovrSystemIsWindowFocused(void) {
+  return os_window_is_focused();
 }
 
 void lovrSystemGetWindowSize(uint32_t* width, uint32_t* height) {

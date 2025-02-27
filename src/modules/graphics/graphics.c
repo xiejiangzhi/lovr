@@ -1336,7 +1336,11 @@ static bool recordRenderPass(Pass* pass, gpu_stream* stream) {
   Globals* global = view.pointer;
   global->resolution[0] = canvas->width;
   global->resolution[1] = canvas->height;
+#ifdef LOVR_DISABLE_HEADSET
+  global->time = os_get_time();
+#else
   global->time = lovrHeadsetInterface ? lovrHeadsetInterface->getDisplayTime() : os_get_time();
+#endif
 
   // Cameras
   uint32_t padding = (6 - canvas->views) * sizeof(Camera); // Ensure shader can always access all 6 cameras
@@ -3827,7 +3831,7 @@ Material* lovrMaterialCreate(const MaterialInfo* info) {
     if (!found) {
       arr_expand(&state.materialBlocks, 1);
       lovrAssert(state.materialBlocks.length < UINT16_MAX, "Out of memory");
-      uint32_t blockIndex = state.materialBlocks.length;
+      uint16_t blockIndex = (uint16_t) state.materialBlocks.length;
       block = &state.materialBlocks.data[blockIndex];
       block->list = lovrMalloc(MATERIALS_PER_BLOCK * sizeof(Material));
       block->bundlePool = lovrMalloc(gpu_sizeof_bundle_pool());
@@ -3836,7 +3840,7 @@ Material* lovrMaterialCreate(const MaterialInfo* info) {
       for (uint32_t i = 0; i < MATERIALS_PER_BLOCK; i++) {
         block->list[i].next = i + 1;
         block->list[i].tick = 0;
-        block->list[i].block = (uint16_t) blockIndex;
+        block->list[i].block = blockIndex;
         block->list[i].index = i;
         block->list[i].bundle = (gpu_bundle*) ((char*) block->bundles + i * gpu_sizeof_bundle());
         block->list[i].hasWritableTexture = false;
@@ -5084,9 +5088,9 @@ Model* lovrModelCreate(const ModelInfo* info) {
     }
 
     if (primitive->indices) {
-      char* indices = data->buffers[primitive->indices->buffer].data + primitive->indices->offset;
-      memcpy(indexData, indices, primitive->indices->count * indexSize);
-      indexData += primitive->indices->count * indexSize;
+      uint32_t indexCount = primitive->indices->count;
+      lovrModelDataCopyAttribute(data, primitive->indices, indexData, data->indexType, 1, false, indexCount, indexSize, 0);
+      indexData += indexCount * indexSize;
     }
   }
 
@@ -5432,7 +5436,7 @@ void lovrModelSetNodeTransform(Model* model, uint32_t node, float position[3], f
 }
 
 Buffer* lovrModelGetVertexBuffer(Model* model) {
-  return model->rawVertexBuffer;
+  return model->rawVertexBuffer ? model->rawVertexBuffer : model->vertexBuffer;
 }
 
 Buffer* lovrModelGetIndexBuffer(Model* model) {
@@ -5484,7 +5488,7 @@ static bool lovrModelAnimateVertices(Model* model) {
 
   if (!beginFrame()) return false;
 
-  if ((!blend && !skin) || (!model->transformsDirty && !model->blendShapesDirty) || model->lastVertexAnimation == state.tick) {
+  if ((!blend && !skin) || (!model->transformsDirty && !model->blendShapesDirty) || model->lastVertexAnimation == state.tick || !model->vertexBuffer) {
     return true;
   }
 
@@ -7608,6 +7612,7 @@ bool lovrPassCone(Pass* pass, float* transform, uint32_t segments) {
 }
 
 bool lovrPassCapsule(Pass* pass, float* transform, uint32_t segments) {
+  lovrCheck(segments >= 2, "Capsule segment count must be >= 2");
   float sx = vec3_length(transform + 0);
   float sy = vec3_length(transform + 4);
   float sz = vec3_length(transform + 8);
@@ -8066,7 +8071,7 @@ bool lovrPassMeshIndirect(Pass* pass, Buffer* vertices, Buffer* indices, Buffer*
 
   lovrCheck(shader, "A custom Shader must be bound to source draws from a Buffer");
   lovrCheck(offset % 4 == 0, "Draw Buffer offset must be a multiple of 4");
-  lovrCheck(offset + count * stride < draws->info.size, "Draw buffer range exceeds the size of the buffer");
+  lovrCheck(offset + count * stride <= draws->info.size, "Draw buffer range exceeds the size of the buffer");
   lovrCheck(!vertices || vertices->supportsMesh, "Vertex buffer has invalid format (can not contain nested structs/arrays, or matrix/index types)");
 
   DrawInfo info = {

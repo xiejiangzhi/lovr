@@ -318,6 +318,10 @@ void os_on_quit(fn_quit* callback) {
   state.onQuit = callback;
 }
 
+void os_on_visible(fn_visible* callback) {
+  //
+}
+
 void os_on_focus(fn_focus* callback) {
   //
 }
@@ -355,6 +359,14 @@ bool os_window_open(const os_window_config* config) {
 }
 
 bool os_window_is_open(void) {
+  return false;
+}
+
+bool os_window_is_visible(void) {
+  return false;
+}
+
+bool os_window_is_focused(void) {
   return false;
 }
 

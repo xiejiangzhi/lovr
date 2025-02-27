@@ -44,10 +44,10 @@ ModelData* lovrModelDataCreate(Blob* source, ModelDataIO* io) {
 
 void lovrModelDataDestroy(void* ref) {
   ModelData* model = ref;
-  for (uint32_t i = 0; i < model->blobCount; i++) {
+  for (uint32_t i = 0; model->blobs && i < model->blobCount; i++) {
     lovrRelease(model->blobs[i], lovrBlobDestroy);
   }
-  for (uint32_t i = 0; i < model->imageCount; i++) {
+  for (uint32_t i = 0; model->images && i < model->imageCount; i++) {
     lovrRelease(model->images[i], lovrImageDestroy);
   }
   map_free(model->blendShapeMap);
@@ -134,7 +134,8 @@ bool lovrModelDataFinalize(ModelData* model) {
     }
   }
 
-  model->indexType = U16;
+  size_t maxIndexSize = 0;
+
   for (uint32_t i = 0; i < model->primitiveCount; i++) {
     ModelPrimitive* primitive = &model->primitives[i];
     uint32_t vertexCount = primitive->attributes[ATTR_POSITION]->count;
@@ -151,12 +152,9 @@ bool lovrModelDataFinalize(ModelData* model) {
 
     model->indexCount += primitive->indices ? primitive->indices->count : 0;
     if (primitive->indices) {
-      if (primitive->indices->type == U32) {
-        primitive->indices->stride = 4;
-        model->indexType = U32;
-      } else {
-        primitive->indices->stride = 2;
-      }
+      size_t indexSize = typeSizes[primitive->indices->type];
+      maxIndexSize = MAX(maxIndexSize, indexSize);
+      primitive->indices->stride = indexSize;
     }
 
     for (uint32_t j = 0; j < MAX_DEFAULT_ATTRIBUTES; j++) {
@@ -177,6 +175,8 @@ bool lovrModelDataFinalize(ModelData* model) {
       }
     }
   }
+
+  model->indexType = maxIndexSize >= 4 ? U32 : U16;
 
   for (uint32_t i = 0; i < model->nodeCount; i++) {
     model->nodes[i].parent = ~0u;
@@ -200,6 +200,8 @@ void lovrModelDataCopyAttribute(ModelData* data, ModelAttribute* attribute, char
     for (uint32_t i = 0; i < count; i++, dst += stride) {
       memset(dst, clear, size);
     }
+  } else if (attribute->type == type && attribute->components == components && attribute->normalized == normalized && attribute->stride == stride && stride == size) {
+    memcpy(dst, src, count * stride);
   } else if (attribute->type == type && attribute->components >= components) {
     for (uint32_t i = 0; i < count; i++, src += attribute->stride, dst += stride) {
       memcpy(dst, src, size);
@@ -250,6 +252,26 @@ void lovrModelDataCopyAttribute(ModelData* data, ModelAttribute* attribute, char
         if (components == 4 && attribute->components == 3) {
           ((uint8_t*) dst)[3] = 255;
         }
+      }
+    } else {
+      lovrUnreachable();
+    }
+  } else if (type == U16 && components == 1 && !normalized && !attribute->normalized) {
+    if (attribute->type == U8) {
+      for (uint32_t i = 0; i < count; i++, src += attribute->stride, dst += stride) {
+        *((uint16_t*) dst) = *(uint8_t*) src;
+      }
+    } else {
+      lovrUnreachable();
+    }
+  } else if (type == U32 && components == 1 && !normalized && !attribute->normalized) {
+    if (attribute->type == U8) {
+      for (uint32_t i = 0; i < count; i++, src += attribute->stride, dst += stride) {
+        *((uint32_t*) dst) = *(uint8_t*) src;
+      }
+    } else if (attribute->type == U16) {
+      for (uint32_t i = 0; i < count; i++, src += attribute->stride, dst += stride) {
+        *((uint32_t*) dst) = *(uint16_t*) src;
       }
     } else {
       lovrUnreachable();
@@ -540,15 +562,29 @@ static void collectVertices(ModelData* model, uint32_t nodeIndex, float** vertic
     }
 
     if (indices && index) {
-      if (index->type != U16 && index->type != U32) lovrUnreachable();
-
       char* data = (char*) model->buffers[index->buffer].data + index->offset;
-      size_t stride = index->stride == 0 ? (index->type == U16 ? 2 : 4) : index->stride;
+      size_t stride = index->stride == 0 ? typeSizes[index->type] : index->stride;
 
-      for (uint32_t j = 0; j < index->count; j++) {
-        **indices = (index->type == U16 ? ((uint32_t) *(uint16_t*) data) : *(uint32_t*) data) + base;
-        *indices += 1;
-        data += stride;
+      if (index->type == U32) {
+        for (uint32_t j = 0; j < index->count; j++) {
+          **indices = *(uint32_t*) data + base;
+          *indices += 1;
+          data += stride;
+        }
+      } else if (index->type == U16) {
+        for (uint32_t j = 0; j < index->count; j++) {
+          **indices = (uint32_t) *(uint16_t*) data + base;
+          *indices += 1;
+          data += stride;
+        }
+      } else if (index->type == U8) {
+        for (uint32_t j = 0; j < index->count; j++) {
+          **indices = (uint32_t) *(uint8_t*) data + base;
+          *indices += 1;
+          data += stride;
+        }
+      } else {
+        lovrUnreachable();
       }
     } else {
       for (uint32_t j = 0; j < positions->count; j++) {
@@ -556,7 +592,6 @@ static void collectVertices(ModelData* model, uint32_t nodeIndex, float** vertic
         *indices += 1;
       }
     }
-
   }
 
   for (uint32_t i = 0; i < node->childCount; i++) {

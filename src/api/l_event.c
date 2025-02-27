@@ -6,6 +6,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+StringEntry lovrDisplayType[] = {
+  [DISPLAY_HEADSET] = ENTRY("headset"),
+  [DISPLAY_WINDOW] = ENTRY("window"),
+  { 0 }
+};
+
 StringEntry lovrEventType[] = {
   [EVENT_QUIT] = ENTRY("quit"),
   [EVENT_RESTART] = ENTRY("restart"),
@@ -198,15 +204,17 @@ static int nextEvent(lua_State* L) {
       return 2;
 
     case EVENT_VISIBLE:
-      lua_pushboolean(L, event.data.boolean.value);
-      return 2;
+      lua_pushboolean(L, event.data.visible.visible);
+      luax_pushenum(L, DisplayType, event.data.visible.display);
+      return 3;
 
     case EVENT_FOCUS:
-      lua_pushboolean(L, event.data.boolean.value);
-      return 2;
+      lua_pushboolean(L, event.data.focus.focused);
+      luax_pushenum(L, DisplayType, event.data.focus.display);
+      return 3;
 
     case EVENT_MOUNT:
-      lua_pushboolean(L, event.data.boolean.value);
+      lua_pushboolean(L, event.data.mount.mounted);
       return 2;
 
     case EVENT_RECENTER:

@@ -55,8 +55,9 @@ typedef struct {
   bool handModel;
   bool controllerModel;
   bool controllerSkeleton;
-  bool layerCube;
-  bool layerSphere;
+  bool cubeBackground;
+  bool equirectBackground;
+  bool layerColor;
   bool layerCurve;
   bool layerDepthTest;
   bool layerFilter;
@@ -90,6 +91,8 @@ typedef enum {
   DEVICE_HAND_RIGHT_PINCH,
   DEVICE_HAND_LEFT_POKE,
   DEVICE_HAND_RIGHT_POKE,
+  DEVICE_HAND_LEFT_PALM,
+  DEVICE_HAND_RIGHT_PALM,
   DEVICE_ELBOW_LEFT,
   DEVICE_ELBOW_RIGHT,
   DEVICE_SHOULDER_LEFT,
@@ -168,14 +171,7 @@ typedef enum {
   SOURCE_HAND
 } SkeletonSource;
 
-typedef enum {
-  LAYER_QUAD,
-  LAYER_CUBE,
-  LAYER_SPHERE
-} LayerType;
-
 typedef struct {
-  LayerType type;
   uint32_t width;
   uint32_t height;
   bool stereo;
@@ -236,10 +232,11 @@ typedef struct HeadsetInterface {
   void (*stopVibration)(Device device);
   struct ModelData* (*newModelData)(Device device, bool animated);
   bool (*animate)(struct Model* model);
-  Layer** (*getLayers)(uint32_t* count, bool* main);
-  bool (*setLayers)(Layer** layers, uint32_t count, bool main);
+  struct Texture* (*setBackground)(uint32_t width, uint32_t height, uint32_t layers);
   Layer* (*newLayer)(const LayerInfo* info);
   void (*destroyLayer)(void* ref);
+  Layer** (*getLayers)(uint32_t* count, bool* main);
+  bool (*setLayers)(Layer** layers, uint32_t count, bool main);
   void (*getLayerPose)(Layer* layer, float* position, float* orientation);
   void (*setLayerPose)(Layer* layer, float* position, float* orientation);
   void (*getLayerDimensions)(Layer* layer, float* width, float* height);

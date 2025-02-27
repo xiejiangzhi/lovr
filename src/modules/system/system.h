@@ -17,6 +17,8 @@ void lovrSystemOpenConsole(void);
 void lovrSystemRequestPermission(Permission permission);
 bool lovrSystemOpenWindow(struct os_window_config* config);
 bool lovrSystemIsWindowOpen(void);
+bool lovrSystemIsWindowVisible(void);
+bool lovrSystemIsWindowFocused(void);
 void lovrSystemGetWindowSize(uint32_t* width, uint32_t* height);
 float lovrSystemGetWindowDensity(void);
 void lovrSystemPollEvents(void);

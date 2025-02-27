@@ -66,11 +66,6 @@ static struct {
   bool enableInput;
 } state;
 
-static void onFocus(bool focused) {
-  state.focused = focused;
-  lovrEventPush((Event) { .type = EVENT_FOCUS, .data.boolean = { focused } });
-}
-
 static bool simulator_init(HeadsetConfig* config) {
   state.config = *config;
   state.clipNear = .01f;
@@ -85,8 +80,7 @@ static bool simulator_init(HeadsetConfig* config) {
     state.initialized = true;
   }
 
-  state.focused = true;
-  os_on_focus(onFocus);
+  state.focused = os_window_is_focused();
 
   state.enableInput = true;
 
@@ -156,8 +150,9 @@ static void simulator_getFeatures(HeadsetFeatures* features) {
   features->handModel = false;
   features->controllerModel = false;
   features->controllerSkeleton = false;
-  features->layerCube = false;
-  features->layerSphere = false;
+  features->cubeBackground = false;
+  features->equirectBackground = false;
+  features->layerColor = false;
   features->layerCurve = false;
   features->layerDepthTest = false;
   features->layerFilter = false;
@@ -320,6 +315,11 @@ static bool simulator_animate(struct Model* model) {
   return false;
 }
 
+static Texture* simulator_setBackground(uint32_t width, uint32_t height, uint32_t layers) {
+  lovrSetError("NYI");
+  return NULL;
+}
+
 static Layer* simulator_newLayer(const LayerInfo* info) {
   Layer* layer = lovrCalloc(sizeof(Layer));
   layer->ref = 1;
@@ -327,10 +327,10 @@ static Layer* simulator_newLayer(const LayerInfo* info) {
   layer->textureWeight = info->height;
   layer->texture = lovrTextureCreate(&(TextureInfo) {
     .format = FORMAT_RGBA8,
-    .type = (info->type == LAYER_CUBE ? TEXTURE_CUBE : (info->stereo ? TEXTURE_ARRAY : TEXTURE_2D)),
+    .type = info->stereo ? TEXTURE_ARRAY : TEXTURE_2D,
     .width = info->width,
     .height = info->height,
-    .layers = (info->type == LAYER_CUBE ? 6 : 1) << info->stereo,
+    .layers = 1 << info->stereo,
     .usage = TEXTURE_RENDER | TEXTURE_TRANSFER,
     .srgb = true
   });
@@ -503,7 +503,7 @@ static bool simulator_isVisible(void) {
 }
 
 static bool simulator_isFocused(void) {
-  return state.focused;
+  return os_window_is_focused();
 }
 
 static bool simulator_isMounted(void) {
@@ -514,6 +514,15 @@ static bool simulator_update(double* dt) {
   if (!state.active) {
     *dt = 0.;
     return true;
+  }
+
+  if (os_window_is_focused() != state.focused) {
+    state.focused = !state.focused;
+    lovrEventPush((Event) {
+      .type = EVENT_FOCUS,
+      .data.focus.focused = state.focused,
+      .data.focus.display = DISPLAY_HEADSET
+    });
   }
 
   double t = os_get_time() - state.epoch;
@@ -649,6 +658,7 @@ HeadsetInterface lovrHeadsetSimulatorDriver = {
   .stopVibration = simulator_stopVibration,
   .newModelData = simulator_newModelData,
   .animate = simulator_animate,
+  .setBackground = simulator_setBackground,
   .newLayer = simulator_newLayer,
   .destroyLayer = simulator_destroyLayer,
   .getLayers = simulator_getLayers,

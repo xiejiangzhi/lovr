@@ -18,7 +18,6 @@
 #define NOM_STR(j, t) (gltfString) { (char* )j + t->start, t->end - t->start }; t++
 #define NOM_BOOL(j, t) (*(j + (t++)->start) == 't')
 #define NOM_FLOAT(j, t) atof(j + (t++)->start)
-#define ASSERT(c, ...) do { if (!(c)) { lovrSetError(__VA_ARGS__); goto fail; } } while (0)
 
 typedef struct {
   char* data;
@@ -348,7 +347,7 @@ bool lovrModelDataInitGltf(ModelData** result, Blob* source, ModelDataIO* io) {
                   if (STR_EQ(smoothing, "LINEAR")) { sampler->smoothing = SMOOTH_LINEAR; }
                   else if (STR_EQ(smoothing, "STEP")) { sampler->smoothing = SMOOTH_STEP; }
                   else if (STR_EQ(smoothing, "CUBICSPLINE")) { sampler->smoothing = SMOOTH_CUBIC; }
-                  else { ASSERT(false, "Unknown animation sampler interpolation"); }
+                  else { lovrAssertGoto(fail, false, "Unknown animation sampler interpolation"); }
                 } else {
                   token = NOM(token);
                 }
@@ -386,7 +385,7 @@ bool lovrModelDataInitGltf(ModelData** result, Blob* source, ModelDataIO* io) {
             token = NOM(token);
           }
         }
-        ASSERT(image->bufferView != ~0u || image->uri.data, "Image is missing data");
+        lovrAssertGoto(fail, image->bufferView != ~0u || image->uri.data, "Image is missing data");
       }
 
     } else if (STR_EQ(key, "textures")) {
@@ -418,7 +417,7 @@ bool lovrModelDataInitGltf(ModelData** result, Blob* source, ModelDataIO* io) {
             token = NOM(token);
           }
         }
-        ASSERT(texture->image != ~0u, "Texture is missing an image (maybe an unsupported extension is used?)");
+        lovrAssertGoto(fail, texture->image != ~0u, "Texture is missing an image (maybe an unsupported extension is used?)");
       }
 
     } else if (STR_EQ(key, "materials")) {
@@ -561,21 +560,21 @@ bool lovrModelDataInitGltf(ModelData** result, Blob* source, ModelDataIO* io) {
         if (uri.length >= 5 && !strncmp("data:", uri.data, 5)) {
           size_t decodedLength;
           void* bufferData = decodeBase64(uri.data, uri.length, &decodedLength);
-          ASSERT(bufferData && decodedLength == size, "Could not decode base64 buffer");
+          lovrAssertGoto(fail, bufferData && decodedLength == size, "Could not decode base64 buffer");
           *blob = lovrBlobCreate(bufferData, size, NULL);
         } else {
           size_t bytesRead;
-          ASSERT(uri.length < maxPathLength, "Buffer filename is too long");
-          ASSERT(uri.data[0] != '/', "Absolute paths in models are not supported");
+          lovrAssertGoto(fail, uri.length < maxPathLength, "Buffer filename is too long");
+          lovrAssertGoto(fail, uri.data[0] != '/', "Absolute paths in models are not supported");
           if (uri.data[0] && uri.data[1] && !memcmp(uri.data, "./", 2)) uri.data += 2;
           strncat(filename, uri.data, uri.length);
           void* data = io(filename, &bytesRead);
-          ASSERT(data && bytesRead == size, "Unable to read '%s'", filename);
+          lovrAssertGoto(fail, data && bytesRead == size, "Unable to read '%s'", filename);
           *blob = lovrBlobCreate(data, size, NULL);
           *root = '\0';
         }
       } else {
-        ASSERT(glb, "Buffer is missing URI");
+        lovrAssertGoto(fail, glb, "Buffer is missing URI");
         lovrRetain(source);
         *blob = source;
       }
@@ -692,7 +691,7 @@ bool lovrModelDataInitGltf(ModelData** result, Blob* source, ModelDataIO* io) {
                     else if (STR_EQ(property, "rotation")) { channel->property = PROP_ROTATION; }
                     else if (STR_EQ(property, "scale")) { channel->property = PROP_SCALE; }
                     else if (STR_EQ(property, "weights")) { channel->property = PROP_WEIGHTS; }
-                    else { ASSERT(false, "Unknown animation channel property"); }
+                    else { lovrAssertGoto(fail, false, "Unknown animation channel property"); }
                   } else {
                     token = NOM(token);
                   }
@@ -702,17 +701,17 @@ bool lovrModelDataInitGltf(ModelData** result, Blob* source, ModelDataIO* io) {
               }
             }
 
-            ASSERT(times, "Missing keyframe times");
-            ASSERT(data, "Missing keyframe data");
+            lovrAssertGoto(fail, times, "Missing keyframe times");
+            lovrAssertGoto(fail, data, "Missing keyframe data");
 
             ModelBuffer* buffer;
             buffer = &model->buffers[times->buffer];
-            ASSERT(times->type == F32 && (buffer->stride == 0 || buffer->stride == sizeof(float)), "Keyframe times must be tightly-packed floats");
+            lovrAssertGoto(fail, times->type == F32 && (buffer->stride == 0 || buffer->stride == sizeof(float)), "Keyframe times must be tightly-packed floats");
             channel->times = (float*) (buffer->data + times->offset);
 
             buffer = &model->buffers[data->buffer];
             uint8_t components = data->components;
-            ASSERT(data->type == F32 && (buffer->stride == 0 || buffer->stride == sizeof(float) * components), "Keyframe data must be tightly-packed floats");
+            lovrAssertGoto(fail, data->type == F32 && (buffer->stride == 0 || buffer->stride == sizeof(float) * components), "Keyframe data must be tightly-packed floats");
             channel->data = (float*) (buffer->data + data->offset);
 
             animation->duration = MAX(animation->duration, channel->times[channel->keyframeCount - 1]);
@@ -840,7 +839,6 @@ bool lovrModelDataInitGltf(ModelData** result, Blob* source, ModelDataIO* io) {
                 primitive->material = NOM_U32(json, token);
               } else if (STR_EQ(key, "indices")) {
                 primitive->indices = &model->attributes[NOM_U32(json, token)];
-                ASSERT(primitive->indices->type != U8, "Unsigned byte indices are not supported (must be unsigned shorts or unsigned ints)");
               } else if (STR_EQ(key, "mode")) {
                 switch (NOM_U32(json, token)) {
                   case 0: primitive->mode = DRAW_POINT_LIST; break;
@@ -850,7 +848,7 @@ bool lovrModelDataInitGltf(ModelData** result, Blob* source, ModelDataIO* io) {
                   case 4: primitive->mode = DRAW_TRIANGLE_LIST; break;
                   case 5: primitive->mode = DRAW_TRIANGLE_STRIP; break;
                   case 6: primitive->mode = DRAW_TRIANGLE_FAN; break;
-                  default: ASSERT(false, "Unknown primitive mode");
+                  default: lovrAssertGoto(fail, false, "Unknown primitive mode");
                 }
               } else if (STR_EQ(key, "attributes")) {
                 for (int a = (token++)->size; a > 0; a--) {
@@ -886,7 +884,7 @@ bool lovrModelDataInitGltf(ModelData** result, Blob* source, ModelDataIO* io) {
             }
           }
         } else if (STR_EQ(key, "weights")) {
-          ASSERT((uint32_t) token->size == mesh->blendShapeCount, "Inconsistent blend shape counts");
+          lovrAssertGoto(fail, (uint32_t) token->size == mesh->blendShapeCount, "Inconsistent blend shape counts");
           for (int w = (token++)->size, index = mesh->blendShapeIndex; w > 0; w--, index++) {
             model->blendShapes[index].weight = NOM_FLOAT(json, token);
           }
@@ -894,7 +892,7 @@ bool lovrModelDataInitGltf(ModelData** result, Blob* source, ModelDataIO* io) {
           for (int k2 = (token++)->size; k2 > 0; k2--) {
             gltfString key = NOM_STR(json, token);
             if (STR_EQ(key, "targetNames")) {
-              ASSERT((uint32_t) token->size == mesh->blendShapeCount, "Inconsistent blend shape counts");
+              lovrAssertGoto(fail, (uint32_t) token->size == mesh->blendShapeCount, "Inconsistent blend shape counts");
               for (int k3 = (token++)->size, index = mesh->blendShapeIndex; k3 > 0; k3--, index++) {
                 gltfString name = NOM_STR(json, token);
                 uint64_t hash = hash64(name.data, name.length);
@@ -954,24 +952,24 @@ bool lovrModelDataInitGltf(ModelData** result, Blob* source, ModelDataIO* io) {
             model->children[childIndex++] = NOM_U32(json, token);
           }
         } else if (STR_EQ(key, "matrix")) {
-          ASSERT((token++)->size == 16, "Node matrix needs 16 elements");
+          lovrAssertGoto(fail, (token++)->size == 16, "Node matrix needs 16 elements");
           node->hasMatrix = true;
           for (int j = 0; j < 16; j++) {
             node->transform.matrix[j] = NOM_FLOAT(json, token);
           }
         } else if (STR_EQ(key, "translation")) {
-          ASSERT((token++)->size == 3, "Node translation needs 3 elements");
+          lovrAssertGoto(fail, (token++)->size == 3, "Node translation needs 3 elements");
           translation[0] = NOM_FLOAT(json, token);
           translation[1] = NOM_FLOAT(json, token);
           translation[2] = NOM_FLOAT(json, token);
         } else if (STR_EQ(key, "rotation")) {
-          ASSERT((token++)->size == 4, "Node rotation needs 4 elements");
+          lovrAssertGoto(fail, (token++)->size == 4, "Node rotation needs 4 elements");
           rotation[0] = NOM_FLOAT(json, token);
           rotation[1] = NOM_FLOAT(json, token);
           rotation[2] = NOM_FLOAT(json, token);
           rotation[3] = NOM_FLOAT(json, token);
         } else if (STR_EQ(key, "scale")) {
-          ASSERT((token++)->size == 3, "Node scale needs 3 elements");
+          lovrAssertGoto(fail, (token++)->size == 3, "Node scale needs 3 elements");
           scale[0] = NOM_FLOAT(json, token);
           scale[1] = NOM_FLOAT(json, token);
           scale[2] = NOM_FLOAT(json, token);
@@ -987,7 +985,7 @@ bool lovrModelDataInitGltf(ModelData** result, Blob* source, ModelDataIO* io) {
       }
 
       if (node->blendShapeCount > 0 && weights) {
-        ASSERT((uint32_t) weights->size == node->blendShapeCount, "Inconsistent blend shape counts");
+        lovrAssertGoto(fail, (uint32_t) weights->size == node->blendShapeCount, "Inconsistent blend shape counts");
         for (int w = (weights++)->size, index = node->blendShapeIndex; w > 0; w--, index++) {
           model->blendShapes[index].weight = NOM_FLOAT(json, token);
         }

@@ -185,6 +185,18 @@ static int l_lovrSystemIsWindowOpen(lua_State* L) {
   return 1;
 }
 
+static int l_lovrSystemIsWindowVisible(lua_State* L) {
+  bool visible = lovrSystemIsWindowVisible();
+  lua_pushboolean(L, visible);
+  return 1;
+}
+
+static int l_lovrSystemIsWindowFocused(lua_State* L) {
+  bool focused = lovrSystemIsWindowFocused();
+  lua_pushboolean(L, focused);
+  return 1;
+}
+
 static int l_lovrSystemGetWindowWidth(lua_State* L) {
   uint32_t width, height;
   lovrSystemGetWindowSize(&width, &height);
@@ -329,6 +341,8 @@ static const luaL_Reg lovrSystem[] = {
   { "requestPermission", l_lovrSystemRequestPermission },
   { "openWindow", l_lovrSystemOpenWindow },
   { "isWindowOpen", l_lovrSystemIsWindowOpen },
+  { "isWindowVisible", l_lovrSystemIsWindowVisible },
+  { "isWindowFocused", l_lovrSystemIsWindowFocused },
   { "getWindowWidth", l_lovrSystemGetWindowWidth },
   { "getWindowHeight", l_lovrSystemGetWindowHeight },
   { "getWindowDimensions", l_lovrSystemGetWindowDimensions },

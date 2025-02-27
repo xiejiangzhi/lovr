@@ -84,27 +84,35 @@ group('physics', function()
       expect({ shape:raycast(-500, 100, 100, 500, 100, 100) }).to.equal({ 95, 100, 100, -1, 0, 0 }, 1e-6)
     end)
 
-    test('ConvexShape', function()
-      shape = lovr.physics.newConvexShape({ 1, 1, 0, -1, 1, 0, 0, 0, 0, 0, 0, 1 })
-      expect(shape:getPointCount()).to.equal(4)
-      expect(shape:getFaceCount()).to.equal(4)
-      expect(shape:getFace(1)).to.equal({ 1, 2, 3 })
-      expect(shape:getFace(2)).to.equal({ 2, 4, 3 })
-      expect(shape:getFace(3)).to.equal({ 4, 1, 3 })
-      expect(shape:getFace(4)).to.equal({ 1, 4, 2 })
+    group('ConvexShape', function()
+      test('tetrahedron', function()
+        shape = lovr.physics.newConvexShape({ 1, 1, 0, -1, 1, 0, 0, 0, 0, 0, 0, 1 })
+        expect(shape:getPointCount()).to.equal(4)
+        expect(shape:getFaceCount()).to.equal(4)
+        expect(shape:getFace(1)).to.equal({ 1, 2, 3 })
+        expect(shape:getFace(2)).to.equal({ 2, 4, 3 })
+        expect(shape:getFace(3)).to.equal({ 4, 1, 3 })
+        expect(shape:getFace(4)).to.equal({ 1, 4, 2 })
+      end)
 
       if lovr.graphics then
-        mesh = lovr.graphics.newMesh({
-          { 1, 1, 0 },
-          { -1, 1, 0 },
-          { 0, 0, 0 },
-          { 0, 0, 1 }
-        })
-        mesh:setIndices({ 1, 2, 3, 1, 3, 4, 1, 2, 4, 2, 3, 4 })
-        shape = lovr.physics.newConvexShape(mesh)
-        expect(shape:getPointCount()).to.equal(4)
-        expect(shape:getVertices():getSize()).to.equal(12 * 8 * 4)
+        test('from Mesh', function()
+          mesh = lovr.graphics.newMesh({
+            { 1, 1, 0 },
+            { -1, 1, 0 },
+            { 0, 0, 0 },
+            { 0, 0, 1 }
+          })
+          mesh:setIndices({ 1, 2, 3, 1, 3, 4, 1, 2, 4, 2, 3, 4 })
+          shape = lovr.physics.newConvexShape(mesh)
+          expect(shape:getPointCount()).to.equal(4)
+        end)
       end
+
+      test('scale', function()
+        shape = lovr.physics.newConvexShape({ 1, 1, 0, -1, 1, 0, 0, 0, 0, 0, 0, 1 }, 2)
+        expect(shape:getScale()).to.equal(2)
+      end)
     end)
 
     group('MeshShape', function()
@@ -119,6 +127,16 @@ group('physics', function()
           shape = lovr.physics.newMeshShape(mesh)
         end)
       end
+
+      test('scale', function()
+        shape = lovr.physics.newMeshShape({
+          {   0,  .4, 0 },
+          { -.5, -.4, 0 },
+          {  .5, -.4, 0 }
+        }, { 1, 2, 3 }, 5)
+
+        expect(shape:getScale()).to.equal(5)
+      end)
     end)
   end)
 end)

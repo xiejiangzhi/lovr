@@ -39,7 +39,12 @@ static int luax_pushoverlapresult(lua_State* L, OverlapResult* hit) {
   lua_pushnumber(L, hit->normal[0]);
   lua_pushnumber(L, hit->normal[1]);
   lua_pushnumber(L, hit->normal[2]);
-  return 8;
+  if (hit->triangle == ~0u) {
+    lua_pushnil(L);
+  } else {
+    lua_pushinteger(L, hit->triangle + 1);
+  }
+  return 9;
 }
 
 static float castCallback(void* userdata, CastResult* hit) {

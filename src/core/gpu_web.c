@@ -205,16 +205,16 @@ bool gpu_surface_init(gpu_surface_info* info) {
   return false; // TODO
 }
 
-void gpu_surface_resize(uint32_t width, uint32_t height) {
-  // TODO
+bool gpu_surface_resize(uint32_t width, uint32_t height) {
+  return false; // TODO
 }
 
-gpu_texture* gpu_surface_acquire(void) {
-  return NULL; // TODO
+bool gpu_surface_acquire(gpu_texture** texture) {
+  return false; // TODO
 }
 
-void gpu_surface_present(void) {
-  // TODO
+bool gpu_surface_present(void) {
+  return false; // TODO
 }
 
 // Sampler
@@ -681,8 +681,8 @@ gpu_stream* gpu_stream_begin(const char* label) {
   return stream;
 }
 
-void gpu_stream_end(gpu_stream* stream) {
-  //
+bool gpu_stream_end(gpu_stream* stream) {
+  return true;
 }
 
 void gpu_render_begin(gpu_stream* stream, gpu_canvas* canvas) {
@@ -1050,15 +1050,16 @@ void gpu_destroy(void) {
   memset(&state, 0, sizeof(state));
 }
 
-uint32_t gpu_begin(void) {
-  return state.tick++;
+bool gpu_begin(uint32_t* tick) {
+  *tick = state.tick++;
+  return true;
 }
 
 static void onSubmittedWorkDone(WGPUQueueWorkDoneStatus status, void* userdata) {
   state.lastTickFinished = (uint32_t) (uintptr_t) userdata;
 }
 
-void gpu_submit(gpu_stream** streams, uint32_t count) {
+bool gpu_submit(gpu_stream** streams, uint32_t count) {
   WGPUCommandBuffer commandBuffers[64];
   count = MIN(count, COUNTOF(commandBuffers));
 
@@ -1072,18 +1073,20 @@ void gpu_submit(gpu_stream** streams, uint32_t count) {
   for (uint32_t i = 0; i < state.streamCount; i++) {
     wgpuCommandEncoderRelease(state.streams[i].commands);
   }
+
+  return true;
 }
 
 bool gpu_is_complete(uint32_t tick) {
   return state.lastTickFinished >= tick;
 }
 
-bool gpu_wait_tick(uint32_t tick) {
-  return true; // TODO Unsupported
+bool gpu_wait_tick(uint32_t tick, bool* waited) {
+  return *waited = false, true; // TODO unsupported?
 }
 
-void gpu_wait_idle(void) {
-  // TODO Unsupported
+bool gpu_wait_idle(void) {
+  return true; // TODO unsupported?
 }
 
 // Helpers

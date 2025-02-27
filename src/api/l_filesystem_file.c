@@ -44,10 +44,12 @@ static int l_lovrFileRead(lua_State* L) {
     lua_Number n = lua_tonumber(L, 2);
     luax_check(L, n >= 0, "Number of bytes to read can not be negative");
     luax_check(L, n < 9007199254740992.0, "Number of bytes to read must be less than 2^53");
-    size = (size_t) n;
+    size = MIN((size_t) n, SIZE_MAX);
   } else {
-    luax_assert(L, lovrFileGetSize(file, &size));
-    size -= lovrFileTell(file);
+    uint64_t fileSize;
+    luax_assert(L, lovrFileGetSize(file, &fileSize));
+    fileSize -= lovrFileTell(file);
+    size = MIN(fileSize, SIZE_MAX);
   }
   size_t count;
   void* data = lovrMalloc(size);

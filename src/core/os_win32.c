@@ -25,9 +25,11 @@ static struct {
   HCURSOR cursor;
   HWND window;
   bool focused;
+  bool minimized;
   uint32_t width;
   uint32_t height;
   fn_quit* onQuit;
+  fn_visible* onVisible;
   fn_focus* onFocus;
   fn_resize* onResize;
   fn_key* onKey;
@@ -347,7 +349,14 @@ static LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM param, LPAR
     case WM_SIZE: {
       uint32_t width = LOWORD(lparam);
       uint32_t height = HIWORD(lparam);
-      if (param == 0 && (width != state.width || height != state.height)) {
+
+      bool minimized = param == SIZE_MINIMIZED;
+      if (minimized != state.minimized) {
+        state.minimized = minimized;
+        if (state.onVisible) state.onVisible(!minimized);
+      }
+
+      if (param == 0) {
         state.width = width;
         state.height = height;
         if (state.onResize) {
@@ -453,6 +462,10 @@ void os_on_quit(fn_quit* callback) {
   state.onQuit = callback;
 }
 
+void os_on_visible(fn_visible* callback) {
+  state.onVisible = callback;
+}
+
 void os_on_focus(fn_focus* callback) {
   state.onFocus = callback;
 }
@@ -540,6 +553,14 @@ bool os_window_open(const os_window_config* config) {
 
 bool os_window_is_open() {
   return state.window;
+}
+
+bool os_window_is_visible() {
+  return state.window && !state.minimized;
+}
+
+bool os_window_is_focused() {
+  return state.window && state.focused;
 }
 
 void os_window_get_size(uint32_t* width, uint32_t* height) {

@@ -34,6 +34,7 @@ extern StringEntry lovrDefaultShader[];
 extern StringEntry lovrDevice[];
 extern StringEntry lovrDeviceAxis[];
 extern StringEntry lovrDeviceButton[];
+extern StringEntry lovrDisplayType[];
 extern StringEntry lovrDrawMode[];
 extern StringEntry lovrDrawStyle[];
 extern StringEntry lovrEffect[];
