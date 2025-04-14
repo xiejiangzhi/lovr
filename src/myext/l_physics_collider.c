@@ -66,6 +66,7 @@ static int l_lovrColliderAddAngularVelocity(lua_State* L) {
   }
 }
 
+// scaleAngularVelocity(n)
 static int l_lovrColliderScaleAngularVelocity(lua_State* L) {
   Collider* collider = luax_checktype(L, 1, Collider);
   lovrCheck(lua_isnumber(L, 2), "scale must be a number");
@@ -81,6 +82,7 @@ static int l_lovrColliderScaleAngularVelocity(lua_State* L) {
   return 3;
 }
 
+// scaleVelocity(n)
 static int l_lovrColliderScaleVelocity(lua_State* L) {
   Collider* collider = luax_checktype(L, 1, Collider);
   lovrCheck(lua_isnumber(L, 2), "scale must be a number");
