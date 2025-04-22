@@ -3409,7 +3409,7 @@ Shader* lovrShaderCreate(const ShaderInfo* info) {
         [SPV_COMBINED_TEXTURE_SAMPLER] = GPU_SLOT_TEXTURE_WITH_SAMPLER,
         [SPV_SAMPLED_TEXTURE] = GPU_SLOT_SAMPLED_TEXTURE,
         [SPV_STORAGE_TEXTURE] = GPU_SLOT_STORAGE_TEXTURE,
-        [SPV_SAMPLER] = GPU_SLOT_SAMPLER,
+        [SPV_SAMPLER] = GPU_SLOT_SAMPLER
       };
 
       gpu_phase phases[] = {
