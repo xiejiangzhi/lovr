@@ -80,3 +80,24 @@ float* luax_checkvector(lua_State* L, int index, VectorType type, const char* ex
   }
   return p;
 }
+
+float* luax_tovector_with_type(lua_State* L, int index, VectorType type) {
+  void* p = lua_touserdata(L, index);
+  if (!p) { return NULL; }
+
+  if (lua_type(L, index) == LUA_TLIGHTUSERDATA) {
+    Vector v = { .pointer = p };
+    if (v.handle.type == type) {
+      float* pointer = lovrPoolResolve(pool, v);
+      luax_assert(L, pointer);
+      return pointer;
+    }
+  } else {
+    VectorType* t = p;
+    if (*t == type) {
+      return (float*) (t + 1);
+    }
+  }
+
+  return NULL;
+}

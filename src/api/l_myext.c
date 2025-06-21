@@ -12,7 +12,7 @@ static int l_lovrMyExtTest(lua_State* L) {
   return 1;
 }
 
-// write to e.phy_pos, e.phy_rot, e.phy_tpos, e.phy_lv, e.phy_av
+// write to e.phy_pos, e.phy_rot, e.phy_lv, e.phy_av, e.phy_lspeed, e.phy_aspeed
 static int l_lovrSyncEntitiesPhyData(lua_State* L) {
   lovrCheck(lua_istable(L, 1), "Argument 1 must give a entities list");
 
@@ -22,28 +22,41 @@ static int l_lovrSyncEntitiesPhyData(lua_State* L) {
     int eidx = lua_gettop(L);
     lua_getfield(L, eidx, "collider");
     Collider* collider = luax_totype(L, -1, Collider);
+
     if (collider) {
       float pos[3], rot[4];
       lovrColliderGetPose(collider, pos, rot);
+
       lua_getfield(L, eidx, "phy_pos");
-      vec3 v = luax_checkvector(L, -1, V_VEC3, NULL);
-      vec3_set(v, pos[0], pos[1], pos[2]);
-
-      lua_getfield(L, eidx, "phy_tpos");
-      luax_writeobjarr(L, -2, 3, pos);
-
-      lua_getfield(L, eidx, "phy_lv");
-      v = luax_checkvector(L, -1, V_VEC3, NULL);
-      float lv[3];
-      lovrColliderGetLinearVelocity(collider, lv);
-      vec3_set(v, lv[0], lv[1], lv[2]);
-
-      lua_pushnumber(L, vec3_length(lv));
-      lua_setfield(L, eidx, "phy_speed");
+      vec3 lpos = luax_tovector_with_type(L, -1, V_VEC3);
+      if (lpos) {
+        vec3_set(lpos, pos[0], pos[1], pos[2]);
+      }
 
       lua_getfield(L, eidx, "phy_rot");
-      quat q = luax_checkvector(L, -1, V_QUAT, NULL);
-      quat_set(q, rot[0], rot[1], rot[2], rot[3]);
+      quat lquat = luax_tovector_with_type(L, -1, V_QUAT);
+      if (lquat) {
+        quat_set(lquat, rot[0], rot[1], rot[2], rot[3]);
+      }
+
+      lua_getfield(L, eidx, "phy_lv");
+      vec3 lv = luax_tovector_with_type(L, -1, V_VEC3);
+      if (lv) {
+        lovrColliderGetLinearVelocity(collider, lv);
+      }
+
+      lua_pushnumber(L, vec3_length(lv));
+      lua_setfield(L, eidx, "phy_lspeed");
+
+      lua_getfield(L, eidx, "phy_av");
+      vec3 av = luax_tovector_with_type(L, -1, V_VEC3);
+      if (av) {
+        lovrColliderGetAngularVelocity(collider, av);
+      }
+
+      lua_pushnumber(L, vec3_length(av));
+      lua_setfield(L, eidx, "phy_aspeed");
+
       lua_pop(L, 6);
     } else {
       lua_pop(L, 2);
