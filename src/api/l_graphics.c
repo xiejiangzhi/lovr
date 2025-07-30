@@ -22,6 +22,7 @@ StringEntry lovrBlendMode[] = {
   [BLEND_LIGHTEN] = ENTRY("lighten"),
   [BLEND_DARKEN] = ENTRY("darken"),
   [BLEND_SCREEN] = ENTRY("screen"),
+  [BLEND_ADD_ALL] = ENTRY("add_all"),
   [BLEND_NONE] = ENTRY("none"),
   { 0 }
 };

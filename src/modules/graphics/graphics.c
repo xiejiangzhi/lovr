@@ -6302,6 +6302,11 @@ void lovrPassSetBlendMode(Pass* pass, uint32_t index, BlendMode mode, BlendAlpha
       .color = { GPU_BLEND_SRC_ALPHA, GPU_BLEND_ONE_MINUS_SRC_COLOR, GPU_BLEND_ADD },
       .alpha = { GPU_BLEND_ONE, GPU_BLEND_ONE_MINUS_SRC_COLOR, GPU_BLEND_ADD }
     },
+
+    [BLEND_ADD_ALL] = {
+      .color = { GPU_BLEND_ONE, GPU_BLEND_ONE, GPU_BLEND_ADD },
+      .alpha = { GPU_BLEND_ONE, GPU_BLEND_ONE, GPU_BLEND_ADD }
+    },
   };
 
   *blend = table[mode];

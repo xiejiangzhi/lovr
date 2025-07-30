@@ -545,6 +545,7 @@ typedef enum {
   BLEND_LIGHTEN,
   BLEND_DARKEN,
   BLEND_SCREEN,
+  BLEND_ADD_ALL,
   BLEND_NONE
 } BlendMode;
 
