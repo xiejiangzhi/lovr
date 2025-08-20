@@ -4,15 +4,53 @@ Changelog
 dev
 ---
 
+### Add
+
+- Add `Blob:setI8/setU8/setI16/setU16/setI32/setU32/setF32/setF64`.
+- Add `bgra8` TextureFormat.
+- Add `t.graphics.hdr` and `lovr.graphics.isHDR`.
+- Add `pqToLinear`, `linearToPQ`, `sRGBToRec2020`, and `rec2020ToSRGB` shader helpers.
+- Add support for custom array strides in buffer formats.
+- Add `lovr.modelschanged` event.
+- Add `lovr.headset.getModelKeys`.
+- Add `Curve:getLength` and `Curve:step`.
+- Add `thumbrest` HeadsetAxis.
+- Add support for Touch Pro controllers.
+- Add `Pass:setBlendState`.
+- Add `Pass:getViewRay`.
+
+### Change
+
+- Change `require` to have better errors when files/plugins aren't found.
+- Change `lovr.headset.newModel` to also take a lightuserdata.
+- Change `lovr.headset.isTracked` to also take a `Model`.
+- Change `lovr.headset.getPosition/Orientation/Direction/Pose` to also take a `Model`.
+- Change `TerrainShape` to support `nil` heights (treated as holes).
+- Change `Curve:render` to no longer always return 2 points for curves with 2 control points.
+
 ### Fix
 
 - Fix `ConvexShape` scale not working when created from a table of points.
 - Fix `ConvexShape:getPoint` to apply the shape's center of mass and scale.
 - Fix memory leak with `ConvexShape` and `MeshShape`.
+- Fix issue where OBJ models loaded without materials would have inverted UVs.
+- Fix issue where cube/array textures would only regenerate 1 mipmap.
+- Fix crash in `Pass:send` when using tables to write nested structs to a uniform buffer.
 - Fix crash when drawing text on a pass without a canvas.
+- Fix crash when using a 3D texture as a canvas texture.
 - Fix issue where normalized buffer fields were rounded incorrectly.
 - Fix possible crash related to Thread:wait.
 - Fix possible crash in Model animation.
+- Fix `Collider:setDegreesOfFreedom` to preserve mass/inertia.
+- Fix missing error in `CapsuleShape:setRadius/Length` and `CylinderShape:setRadius/Length`.
+
+### Deprecate
+
+- Deprecate variant of `lovr.headset.newModel` that takes a `Device`.
+
+### Remove
+
+- Remove `animated` flag in `lovr.headset.newModel` (all models are animated now).
 
 v0.18.0 - 2025-02-14
 ---

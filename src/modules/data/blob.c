@@ -8,12 +8,7 @@ Blob* lovrBlobCreate(void* data, size_t size, const char* name) {
   blob->ref = 1;
   blob->data = data;
   blob->size = size;
-  if (name) {
-    size_t length = strlen(name);
-    char* string = lovrMalloc(length + 1);
-    memcpy(string, name, length + 1);
-    blob->name = string;
-  }
+  blob->name = lovrStrdup(name);
   return blob;
 }
 

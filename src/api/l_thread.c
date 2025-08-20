@@ -28,12 +28,9 @@ static char* threadRunner(Thread* thread, Blob* body, Variant* arguments, uint32
   }
 
   // Error handling
-  size_t length;
-  const char* message = lua_tolstring(L, -1, &length);
-
-  if (message) {
-    char* error = lovrMalloc(length + 1);
-    memcpy(error, message, length + 1);
+  if (lua_type(L, -1) == LUA_TSTRING) {
+    const char* message = lua_tostring(L, -1);
+    char* error = lovrStrdup(message);
     lua_close(L);
     return error;
   }

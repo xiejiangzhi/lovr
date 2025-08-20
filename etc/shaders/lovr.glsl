@@ -448,6 +448,58 @@ vec3 linearToGamma(vec3 color) {
   return mix(1.055 * pow(color, vec3(1. / 2.4)) - .055, color * 12.92, lessThanEqual(color, vec3(.0031308)));
 }
 
+vec3 pqToLinear(vec3 color) {
+  float c1 = .835975;
+  float c2 = 18.8515625;
+  float c3 = 18.6875;
+  float m1 = .1593017578125;
+  float m2 = 78.84375;
+  vec3 em2 = pow(color, vec3(1. / m2));
+  return pow(max(em2 - c1, 0.) / (c2 - c3 * em2), vec3(1. / m1));
+}
+
+vec3 linearToPQ(vec3 color) {
+  float c1 = .835975;
+  float c2 = 18.8515625;
+  float c3 = 18.6875;
+  float m1 = .1593017578125;
+  float m2 = 78.84375;
+  vec3 ym1 = pow(color, vec3(m1));
+  return pow((c1 + c2 * ym1) / (1. + c3 * ym1), vec3(m2));
+}
+
+vec3 sRGBToRec2020(vec3 color) {
+  mat3 xyz_from_srgb = transpose(mat3(
+    vec3(0.4123908, 0.3575843, 0.1804808),
+    vec3(0.2126390, 0.7151687, 0.0721923),
+    vec3(0.0193308, 0.1191948, 0.9505322)
+  ));
+
+  mat3 rec2020_from_xyz = transpose(mat3(
+    vec3( 1.7166512, -0.3556708, -0.2533663),
+    vec3(-0.6666844,  1.6164812,  0.0157685),
+    vec3( 0.0176399, -0.0427706,  0.9421031)
+  ));
+
+  return rec2020_from_xyz * xyz_from_srgb * color;
+}
+
+vec3 rec2020ToSRGB(vec3 color) {
+  mat3 xyz_from_rec2020 = transpose(mat3(
+    vec3(0.6369580, 0.1446169, 0.1688810),
+    vec3(0.2627002, 0.6779981, 0.0593017),
+    vec3(0.0000000, 0.0280727, 1.0609851)
+  ));
+
+  mat3 srgb_from_xyz = transpose(mat3(
+    vec3( 3.2409699, -1.5373832, -0.4986108),
+    vec3(-0.9692436,  1.8759675,  0.0415551),
+    vec3( 0.0556301, -0.2039770,  1.0569715)
+  ));
+
+  return srgb_from_xyz * xyz_from_rec2020 * color;
+}
+
 uint packSnorm10x3(vec4 v) {
   return
     ((int(v.x * 511.) & 0x3ff) <<  0) |

@@ -25,11 +25,7 @@ option(LOVR_USE_LUAJIT "Use LuaJIT instead of Lua" ON)
 option(LOVR_USE_GLSLANG "Use glslang to compile GLSL shaders" ON)
 option(LOVR_USE_VULKAN "Use the Vulkan renderer" ON)
 option(LOVR_USE_WEBGPU "Use the WebGPU renderer" OFF)
-option(LOVR_USE_OPENXR "Enable the OpenXR backend for the headset module" ON)
-option(LOVR_USE_WEBXR "Enable the WebXR backend for the headset module" OFF)
-option(LOVR_USE_SIMULATOR "Enable the keyboard/mouse backend for the headset module" ON)
 option(LOVR_USE_STEAM_AUDIO "Enable the Steam Audio spatializer (be sure to also set LOVR_STEAM_AUDIO_PATH)" OFF)
-option(LOVR_USE_OCULUS_AUDIO "Enable the Oculus Audio spatializer (be sure to also set LOVR_OCULUS_AUDIO_PATH)" OFF)
 
 option(LOVR_SANITIZE "Enable Address Sanitizer" OFF)
 option(LOVR_PROFILE "Enable Tracy integration" OFF)
@@ -50,10 +46,9 @@ if(EMSCRIPTEN)
     "-sUSE_WEBGPU=1 "
     "-sFORCE_FILESYSTEM=1 "
     "-sINITIAL_HEAP=1677721600 "
-    "-sEXPORTED_FUNCTIONS=_main,_webxr_attach,_webxr_detach "
+    "-sEXPORTED_FUNCTIONS=_main "
     "-sEXPORTED_RUNTIME_METHODS=getValue,setValue "
-    "--js-library \"${CMAKE_CURRENT_SOURCE_DIR}/etc/webxr.js\" "
-    "--shell-file \"${CMAKE_CURRENT_SOURCE_DIR}/etc/lovr.html\""
+    "--shell-file \"${PROJECT_SOURCE_DIR}/etc/lovr.html\""
   )
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Os")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Os")
@@ -62,8 +57,6 @@ if(EMSCRIPTEN)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
   endif()
   set(CMAKE_EXECUTABLE_SUFFIX ".html")
-  set(LOVR_USE_WEBXR ON)
-  set(LOVR_USE_OPENXR OFF)
   set(LOVR_USE_WEBGPU ON)
   set(LOVR_USE_VULKAN OFF)
 elseif(MSVC)
@@ -77,9 +70,7 @@ elseif(ANDROID)
   endif()
 elseif(UNIX)
   find_package(PkgConfig)
-  if(APPLE)
-    set(LOVR_USE_OPENXR OFF)
-  else()
+  if(NOT APPLE)
     set(CMAKE_SKIP_RPATH OFF)
   endif()
 endif()
@@ -93,6 +84,7 @@ if(LOVR_USE_GLFW AND NOT (EMSCRIPTEN OR ANDROID))
   if(LOVR_SYSTEM_GLFW)
     pkg_search_module(GLFW REQUIRED glfw3)
     list(APPEND LOVR_INCLUDES ${GLFW_INCLUDE_DIRS})
+    list(APPEND LOVR_LIB_DIRS ${GLFW_LIBRARY_DIRS})
     set(LOVR_GLFW ${GLFW_LIBRARIES})
   else()
     set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "")
@@ -102,17 +94,17 @@ if(LOVR_USE_GLFW AND NOT (EMSCRIPTEN OR ANDROID))
     set(GLFW_INSTALL OFF CACHE BOOL "")
     set(GLFW_LIBRARY_TYPE "SHARED")
     add_subdirectory(deps/glfw glfw)
-    list(APPEND LOVR_INCLUDES deps/glfw/include)
-    set(LOVR_GLFW glfw ${GLFW_LIBRARIES})
+    set(LOVR_GLFW glfw)
   endif()
-  unset(LIB_SUFFIX CACHE)
 endif()
 
 # Lua
 if(LOVR_USE_LUAJIT AND NOT EMSCRIPTEN)
   if(LOVR_SYSTEM_LUA)
     pkg_search_module(LUAJIT REQUIRED luajit)
+    list(APPEND LOVR_LIB_DIRS ${LUAJIT_LIBRARY_DIRS})
     set(LOVR_LUA_INCLUDE ${LUAJIT_INCLUDE_DIRS})
+    set(LOVR_LUA_LIB_DIR ${LUAJIT_LIBRARY_DIRS})
     set(LOVR_LUA ${LUAJIT_LIBRARIES})
   else()
     set(BUILD_SHARED_LIBS ON)
@@ -129,7 +121,9 @@ if(LOVR_USE_LUAJIT AND NOT EMSCRIPTEN)
 else()
   if(LOVR_SYSTEM_LUA)
     pkg_search_module(LUA REQUIRED lua)
+    list(APPEND LOVR_LIB_DIRS ${LUA_LIBRARY_DIRS})
     set(LOVR_LUA_INCLUDE ${LUA_INCLUDE_DIRS})
+    set(LOVR_LUA_LIB_DIR ${LUA_LIBRARY_DIRS})
     set(LOVR_LUA ${LUA_LIBRARIES})
   else()
     set(LUA_SRC
@@ -139,6 +133,7 @@ else()
     )
     list(TRANSFORM LUA_SRC PREPEND deps/lua/)
     add_library(lua SHARED ${LUA_SRC})
+    target_include_directories(lua INTERFACE deps/lua)
     if(MSVC)
       target_compile_definitions(lua PRIVATE LUA_BUILD_AS_DLL)
       target_compile_definitions(lua PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -147,7 +142,6 @@ else()
       target_link_libraries(lua dl)
       target_compile_definitions(lua PRIVATE LUA_USE_DLOPEN)
     endif()
-    set(LOVR_LUA_INCLUDE deps/lua)
     set(LOVR_LUA lua)
   endif()
 endif()
@@ -160,7 +154,6 @@ if(LOVR_ENABLE_DATA)
   set(MSDFGEN_USE_VCPKG OFF CACHE BOOL "")
   set(MSDFGEN_USE_CPP11 OFF CACHE BOOL "")
   add_subdirectory(deps/msdfgen msdfgen)
-  list(APPEND LOVR_INCLUDES deps/msdfgen)
   set(LOVR_MSDF msdfgen-core)
   if(APPLE)
     set_target_properties(msdfgen-core PROPERTIES MACOSX_RPATH ON)
@@ -178,12 +171,7 @@ if(LOVR_ENABLE_PHYSICS)
     set(GENERATE_DEBUG_SYMBOLS ON CACHE BOOL "")
   endif()
   add_subdirectory(deps/joltc jolt)
-  set_target_properties(Jolt PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
-  set_target_properties(joltc PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
-  target_sources(joltc PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/joltc_ext/ext.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/joltc_ext/ext.cpp"
-  )
+  set_target_properties(Jolt joltc PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
   set(LOVR_JOLT joltc)
 endif()
 
@@ -195,32 +183,32 @@ if(LOVR_USE_GLSLANG)
   set(ENABLE_OPT OFF CACHE BOOL "")
   set(ENABLE_CTEST OFF CACHE BOOL "")
   set(BUILD_EXTERNAL OFF CACHE BOOL "")
-  set(BUILD_SHARED_LIBS OFF)
+  set(BUILD_SHARED_LIBS ON)
   if(NOT EMSCRIPTEN)
     set(ENABLE_GLSLANG_BINARIES ON CACHE BOOL "")
   else()
     set(ENABLE_GLSLANG_BINARIES OFF CACHE BOOL "")
   endif()
-  list(APPEND LOVR_INCLUDES deps/glslang/glslang/Include deps/glslang/glslang/Public)
   add_subdirectory(deps/glslang glslang)
-  set(LOVR_GLSLANG glslang SPIRV glslang-default-resource-limits)
-endif()
-
-# Vulkan
-if(LOVR_USE_VULKAN)
-  list(APPEND LOVR_INCLUDES deps/vulkan-headers/include)
+  target_include_directories(glslang INTERFACE deps/glslang/glslang/Include deps/glslang/glslang/Public)
+  target_sources(glslang PRIVATE ${PROJECT_SOURCE_DIR}/deps/glslang/glslang/ResourceLimits/ResourceLimits.cpp)
+  target_sources(glslang PRIVATE ${PROJECT_SOURCE_DIR}/deps/glslang/glslang/ResourceLimits/resource_limits_c.cpp)
+  if(TARGET glslang-standalone)
+    set_target_properties(glslang-standalone PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/glslang/glslang")
+  endif()
+  set(LOVR_GLSLANG glslang)
 endif()
 
 # OpenXR
-if(LOVR_ENABLE_HEADSET AND LOVR_USE_OPENXR)
+if(LOVR_ENABLE_HEADSET)
   if(LOVR_SYSTEM_OPENXR AND NOT ANDROID)
     pkg_search_module(OPENXR openxr REQUIRED)
     list(APPEND LOVR_INCLUDES ${OPENXR_INCLUDE_DIRS})
+    list(APPEND LOVR_LIB_DIRS ${OPENXR_LIBRARY_DIRS})
     set(LOVR_OPENXR ${OPENXR_LIBRARIES})
   else()
     set(DYNAMIC_LOADER ON CACHE BOOL "")
     set(BUILD_WITH_WAYLAND_HEADERS OFF CACHE BOOL "")
-    list(APPEND LOVR_INCLUDES deps/openxr/include)
     add_subdirectory(deps/openxr openxr)
     set(LOVR_OPENXR openxr_loader)
   endif()
@@ -238,11 +226,8 @@ if(LOVR_USE_STEAM_AUDIO)
   if(NOT LOVR_STEAM_AUDIO_PATH)
     message(FATAL_ERROR "LOVR_USE_STEAM_AUDIO requires the LOVR_STEAM_AUDIO_PATH to be set to the location of the Steam Audio folder")
   endif()
-  if(CMAKE_SIZEOF_VOID_P EQUAL 4) # Note: SteamAudio distributes 32 bit libs but wiring them up is very verbose
-    message(FATAL_ERROR "LOVR_USE_STEAM_AUDIO is not currently available on 32 bit builds")
-  endif()
-  list(APPEND LOVR_INCLUDES "${LOVR_STEAM_AUDIO_PATH}/include")
   add_library(Phonon SHARED IMPORTED)
+  target_include_directories(Phonon INTERFACE "${LOVR_STEAM_AUDIO_PATH}/include")
   if(ANDROID)
     set_target_properties(Phonon PROPERTIES IMPORTED_LOCATION "${LOVR_STEAM_AUDIO_PATH}/lib/Android/arm64/libphonon.so")
   elseif(WIN32)
@@ -256,47 +241,6 @@ if(LOVR_USE_STEAM_AUDIO)
   endif()
 
   set(LOVR_PHONON Phonon)
-endif()
-
-# Oculus Audio
-if(LOVR_USE_OCULUS_AUDIO)
-  if(NOT LOVR_OCULUS_AUDIO_PATH)
-    message(FATAL_ERROR "LOVR_USE_OCULUS_AUDIO requires the LOVR_OCULUS_AUDIO_PATH to be set to the location of the Oculus Spatializer Native (AudioSDK) folder")
-  endif()
-
-  list(APPEND LOVR_INCLUDES "${LOVR_OCULUS_AUDIO_PATH}/Include")
-
-  add_library(OculusAudio SHARED IMPORTED)
-  if(ANDROID)
-    set_target_properties(OculusAudio PROPERTIES IMPORTED_LOCATION "${LOVR_OCULUS_AUDIO_PATH}/Lib/Android/arm64-v8a/libovraudio64.so")
-  elseif(WIN32) # Note: This has *not* been tested.
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-      set_target_properties(OculusAudio PROPERTIES IMPORTED_IMPLIB "${LOVR_OCULUS_AUDIO_PATH}/Lib/x64/ovraudio64.lib")
-      set_target_properties(OculusAudio PROPERTIES IMPORTED_LOCATION "${LOVR_OCULUS_AUDIO_PATH}/Lib/x64/ovraudio64.dll")
-    else () # ARM and ARM64 are also valid values for CMAKE_GENERATOR_PLATFORM but we will ignore this
-      set_target_properties(OculusAudio PROPERTIES IMPORTED_IMPLIB "${LOVR_OCULUS_AUDIO_PATH}/Lib/Win32/ovraudio32.lib")
-      set_target_properties(OculusAudio PROPERTIES IMPORTED_LOCATION "${LOVR_OCULUS_AUDIO_PATH}/Lib/Win32/ovraudio32.dll")
-    endif()
-  elseif(APPLE)
-    # Oculus Audio ships with an intel .framework, but (as of 25.0.0) it is broken. We can convert it to a working dylib with install_name_tool in a custom target:
-    SET(OCULUS_AUDIO_MAC_LIB_DIR "${CMAKE_CURRENT_BINARY_DIR}/ovraudio")
-    SET(OCULUS_AUDIO_MAC_LIB_FILE "${OCULUS_AUDIO_MAC_LIB_DIR}/ovraudio64.dylib")
-    SET(OCULUS_AUDIO_MAC_RPATH "@rpath/ovraudio64.dylib")
-    file(MAKE_DIRECTORY "${OCULUS_AUDIO_MAC_LIB_DIR}")
-    add_custom_command(OUTPUT "${OCULUS_AUDIO_MAC_LIB_FILE}"
-                   COMMAND ${CMAKE_COMMAND} -E copy "${LOVR_OCULUS_AUDIO_PATH}/Lib/mac64/OVRAudio64.framework/Versions/A/ovraudio64" "${OCULUS_AUDIO_MAC_LIB_FILE}"
-                   COMMAND install_name_tool -id ${OCULUS_AUDIO_MAC_RPATH} "${OCULUS_AUDIO_MAC_LIB_FILE}"
-                   WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-    add_custom_target(OculusAudioFixed DEPENDS "${OCULUS_AUDIO_MAC_LIB_FILE}")
-    add_dependencies(OculusAudio OculusAudioFixed)
-    # IMPORTED_SONAME required because the automatic rpath requires the dylib file to exist before builds start
-    set_target_properties(OculusAudio PROPERTIES IMPORTED_LOCATION "${OCULUS_AUDIO_MAC_LIB_FILE}"
-                                                 IMPORTED_SONAME "${OCULUS_AUDIO_MAC_RPATH}")
-  else() # Assume Linux. Note: This has *not* been tested. FIXME: When is the .so copied?
-    set_target_properties(OculusAudio PROPERTIES IMPORTED_LOCATION "${LOVR_OCULUS_AUDIO_PATH}/Lib/Linux64/libovraudio64.so")
-  endif()
-
-  set(LOVR_OCULUS_AUDIO OculusAudio)
 endif()
 
 # LÖVR
@@ -330,17 +274,18 @@ else()
   set_target_properties(lovr PROPERTIES C_VISIBILITY_PRESET "hidden")
 endif()
 
-set_target_properties(lovr PROPERTIES C_STANDARD 11)
-set_target_properties(lovr PROPERTIES C_STANDARD_REQUIRED ON)
+set_target_properties(lovr PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 
 target_include_directories(lovr PRIVATE
   ${LOVR_INCLUDES}
   ${LOVR_LUA_INCLUDE}
-  ${CMAKE_CURRENT_SOURCE_DIR}/src
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/modules
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/std
-  ${CMAKE_CURRENT_SOURCE_DIR}/etc
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/modules
+  ${PROJECT_SOURCE_DIR}/src/lib/std
+  ${PROJECT_SOURCE_DIR}/etc
 )
+
+target_link_directories(lovr PRIVATE ${LOVR_LIB_DIRS})
 
 target_link_libraries(lovr
   ${LOVR_GLFW}
@@ -349,7 +294,6 @@ target_link_libraries(lovr
   ${LOVR_JOLT}
   ${LOVR_GLSLANG}
   ${LOVR_OPENXR}
-  ${LOVR_OCULUS_AUDIO}
   ${LOVR_PTHREADS}
   ${EMSCRIPTEN_LINKER_FLAGS}
 )
@@ -395,11 +339,6 @@ if(LOVR_ENABLE_AUDIO)
     target_sources(lovr PRIVATE src/modules/audio/spatializer_phonon.c)
     # Dynamically linked at runtime, so this is not otherwise a dependency
     add_dependencies(lovr ${LOVR_PHONON})
-  endif()
-
-  if(LOVR_USE_OCULUS_AUDIO)
-    target_compile_definitions(lovr PRIVATE LOVR_ENABLE_OCULUS_SPATIALIZER)
-    target_sources(lovr PRIVATE src/modules/audio/spatializer_oculus.c)
   endif()
 else()
   target_compile_definitions(lovr PRIVATE LOVR_DISABLE_AUDIO)
@@ -484,6 +423,7 @@ if(LOVR_ENABLE_GRAPHICS)
 
   if(LOVR_USE_VULKAN)
     target_compile_definitions(lovr PRIVATE LOVR_VK)
+    target_include_directories(lovr PRIVATE deps/vulkan-headers/include)
     target_sources(lovr PRIVATE src/core/gpu_vk.c)
   endif()
 
@@ -503,7 +443,7 @@ if(LOVR_ENABLE_GRAPHICS)
         message(FATAL_ERROR "Need glslangValidator installed or LOVR_USE_GLSLANG enabled")
       endif()
     endif()
-    set(LOVR_GLSL "${CMAKE_CURRENT_SOURCE_DIR}/etc/shaders/lovr.glsl")
+    set(LOVR_GLSL "${PROJECT_SOURCE_DIR}/etc/shaders/lovr.glsl")
     file(GLOB shader_files "etc/shaders/*.${ARGV0}")
     foreach(shader_file ${shader_files})
       string(REGEX MATCH "([^\/]+)\\.${ARGV0}$" shader ${shader_file})
@@ -537,19 +477,6 @@ if(LOVR_ENABLE_HEADSET)
     src/api/l_headset.c
     src/api/l_headset_layer.c
   )
-
-  if(LOVR_USE_OPENXR)
-    target_compile_definitions(lovr PRIVATE LOVR_USE_OPENXR)
-    target_sources(lovr PRIVATE src/modules/headset/headset_openxr.c)
-  endif()
-  if(LOVR_USE_WEBXR)
-    target_compile_definitions(lovr PRIVATE LOVR_USE_WEBXR)
-    target_sources(lovr PRIVATE src/modules/headset/headset_webxr.c)
-  endif()
-  if(LOVR_USE_SIMULATOR)
-    target_compile_definitions(lovr PRIVATE LOVR_USE_SIMULATOR)
-    target_sources(lovr PRIVATE src/modules/headset/headset_simulator.c)
-  endif()
 else()
   target_compile_definitions(lovr PRIVATE LOVR_DISABLE_HEADSET)
 endif()
@@ -640,14 +567,15 @@ if(NOT EMSCRIPTEN)
   foreach(PLUGIN_PATH ${LOVR_PLUGINS})
     if(IS_DIRECTORY ${PLUGIN_PATH} AND EXISTS ${PLUGIN_PATH}/CMakeLists.txt)
       get_filename_component(PLUGIN "${PLUGIN_PATH}" NAME)
-      add_subdirectory(${PLUGIN_PATH} "${CMAKE_CURRENT_BINARY_DIR}/plugins/${PLUGIN}")
+      add_subdirectory(${PLUGIN_PATH} "${PROJECT_BINARY_DIR}/plugins/${PLUGIN}")
       get_directory_property(PLUGIN_TARGETS DIRECTORY ${PLUGIN_PATH} DEFINITION LOVR_PLUGIN_TARGETS)
       if(NOT PLUGIN_TARGETS)
         glob_targets(${PLUGIN_PATH} PLUGIN_TARGETS)
       endif()
-      set_target_properties(${PLUGIN_TARGETS} PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/plugins/${PLUGIN}")
+      set_target_properties(${PLUGIN_TARGETS} PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/plugins/${PLUGIN}")
       foreach(PLUGIN_TARGET ${PLUGIN_TARGETS})
         target_include_directories(${PLUGIN_TARGET} PRIVATE ${LOVR_LUA_INCLUDE})
+        target_link_directories(${PLUGIN_TARGET} PRIVATE ${LOVR_LUA_LIB_DIR})
         target_link_libraries(${PLUGIN_TARGET} ${LOVR_LUA})
       endforeach()
       list(APPEND ALL_PLUGIN_TARGETS ${PLUGIN_TARGETS})
@@ -660,7 +588,7 @@ file(GLOB LOVR_RESOURCES "etc/*.ttf" "etc/*.lua" "etc/shaders/*.glsl")
 foreach(path ${LOVR_RESOURCES})
 
   # Turn the absolute path into a C variable like etc_boot_lua
-  file(RELATIVE_PATH identifier ${CMAKE_CURRENT_SOURCE_DIR} ${path})
+  file(RELATIVE_PATH identifier ${PROJECT_SOURCE_DIR} ${path})
   string(MAKE_C_IDENTIFIER ${identifier} identifier)
 
   # Read the file and turn the bytes into comma-separated hex literals
@@ -676,15 +604,14 @@ endforeach()
 
 if(NOT ANDROID AND NOT EMSCRIPTEN)
   if(APPLE AND LOVR_BUILD_BUNDLE)
-    set(NOGAME_BUNDLE "${CMAKE_CURRENT_BINARY_DIR}/lovr.app/Contents/Resources/nogame.lovr")
+    set(NOGAME_BUNDLE "${PROJECT_BINARY_DIR}/lovr.app/Contents/Resources/nogame.lovr")
   else()
     set(NOGAME_BUNDLE "$<TARGET_FILE:lovr>")
   endif()
   add_custom_command(TARGET lovr POST_BUILD
-    DEPENDS "etc/nogame"
-    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/etc/nogame"
-    COMMAND ${CMAKE_COMMAND} -E tar c "${CMAKE_CURRENT_BINARY_DIR}/nogame.zip" --format=zip .
-    COMMAND ${CMAKE_COMMAND} -E cat "${CMAKE_CURRENT_BINARY_DIR}/nogame.zip" >> ${NOGAME_BUNDLE}
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/etc/nogame"
+    COMMAND ${CMAKE_COMMAND} -E tar c "${PROJECT_BINARY_DIR}/nogame.zip" --format=zip .
+    COMMAND ${CMAKE_COMMAND} -E cat "${PROJECT_BINARY_DIR}/nogame.zip" >> ${NOGAME_BUNDLE}
   )
 endif()
 
@@ -697,7 +624,7 @@ add_custom_target(move_files ALL)
 
 # Moves something from etc to the build directory
 function(move_resource)
-  set(SRC "${CMAKE_CURRENT_SOURCE_DIR}/etc/${ARGV0}")
+  set(SRC "${PROJECT_SOURCE_DIR}/etc/${ARGV0}")
   add_custom_command(TARGET lovr POST_BUILD
     DEPENDS ${SRC}
     COMMAND ${CMAKE_COMMAND} -E copy ${SRC} $<TARGET_FILE_DIR:lovr>/${ARGV0}
@@ -706,8 +633,7 @@ endfunction()
 
 # Platforms
 if(WIN32)
-  target_sources(lovr PRIVATE src/core/os_win32.c)
-  target_sources(lovr PRIVATE etc/lovr.rc)
+  target_sources(lovr PRIVATE src/core/os_win32.c etc/lovr.rc)
   if(MSVC)
     set_target_properties(lovr PROPERTIES COMPILE_FLAGS /wd4244)
     # Excuse anonymous union for type punning
@@ -741,11 +667,11 @@ if(WIN32)
 
   move_dll(${LOVR_GLFW})
   move_dll(${LOVR_LUA})
-  move_dll(${LOVR_JOLT})
   move_dll(${LOVR_MSDF})
-  move_dll(${LOVR_OCULUS_AUDIO})
-  move_dll(${LOVR_PHONON})
+  move_dll(${LOVR_JOLT})
+  move_dll(${LOVR_GLSLANG})
   move_dll(${LOVR_OPENXR})
+  move_dll(${LOVR_PHONON})
   foreach(target ${ALL_PLUGIN_TARGETS})
     move_dll(${target})
   endforeach()
@@ -762,15 +688,15 @@ elseif(APPLE)
     ENABLE_EXPORTS ON
   )
   if(LOVR_BUILD_BUNDLE)
-    set(EXE_DIR ${CMAKE_CURRENT_BINARY_DIR}/lovr.app/Contents/MacOS)
-    target_sources(lovr PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/etc/lovr.icns")
+    set(EXE_DIR ${PROJECT_BINARY_DIR}/lovr.app/Contents/MacOS)
+    target_sources(lovr PRIVATE "${PROJECT_SOURCE_DIR}/etc/lovr.icns")
     set_target_properties(lovr PROPERTIES
       MACOSX_BUNDLE TRUE
-      MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/etc/Info.plist"
-      RESOURCE "${CMAKE_CURRENT_SOURCE_DIR}/etc/lovr.icns"
+      MACOSX_BUNDLE_INFO_PLIST "${PROJECT_SOURCE_DIR}/etc/Info.plist"
+      RESOURCE "${PROJECT_SOURCE_DIR}/etc/lovr.icns"
     )
   else()
-    set(EXE_DIR ${CMAKE_CURRENT_BINARY_DIR}/bin)
+    set(EXE_DIR ${PROJECT_BINARY_DIR}/bin)
     set_target_properties(lovr PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
   endif()
   function(move_lib)
@@ -793,9 +719,10 @@ elseif(APPLE)
   endfunction()
   move_lib(${LOVR_GLFW})
   move_lib(${LOVR_LUA})
-  move_lib(${LOVR_JOLT})
   move_lib(${LOVR_MSDF})
-  move_lib(${LOVR_OCULUS_AUDIO})
+  move_lib(${LOVR_JOLT})
+  move_lib(${LOVR_GLSLANG})
+  move_lib(${LOVR_OPENXR})
   move_lib(${LOVR_PHONON})
   foreach(target ${ALL_PLUGIN_TARGETS})
     move_lib(${target})
@@ -805,14 +732,14 @@ elseif(EMSCRIPTEN)
   set_target_properties(lovr PROPERTIES ENABLE_EXPORTS ON)
   configure_file(etc/lovr.ico favicon.ico COPYONLY)
 elseif(ANDROID)
-  set(ANDROID_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/etc/AndroidManifest.xml" CACHE STRING "The AndroidManifest.xml file to use")
+  set(ANDROID_MANIFEST "${PROJECT_SOURCE_DIR}/etc/AndroidManifest.xml" CACHE STRING "The AndroidManifest.xml file to use")
   file(READ ${ANDROID_MANIFEST} ANDROID_MANIFEST_CONTENT)
   string(REGEX MATCH "package=\"([^\"]*)" _ ${ANDROID_MANIFEST_CONTENT})
   set(ANDROID_PACKAGE ${CMAKE_MATCH_1})
 
   string(REPLACE "." "_" ANDROID_PACKAGE_C ${ANDROID_PACKAGE})
   string(REPLACE "." "/" ANDROID_PACKAGE_JAVA ${ANDROID_PACKAGE})
-  configure_file(${CMAKE_CURRENT_SOURCE_DIR}/etc/Activity.java ${CMAKE_CURRENT_BINARY_DIR}/Activity.java)
+  configure_file(${PROJECT_SOURCE_DIR}/etc/Activity.java ${PROJECT_BINARY_DIR}/Activity.java)
   target_compile_definitions(lovr PRIVATE "LOVR_JAVA_PACKAGE=${ANDROID_PACKAGE_C}")
 
   target_sources(lovr PRIVATE src/core/os_android.c)
@@ -825,7 +752,8 @@ elseif(ANDROID)
     ${LOVR_JOLT}
     ${LOVR_MSDF}
     ${LOVR_LUA}
-    PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/raw/lib/${ANDROID_ABI}"
+    ${LOVR_GLSLANG}
+    PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/raw/lib/${ANDROID_ABI}"
   )
 
   # Build Lua libraries with global symbols, so plugins don't need to explicitly link against Lua
@@ -834,22 +762,15 @@ elseif(ANDROID)
   if(LOVR_BUILD_EXE)
     set(ANDROID_JAR "${ANDROID_SDK}/platforms/${ANDROID_PLATFORM}/android.jar")
     set(ANDROID_TOOLS "${ANDROID_SDK}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}")
-    set(ANDROID_ASSETS "${CMAKE_CURRENT_SOURCE_DIR}/etc/nogame" CACHE STRING "The project folder to include in the APK")
+    set(ANDROID_ASSETS "${PROJECT_SOURCE_DIR}/etc/nogame" CACHE STRING "The project folder to include in the APK")
 
-    if(LOVR_USE_OPENXR)
-      add_custom_command(TARGET move_files POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy
-        $<TARGET_SONAME_FILE:${LOVR_OPENXR}>
-        raw/lib/${ANDROID_ABI}/libopenxr_loader.so
-      )
+    add_custom_command(TARGET move_files POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy
+      $<TARGET_SONAME_FILE:${LOVR_OPENXR}>
+      raw/lib/${ANDROID_ABI}/libopenxr_loader.so
+    )
 
-      configure_file("${ANDROID_NDK}/toolchains/llvm/prebuilt/${ANDROID_HOST_TAG}/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" "raw/lib/${ANDROID_ABI}/libc++_shared.so" COPYONLY)
-    endif()
-
-    if(LOVR_USE_OCULUS_AUDIO)
-      get_target_property(OCULUS_AUDIO_LIB ${LOVR_OCULUS_AUDIO} IMPORTED_LOCATION)
-      file(COPY ${OCULUS_AUDIO_LIB} DESTINATION raw/lib/${ANDROID_ABI})
-    endif()
+    configure_file("${ANDROID_NDK}/toolchains/llvm/prebuilt/${ANDROID_HOST_TAG}/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" "raw/lib/${ANDROID_ABI}/libc++_shared.so" COPYONLY)
 
     if(LOVR_USE_STEAM_AUDIO)
       get_target_property(PHONON_LIB ${LOVR_PHONON} IMPORTED_LOCATION)
@@ -859,7 +780,7 @@ elseif(ANDROID)
     # Make an apk
     add_custom_target(
       buildAPK ALL
-      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+      WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
       COMMAND ${CMAKE_COMMAND} -E copy "${ANDROID_MANIFEST}" AndroidManifest.xml
       COMMAND ${Java_JAVAC_EXECUTABLE} -classpath "${ANDROID_JAR}" -d . Activity.java
       COMMAND ${ANDROID_TOOLS}/d8 --min-api ${ANDROID_NATIVE_API_LEVEL} --output raw ${ANDROID_PACKAGE_JAVA}/Activity.class
@@ -890,7 +811,7 @@ elseif(ANDROID)
     if(CMAKE_BUILD_TYPE STREQUAL Release)
       add_custom_target(
         strip ALL
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
         COMMAND ${CMAKE_STRIP} raw/lib/${ANDROID_ABI}/*.so
       )
       add_dependencies(strip lovr)
@@ -949,10 +870,10 @@ elseif(UNIX)
   endfunction()
   move_lib(${LOVR_GLFW})
   move_lib(${LOVR_LUA})
-  move_lib(${LOVR_JOLT})
   move_lib(${LOVR_MSDF})
+  move_lib(${LOVR_JOLT})
+  move_lib(${LOVR_GLSLANG})
   move_lib(${LOVR_OPENXR})
-  move_lib(${LOVR_OCULUS_AUDIO})
   foreach(target ${ALL_PLUGIN_TARGETS})
     move_lib(${target})
   endforeach()

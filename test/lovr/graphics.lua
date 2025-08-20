@@ -224,6 +224,15 @@ group('graphics', function()
       end).to.fail()
     end)
 
+    test('format: array field with custom stride', function()
+      buffer = lovr.graphics.newBuffer({ { name = 'a', length = 2, type = 'vec3', stride = 16 } })
+      expect(buffer:getSize()).to.equal(32)
+      expect(buffer:getLength()).to.equal(0)
+      expect(buffer:getFormat()).to.equal({
+        { name = 'a', length = 2, type = 'f32x3', stride = 16, offset = 0 }
+      })
+    end)
+
     test(':setData offset', function()
       buffer = lovr.graphics.newBuffer('int', { 1, 2, 3 })
       expect(buffer:getSize()).to.be(12)
@@ -427,11 +436,18 @@ group('graphics', function()
       expect({ pass:getDimensions() }).to.equal({ 0, 0 })
     end)
 
-    test(':setCanvas', function()
-      -- depth only
-      texture = lovr.graphics.newTexture(100, 100, { format = 'd32f' })
-      pass = lovr.graphics.newPass({ depth = texture })
-      lovr.graphics.submit(pass)
+    group(':setCanvas', function()
+      test('depth only', function()
+        texture = lovr.graphics.newTexture(100, 100, { format = 'd32f' })
+        pass = lovr.graphics.newPass({ depth = texture })
+        lovr.graphics.submit(pass)
+      end)
+
+      test('no depth', function()
+        texture = lovr.graphics.newTexture(100, 100)
+        pass = lovr.graphics.newPass({ texture, depth = false })
+        lovr.graphics.submit(pass)
+      end)
     end)
 
     test(':send', function()

@@ -7,6 +7,7 @@
 #include "headset/headset.h"
 #include "math/math.h"
 #include "core/gpu.h"
+#include "core/job.h"
 #include "core/maf.h"
 #include "core/spv.h"
 #include "core/os.h"
@@ -15,6 +16,7 @@
 #include "shaders.h"
 #include <math.h>
 #include <stdatomic.h>
+#include <threads.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,7 +26,7 @@
 #include "resource_limits_c.h"
 #endif
 
-#define MAX_PIPELINES 65536
+#define MAX_PIPELINES 8192
 #define MAX_TALLIES 255
 #define TRANSFORM_STACK_SIZE 16
 #define PIPELINE_STACK_SIZE 8
@@ -133,6 +135,7 @@ typedef struct Layout {
   gpu_layout* gpu;
   BundlePool* head;
   BundlePool* tail;
+  mtx_t lock;
 } Layout;
 
 struct Shader {
@@ -165,14 +168,24 @@ struct Shader {
   char* names;
 };
 
+typedef struct {
+  void* next;
+  Material* materials;
+  BufferView view;
+  gpu_bundle_pool* bundlePool;
+  gpu_bundle* bundles;
+  uint32_t head;
+  uint32_t tail;
+} MaterialBlock;
+
 struct Material {
   uint32_t ref;
   uint32_t next;
   uint32_t tick;
-  uint16_t index;
-  uint16_t block;
-  gpu_bundle* bundle;
+  uint32_t index;
   MaterialInfo info;
+  gpu_bundle* bundle;
+  MaterialBlock* block;
   bool hasWritableTexture;
 };
 
@@ -383,7 +396,6 @@ enum {
 typedef struct {
   char* memory;
   size_t cursor;
-  size_t length;
   size_t limit;
 } Allocator;
 
@@ -418,26 +430,6 @@ typedef struct {
 } AccessBlock;
 
 typedef struct {
-  Texture* texture;
-  Texture* resolve;
-  TextureFormat format;
-  LoadAction load;
-  float clear[4];
-  bool automsaa;
-} Attachment;
-
-typedef struct {
-  Attachment color[4];
-  Attachment depth;
-  Texture* foveation;
-  uint32_t count;
-  uint32_t width;
-  uint32_t height;
-  uint32_t views;
-  uint32_t samples;
-} Canvas;
-
-typedef struct {
   bool dirty;
   bool viewCull;
   DrawMode mode;
@@ -458,7 +450,7 @@ enum {
 typedef struct {
   uint32_t flags;
   Shader* shader;
-  gpu_bundle_info* bundleInfo;
+  gpu_binding* bindings;
   gpu_bundle* bundle;
   gpu_buffer* uniformBuffer;
   uint32_t uniformOffset;
@@ -490,8 +482,8 @@ typedef struct {
   Shader* shader;
   Material* material;
   gpu_pipeline_info* pipelineInfo;
-  gpu_bundle_info* bundleInfo;
   gpu_pipeline* pipeline;
+  gpu_binding* bindings;
   gpu_bundle* bundle;
   gpu_buffer* vertexBuffer;
   gpu_buffer* indexBuffer;
@@ -529,13 +521,15 @@ typedef struct {
 struct Pass {
   uint32_t ref;
   uint32_t flags;
-  gpu_pass* gpu;
   Allocator allocator;
   BufferAllocator buffers;
   CachedShape geocache[16];
   AccessBlock* access[2];
-  Tally tally;
+  gpu_canvas target;
   Canvas canvas;
+  uint32_t width;
+  uint32_t height;
+  uint32_t views;
   Camera* cameras;
   float* viewports;
   uint32_t* scissors;
@@ -554,24 +548,23 @@ struct Pass {
   uint32_t drawCount;
   uint32_t drawCapacity;
   Draw* draws;
+  Tally tally;
   PassStats stats;
   char* label;
 };
 
-typedef struct {
-  Material* list;
-  BufferView view;
-  gpu_bundle_pool* bundlePool;
-  gpu_bundle* bundles;
-  uint32_t head;
-  uint32_t tail;
-} MaterialBlock;
+typedef struct PipelineJob {
+  struct PipelineJob* next;
+  job* handle;
+  uint64_t hash;
+  gpu_pipeline_info* info;
+  gpu_pipeline* pipeline;
+  char* error;
+} PipelineJob;
 
-typedef struct {
-  gpu_texture* texture;
-  uint32_t hash;
-  uint32_t tick;
-} ScratchTexture;
+static thread_local struct {
+  Allocator stack;
+} thread;
 
 static struct {
   uint32_t ref;
@@ -597,17 +590,15 @@ static struct {
   Font* defaultFont;
   Buffer* defaultBuffer;
   Texture* defaultTexture;
+  Material* defaultMaterial;
   Sampler* defaultSamplers[2];
   Shader* defaultShaders[DEFAULT_SHADER_COUNT];
   gpu_vertex_format vertexFormats[VERTEX_FORMAT_COUNT];
   Readback* oldestReadback;
   Readback* newestReadback;
-  Material* defaultMaterial;
-  size_t materialBlock;
-  arr_t(MaterialBlock) materialBlocks;
+  MaterialBlock* materials;
   BufferAllocator bufferAllocators[4];
-  arr_t(ScratchTexture) scratchTextures;
-  map_t passLookup;
+  PipelineJob* newPipelines;
   map_t pipelineLookup;
   gpu_pipeline* pipelines;
   uint32_t pipelineCount;
@@ -615,28 +606,29 @@ static struct {
   Layout* builtinLayout;
   Layout* materialLayout;
   Layout* uniformLayout;
-  Allocator allocator;
 } state;
 
 // Helpers
 
-static void* tempAlloc(Allocator* allocator, size_t size);
-static size_t tempPush(Allocator* allocator);
-static void tempPop(Allocator* allocator, size_t stack);
+static void initAllocator(Allocator* allocator);
+static void* allocate(Allocator* allocator, size_t size);
+static size_t stackPush(Allocator* allocator);
+static void stackPop(Allocator* allocator, size_t stack);
 static gpu_pipeline* getPipeline(uint32_t index);
-static BufferBlock* getBlock(gpu_buffer_type type, uint32_t size);
-static void freeBlock(BufferAllocator* allocator, BufferBlock* block);
 static BufferView allocateBuffer(BufferAllocator* allocator, gpu_buffer_type type, uint32_t size, size_t align);
 static BufferView getBuffer(gpu_buffer_type type, uint32_t size, size_t align);
+static void releaseBlock(BufferBlock* block);
+static void recycleBlocks(BufferAllocator* allocator, BufferBlock* blocks);
+static void destroyBuffers(BufferAllocator* allocator);
 static int u64cmp(const void* a, const void* b);
 static uint32_t lcm(uint32_t a, uint32_t b);
 static bool beginFrame(void);
 static void flushTransfers(void);
 static void processReadbacks(void);
-static gpu_pass* getPass(Canvas* canvas);
 static Layout* getLayout(gpu_slot* slots, uint32_t count);
 static gpu_bundle* getBundle(Layout* layout, gpu_binding* bindings, uint32_t count);
-static gpu_texture* getScratchTexture(gpu_stream* stream, Canvas* canvas, Attachment* attachment);
+static bool getBundles(Layout* layout, gpu_bundle** bundles, uint32_t count);
+static gpu_texture* createTemporaryTexture(const TextureInfo* info, TextureFormat format, bool srgb, uint32_t samples);
 static bool isDepthFormat(TextureFormat format);
 static bool supportsSRGB(TextureFormat format);
 static uint32_t measureTexture(TextureFormat format, uint32_t w, uint32_t h, uint32_t d);
@@ -657,7 +649,11 @@ static void onMessage(void* context, const char* message);
 // Entry
 
 bool lovrGraphicsInit(GraphicsConfig* config) {
-  if (atomic_fetch_add(&state.ref, 1)) return false;
+  initAllocator(&thread.stack);
+
+  if (atomic_fetch_add(&state.ref, 1)) {
+    return false;
+  }
 
   gpu_config gpu = {
     .debug = config->debug,
@@ -674,9 +670,9 @@ bool lovrGraphicsInit(GraphicsConfig* config) {
     .vk.cacheSize = config->cacheSize,
 #endif
 #if defined(LOVR_VK) && !defined(LOVR_DISABLE_HEADSET)
-    .vk.getPhysicalDevice = lovrHeadsetInterface ? lovrHeadsetInterface->getVulkanPhysicalDevice : NULL,
-    .vk.createInstance = lovrHeadsetInterface ? lovrHeadsetInterface->createVulkanInstance : NULL,
-    .vk.createDevice = lovrHeadsetInterface ? lovrHeadsetInterface->createVulkanDevice : NULL,
+    .vk.getPhysicalDevice = lovrHeadsetGetInstanceHandle() ? lovrHeadsetGetVulkanPhysicalDevice : NULL,
+    .vk.createInstance = lovrHeadsetGetInstanceHandle() ? lovrHeadsetCreateVulkanInstance : NULL,
+    .vk.createDevice = lovrHeadsetGetInstanceHandle() ? lovrHeadsetCreateVulkanDevice : NULL
 #endif
   };
 
@@ -689,25 +685,16 @@ bool lovrGraphicsInit(GraphicsConfig* config) {
     os_window_message_box(string);
     lovrFree(string);
 #endif
-    return lovrSetError("Failed to initialize GPU: %s", gpu_get_error());
+    lovrSetError("Failed to initialize GPU: %s", gpu_get_error());
+    lovrFree(thread.stack.memory);
+    return false;
   }
 
   state.config = *config;
   state.timingEnabled = config->debug;
 
-  // Temporary frame memory uses a large 1GiB virtual memory allocation, committing pages as needed
-  state.allocator.length = 1 << 14;
-  state.allocator.limit = 1 << 30;
-  state.allocator.memory = os_vm_init(state.allocator.limit);
-  lovrAssertGoto(fail, state.allocator.memory && os_vm_commit(state.allocator.memory, state.allocator.length), "Failed to initialize temp allocator");
-
-  state.pipelines = os_vm_init(MAX_PIPELINES * gpu_sizeof_pipeline());
-  lovrAssertGoto(fail, state.pipelines, "Failed to allocate memory for pipelines");
-
-  map_init(&state.passLookup, 4);
+  state.pipelines = lovrMalloc(MAX_PIPELINES * gpu_sizeof_pipeline());
   map_init(&state.pipelineLookup, 64);
-  arr_init(&state.materialBlocks);
-  arr_init(&state.scratchTextures);
 
   gpu_slot builtinSlots[] = {
     { 0, GPU_SLOT_UNIFORM_BUFFER, GPU_STAGE_GRAPHICS }, // Globals
@@ -784,6 +771,19 @@ bool lovrGraphicsInit(GraphicsConfig* config) {
   lovrRelease(image, lovrImageDestroy);
   if (!state.defaultTexture) goto fail;
 
+  // Default Material
+
+  state.defaultMaterial = lovrMaterialCreate(&(MaterialInfo) {
+    .data.color = { 1.f, 1.f, 1.f, 1.f },
+    .data.uvScale = { 1.f, 1.f },
+    .data.metalness = 0.f,
+    .data.roughness = 1.f,
+    .data.normalScale = 1.f,
+    .texture = state.defaultTexture
+  });
+
+  if (!state.defaultMaterial) goto fail;
+
   // Default Samplers
 
   for (uint32_t i = 0; i < 2; i++) {
@@ -856,17 +856,6 @@ bool lovrGraphicsInit(GraphicsConfig* config) {
     .attributes[4] = { 1, 14, 0, GPU_TYPE_F32x4 }
   };
 
-  state.defaultMaterial = lovrMaterialCreate(&(MaterialInfo) {
-    .data.color = { 1.f, 1.f, 1.f, 1.f },
-    .data.uvScale = { 1.f, 1.f },
-    .data.metalness = 0.f,
-    .data.roughness = 1.f,
-    .data.normalScale = 1.f,
-    .texture = state.defaultTexture
-  });
-
-  if (!state.defaultMaterial) goto fail;
-
   float16Init();
 #ifdef LOVR_USE_GLSLANG
   glslang_initialize_process();
@@ -879,14 +868,16 @@ fail:
 }
 
 void lovrGraphicsDestroy(void) {
-  if (atomic_fetch_sub(&state.ref, 1) != 1) return;
+  if (atomic_fetch_sub(&state.ref, 1) != 1) {
+    lovrFree(thread.stack.memory);
+    memset(&thread, 0, sizeof(thread));
+    return;
+  }
 #ifndef LOVR_DISABLE_HEADSET
   // If there's an active headset session it needs to be stopped so it can clean up its Pass and
   // swapchain textures before gpu_destroy is called.  This is really hacky and should be solved
   // with module-level refcounting in the future.
-  if (lovrHeadsetInterface && lovrHeadsetInterface->stop) {
-    lovrHeadsetInterface->stop();
-  }
+  lovrHeadsetStop();
 #endif
   Readback* readback = state.oldestReadback;
   while (readback) {
@@ -901,57 +892,30 @@ void lovrGraphicsDestroy(void) {
   lovrRelease(state.defaultFont, lovrFontDestroy);
   lovrRelease(state.defaultBuffer, lovrBufferDestroy);
   lovrRelease(state.defaultTexture, lovrTextureDestroy);
+  lovrRelease(state.defaultMaterial, lovrMaterialDestroy);
   lovrRelease(state.defaultSamplers[0], lovrSamplerDestroy);
   lovrRelease(state.defaultSamplers[1], lovrSamplerDestroy);
   for (size_t i = 0; i < COUNTOF(state.defaultShaders); i++) {
     lovrRelease(state.defaultShaders[i], lovrShaderDestroy);
   }
-  lovrRelease(state.defaultMaterial, lovrMaterialDestroy);
-  for (size_t i = 0; i < state.materialBlocks.length; i++) {
-    MaterialBlock* block = &state.materialBlocks.data[i];
-    BufferBlock* current = state.bufferAllocators[GPU_BUFFER_STATIC].current;
-    if (block->view.block != current && atomic_fetch_sub(&block->view.block->ref, 1) == 1) {
-      freeBlock(&state.bufferAllocators[GPU_BUFFER_STATIC], block->view.block);
-    }
+  MaterialBlock* block = state.materials;
+  while (block) {
+    MaterialBlock* next = block->next;
     gpu_bundle_pool_destroy(block->bundlePool);
-    lovrFree(block->list);
+    releaseBlock(block->view.block);
+    lovrFree(block->materials);
     lovrFree(block->bundlePool);
     lovrFree(block->bundles);
+    lovrFree(block);
+    block = next;
   }
-  arr_free(&state.materialBlocks);
-  for (size_t i = 0; i < state.scratchTextures.length; i++) {
-    gpu_texture_destroy(state.scratchTextures.data[i].texture);
-    lovrFree(state.scratchTextures.data[i].texture);
-  }
-  arr_free(&state.scratchTextures);
   for (uint32_t i = 0; i < state.pipelineCount; i++) {
     gpu_pipeline_destroy(getPipeline(i));
   }
-  os_vm_free(state.pipelines, MAX_PIPELINES * gpu_sizeof_pipeline());
+  lovrFree(state.pipelines);
   map_free(&state.pipelineLookup);
-  for (size_t i = 0; i < state.passLookup.size; i++) {
-    if (state.passLookup.values[i] != MAP_NIL) {
-      gpu_pass* pass = (gpu_pass*) (uintptr_t) state.passLookup.values[i];
-      gpu_pass_destroy(pass);
-      lovrFree(pass);
-    }
-  }
-  map_free(&state.passLookup);
   for (size_t i = 0; i < COUNTOF(state.bufferAllocators); i++) {
-    BufferBlock* block = state.bufferAllocators[i].freelist;
-    while (block) {
-      gpu_buffer_destroy(block->handle);
-      BufferBlock* next = block->next;
-      lovrFree(block);
-      block = next;
-    }
-
-    BufferBlock* current = state.bufferAllocators[i].current;
-
-    if (current) {
-      gpu_buffer_destroy(current->handle);
-      lovrFree(current);
-    }
+    destroyBuffers(&state.bufferAllocators[i]);
   }
   Layout* layout = state.layouts;
   while (layout) {
@@ -965,6 +929,7 @@ void lovrGraphicsDestroy(void) {
       pool = next;
     }
     gpu_layout_destroy(layout->gpu);
+    mtx_destroy(&layout->lock);
     Layout* next = layout->next;
     lovrFree(layout);
     layout = next;
@@ -973,7 +938,8 @@ void lovrGraphicsDestroy(void) {
 #ifdef LOVR_USE_GLSLANG
   if (state.glslang) glslang_finalize_process();
 #endif
-  os_vm_free(state.allocator.memory, state.allocator.limit);
+  lovrFree(thread.stack.memory);
+  memset(&thread, 0, sizeof(thread));
   memset(&state, 0, sizeof(state));
 }
 
@@ -1001,6 +967,7 @@ void lovrGraphicsGetFeatures(GraphicsFeatures* features) {
   features->float64 = state.features.float64;
   features->int64 = state.features.int64;
   features->int16 = state.features.int16;
+  features->cubic = state.features.cubic;
 }
 
 void lovrGraphicsGetLimits(GraphicsLimits* limits) {
@@ -1047,7 +1014,8 @@ uint32_t lovrGraphicsGetFormatSupport(uint32_t format, uint32_t features) {
         (((~features & TEXTURE_FEATURE_SAMPLE) || (supports & GPU_FEATURE_SAMPLE)) &&
         ((~features & TEXTURE_FEATURE_RENDER) || (supports & GPU_FEATURE_RENDER)) &&
         ((~features & TEXTURE_FEATURE_STORAGE) || (supports & GPU_FEATURE_STORAGE)) &&
-        ((~features & TEXTURE_FEATURE_BLIT) || (supports & GPU_FEATURE_BLIT))) << i;
+        ((~features & TEXTURE_FEATURE_BLIT) || (supports & GPU_FEATURE_BLIT)) &&
+        ((~features & TEXTURE_FEATURE_CUBIC) || (supports & GPU_FEATURE_CUBIC))) << i;
     } else {
       support |= !!supports << i;
     }
@@ -1057,6 +1025,11 @@ uint32_t lovrGraphicsGetFormatSupport(uint32_t format, uint32_t features) {
 
 void lovrGraphicsGetShaderCache(void* data, size_t* size) {
   gpu_pipeline_get_cache(data, size);
+}
+
+bool lovrGraphicsIsHDR(void) {
+  Texture* texture = NULL;
+  return lovrGraphicsGetWindowTexture(&texture) && gpu_surface_is_hdr();
 }
 
 void lovrGraphicsGetBackgroundColor(float background[4]) {
@@ -1087,7 +1060,7 @@ static bool recordComputePass(Pass* pass, gpu_stream* stream) {
   }
 
   gpu_pipeline* pipeline = NULL;
-  gpu_bundle_info* bundleInfo = NULL;
+  gpu_binding* bindings = NULL;
   gpu_bundle* uniformBundle = NULL;
   gpu_buffer* uniformBuffer = NULL;
   uint32_t uniformOffset = 0;
@@ -1103,11 +1076,11 @@ static bool recordComputePass(Pass* pass, gpu_stream* stream) {
       pipeline = compute->shader->computePipeline;
     }
 
-    if (compute->bundleInfo != bundleInfo) {
-      bundleInfo = compute->bundleInfo;
-      gpu_bundle* bundle = getBundle(compute->shader->layout, bundleInfo->bindings, bundleInfo->count);
+    if (compute->bindings != bindings) {
+      gpu_bundle* bundle = getBundle(compute->shader->layout, compute->bindings, compute->shader->resourceCount);
       if (!bundle) return false;
       gpu_bind_bundles(stream, compute->shader->gpu, &bundle, 0, 1, NULL, 0);
+      bindings = compute->bindings;
     }
 
     if (compute->uniformBuffer && (compute->uniformBuffer != uniformBuffer || compute->uniformOffset != uniformOffset)) {
@@ -1150,50 +1123,106 @@ static bool recordComputePass(Pass* pass, gpu_stream* stream) {
   return true;
 }
 
+static void compilePipeline(void* arg) {
+  PipelineJob* job = arg;
+  if (!gpu_pipeline_init_graphics(job->pipeline, job->info, NULL)) {
+    const char* error = gpu_get_error();
+    job->error = lovrStrdup(error);
+  }
+}
+
 static bool recordRenderPass(Pass* pass, gpu_stream* stream) {
   Canvas* canvas = &pass->canvas;
 
-  if (canvas->count == 0 && !canvas->depth.texture) {
+  if (!canvas->color->texture && !canvas->depth.texture) {
     return true;
   }
 
-  // Canvas
+  // Pipelines
 
-  gpu_canvas target = { 0 };
-  Attachment* color = canvas->color;
-  Attachment* depth = &canvas->depth;
+  Draw* draw = pass->draws;
+  Draw* previous = NULL;
 
-  for (uint32_t i = 0; i < canvas->count; i++, color++) {
-    target.color[i] = (gpu_color_attachment) {
-      .texture = color->automsaa ? getScratchTexture(stream, canvas, color) : color->texture->renderView,
-      .resolve = color->automsaa ? color->texture->renderView : (color->resolve ? color->resolve->renderView : NULL),
-      .clear[0] = color->clear[0],
-      .clear[1] = color->clear[1],
-      .clear[2] = color->clear[2],
-      .clear[3] = color->clear[3]
-    };
+  // List of pipeline jobs offloaded to worker threads (we must wait for them before doing draws)
+  PipelineJob* pipelineJobs = NULL;
 
-    if (color->automsaa && !target.color[i].texture) {
+  for (uint32_t i = 0; i < pass->drawCount; i++, previous = draw, draw++) {
+    // If the draw uses the same pipeline as the previous draw, use that
+    if (previous && draw->pipelineInfo == previous->pipelineInfo) {
+      draw->pipeline = previous->pipeline;
+      continue;
+    }
+
+    // Otherwise, look up the pipeline in the global lookup table
+    uint64_t hash = hash64(draw->pipelineInfo, sizeof(gpu_pipeline_info));
+    uint64_t value = map_get(&state.pipelineLookup, hash);
+
+    if (value != MAP_NIL) {
+      draw->pipeline = (gpu_pipeline*) (uintptr_t) value;
+      continue;
+    }
+
+    // If it's not in the global lookup, search through the linked list of new pipelines
+    PipelineJob* node = atomic_load(&state.newPipelines);
+    bool found = false;
+
+    while (node) {
+      if (node->hash == hash) {
+        draw->pipeline = node->pipeline;
+        found = true;
+        break;
+      } else {
+        node = node->next;
+      }
+    }
+
+    if (found) {
+      continue;
+    }
+
+    // If we couldn't find a pipeline to use, compile a new one
+    uint32_t index = atomic_fetch_add(&state.pipelineCount, 1);
+
+    if (index >= MAX_PIPELINES) {
+      lovrSetError("Too many pipelines!");
       return false;
     }
-  }
 
-  if (depth->texture || depth->format) {
-    target.depth = (gpu_depth_attachment) {
-      .texture = depth->automsaa ? getScratchTexture(stream, canvas, depth) : depth->texture->renderView,
-      .resolve = depth->automsaa && depth->texture ? depth->texture->renderView : (depth->resolve ? depth->resolve->renderView : NULL),
-      .clear = depth->clear[0]
-    };
+    PipelineJob* job = allocate(&thread.stack, sizeof(PipelineJob));
+    job->next = NULL;
+    job->handle = NULL;
+    job->hash = hash;
+    job->info = draw->pipelineInfo;
+    job->pipeline = getPipeline(index);
+    job->error = NULL;
 
-    if (depth->automsaa && !target.depth.texture) {
-      return false;
+    bool slow;
+    lovrAssert(gpu_pipeline_init_graphics(job->pipeline, job->info, &slow), "Failed to create GPU pipeline: %s", gpu_get_error());
+
+#ifdef LOVR_DISABLE_THREAD
+    if (slow) {
+      compilePipeline(job);
+      slow = false;
     }
+#endif
+
+    if (slow) {
+      // The pipeline is going to be slow to compile, offload it to a worker thread
+      job->handle = job_start(compilePipeline, job);
+      job->next = pipelineJobs;
+      pipelineJobs = job;
+    } else {
+      // Chain the new pipeline on to the list of new pipelines
+      job->next = atomic_load(&state.newPipelines);
+      while (!atomic_compare_exchange_strong(&state.newPipelines, &job->next, job)) {
+        continue;
+      }
+    }
+
+    draw->pipeline = job->pipeline;
   }
 
-  target.pass = pass->gpu;
-  target.width = canvas->width;
-  target.height = canvas->height;
-  target.foveation = canvas->foveation ? canvas->foveation->gpu : NULL;
+  // Render area
 
   uint32_t min[2] = { ~0u, ~0u };
   uint32_t max[2] = { 0, 0 };
@@ -1206,16 +1235,16 @@ static bool recordRenderPass(Pass* pass, gpu_stream* stream) {
     max[1] = MAX(max[1], scissor[1] + scissor[3]);
   }
 
-  target.area[0] = min[0];
-  target.area[1] = min[1];
-  target.area[2] = max[0] - min[0];
-  target.area[3] = max[1] - min[1];
+  pass->target.area[0] = min[0];
+  pass->target.area[1] = min[1];
+  pass->target.area[2] = max[0] - min[0];
+  pass->target.area[3] = max[1] - min[1];
 
   // Cameras
 
   Camera* camera = pass->cameras;
   for (uint32_t c = 0; c < pass->cameraCount; c++) {
-    for (uint32_t v = 0; v < canvas->views; v++, camera++) {
+    for (uint32_t v = 0; v < pass->views; v++, camera++) {
       mat4_init(camera->viewProjection, camera->projection);
       mat4_init(camera->inverseProjection, camera->projection);
       mat4_mul(camera->viewProjection, camera->viewMatrix);
@@ -1226,16 +1255,17 @@ static bool recordRenderPass(Pass* pass, gpu_stream* stream) {
   // Frustum Culling
 
   uint32_t activeDrawCount = 0;
-  uint16_t* activeDraws = tempAlloc(&state.allocator, pass->drawCount * sizeof(uint16_t));
+  uint16_t* activeDraws = allocate(&thread.stack, pass->drawCount * sizeof(uint16_t));
 
   if (pass->flags & NEEDS_VIEW_CULL) {
-    typedef struct { float planes[6][4]; } Frustum;
-    Frustum* frusta = tempAlloc(&state.allocator, canvas->views * sizeof(Frustum));
     uint32_t drawIndex = 0;
 
+    typedef struct { float planes[6][4]; } Frustum;
+    Frustum frusta[6];
+
     for (uint32_t c = 0; c < pass->cameraCount; c++) {
-      for (uint32_t v = 0; v < canvas->views; v++) {
-        float* m = pass->cameras[c * canvas->views + v].viewProjection;
+      for (uint32_t v = 0; v < pass->views; v++) {
+        float* m = pass->cameras[c * pass->views + v].viewProjection;
         memcpy(frusta[v].planes, (float[6][4]) {
           { (m[3] + m[0]), (m[7] + m[4]), (m[11] + m[8]), (m[15] + m[12]) }, // Left
           { (m[3] - m[0]), (m[7] - m[4]), (m[11] - m[8]), (m[15] - m[12]) }, // Right
@@ -1276,9 +1306,9 @@ static bool recordRenderPass(Pass* pass, gpu_stream* stream) {
           mat4_mulPoint(draw->transform, corners[i]);
         }
 
-        uint32_t visible = canvas->views;
+        uint32_t visible = pass->views;
 
-        for (uint32_t v = 0; v < canvas->views; v++) {
+        for (uint32_t v = 0; v < pass->views; v++) {
           for (uint32_t p = 0; p < 6; p++) {
             bool inside = false;
 
@@ -1312,8 +1342,8 @@ static bool recordRenderPass(Pass* pass, gpu_stream* stream) {
   pass->stats.drawsCulled = pass->drawCount - activeDrawCount;
 
   if (activeDrawCount == 0) {
-    gpu_render_begin(stream, &target);
-    gpu_render_end(stream, &target);
+    gpu_render_begin(stream, &pass->target);
+    gpu_render_end(stream, &pass->target);
     return true;
   }
 
@@ -1334,20 +1364,20 @@ static bool recordRenderPass(Pass* pass, gpu_stream* stream) {
   if (!view.buffer) return false;
   builtins[0].buffer = (gpu_buffer_binding) { view.buffer, view.offset, view.extent };
   Globals* global = view.pointer;
-  global->resolution[0] = canvas->width;
-  global->resolution[1] = canvas->height;
+  global->resolution[0] = pass->width;
+  global->resolution[1] = pass->height;
 #ifdef LOVR_DISABLE_HEADSET
   global->time = os_get_time();
 #else
-  global->time = lovrHeadsetInterface ? lovrHeadsetInterface->getDisplayTime() : os_get_time();
+  global->time = lovrHeadsetIsActive() ? lovrHeadsetGetDisplayTime() : os_get_time();
 #endif
 
   // Cameras
-  uint32_t padding = (6 - canvas->views) * sizeof(Camera); // Ensure shader can always access all 6 cameras
-  view = getBuffer(GPU_BUFFER_STREAM, pass->cameraCount * canvas->views * sizeof(Camera) + padding, align);
+  uint32_t padding = (6 - pass->views) * sizeof(Camera); // Ensure shader can always access all 6 cameras
+  view = getBuffer(GPU_BUFFER_STREAM, pass->cameraCount * pass->views * sizeof(Camera) + padding, align);
   if (!view.buffer) return false;
   builtins[1].buffer = (gpu_buffer_binding) { view.buffer, view.offset, 6 * sizeof(Camera) };
-  memcpy(view.pointer, pass->cameras, pass->cameraCount * canvas->views * sizeof(Camera));
+  memcpy(view.pointer, pass->cameras, pass->cameraCount * pass->views * sizeof(Camera));
 
   // DrawData
   uint32_t alignedDrawCount = ALIGN(activeDrawCount, 256);
@@ -1380,52 +1410,19 @@ static bool recordRenderPass(Pass* pass, gpu_stream* stream) {
   gpu_bundle* builtinBundle = getBundle(state.builtinLayout, builtins, COUNTOF(builtins));
   if (!builtinBundle) return false;
 
-  // Pipelines
-
-  if (!pass->draws[pass->drawCount - 1].pipeline) {
-    uint32_t first = 0;
-
-    while (pass->draws[first].pipeline) {
-      first++; // TODO could binary search or cache
-    }
-
-    for (uint32_t i = first; i < pass->drawCount; i++) {
-      Draw* prev = &pass->draws[i - 1];
-      Draw* draw = &pass->draws[i];
-
-      if (i > 0 && draw->pipelineInfo == prev->pipelineInfo) {
-        draw->pipeline = prev->pipeline;
-        continue;
-      }
-
-      uint64_t hash = hash64(draw->pipelineInfo, sizeof(gpu_pipeline_info));
-      uint64_t index = map_get(&state.pipelineLookup, hash);
-
-      if (index == MAP_NIL) {
-        index = state.pipelineCount++;
-        lovrAssert(index < MAX_PIPELINES, "Too many pipelines!");
-        lovrAssert(os_vm_commit(state.pipelines, state.pipelineCount * gpu_sizeof_pipeline()), "Out of memory");
-        lovrAssert(gpu_pipeline_init_graphics(getPipeline(index), draw->pipelineInfo), "Failed to create GPU pipeline: %s", gpu_get_error());
-        map_set(&state.pipelineLookup, hash, index);
-      }
-
-      draw->pipeline = getPipeline(index);
-    }
-  }
-
   // Bundles
 
   Draw* prev = NULL;
   for (uint32_t i = 0; i < activeDrawCount; i++) {
     Draw* draw = &pass->draws[activeDraws[i]];
 
-    if (i > 0 && draw->bundleInfo == prev->bundleInfo) {
+    if (i > 0 && draw->bindings == prev->bindings) {
       draw->bundle = prev->bundle;
       continue;
     }
 
-    if (draw->bundleInfo) {
-      draw->bundle = getBundle(draw->shader->layout, draw->bundleInfo->bindings, draw->bundleInfo->count);
+    if (draw->bindings) {
+      draw->bundle = getBundle(draw->shader->layout, draw->bindings, draw->shader->resourceCount);
       if (!draw->bundle) {
         return false;
       }
@@ -1461,7 +1458,7 @@ static bool recordRenderPass(Pass* pass, gpu_stream* stream) {
       lovrAssert(pass->tally.buffer, "Failed to create tally buffer: %s", lovrGetError());
     }
 
-    gpu_clear_tally(stream, pass->tally.gpu, 0, pass->tally.count * canvas->views);
+    gpu_clear_tally(stream, pass->tally.gpu, 0, pass->tally.count * pass->views);
   }
 
   // Do the thing!
@@ -1482,15 +1479,41 @@ static bool recordRenderPass(Pass* pass, gpu_stream* stream) {
   uint32_t uniformSize = 0;
   gpu_bundle* uniformBundle = NULL;
 
-  gpu_render_begin(stream, &target);
+  gpu_render_begin(stream, &pass->target);
   gpu_bind_vertex_buffers(stream, &state.defaultBuffer->gpu, &state.defaultBuffer->base, 1, 1);
+
+  bool hasError = false;
+
+  // Wait for any in-progress pipeline jobs to finish
+  while (pipelineJobs) {
+    PipelineJob* job = pipelineJobs;
+    job_wait(job->handle);
+
+    if (job->error) {
+      if (!hasError) {
+        lovrSetError("Failed to compile GPU pipeline: %s", job->error);
+        hasError = true;
+      }
+      lovrFree(job->error);
+    }
+
+    pipelineJobs = job->next;
+    job->next = atomic_load(&state.newPipelines);
+    while (!atomic_compare_exchange_strong(&state.newPipelines, &job->next, job)) {
+      continue;
+    }
+  }
+
+  if (hasError) {
+    return false;
+  }
 
   for (uint32_t i = 0; i < activeDrawCount; i++) {
     Draw* draw = &pass->draws[activeDraws[i]];
 
     if (pass->tally.buffer && draw->tally != tally) {
-      if (tally != 0xff) gpu_tally_finish(stream, pass->tally.gpu, tally * canvas->views);
-      if (draw->tally != 0xff) gpu_tally_begin(stream, pass->tally.gpu, draw->tally * canvas->views);
+      if (tally != 0xff) gpu_tally_finish(stream, pass->tally.gpu, tally * pass->views);
+      if (draw->tally != 0xff) gpu_tally_begin(stream, pass->tally.gpu, draw->tally * pass->views);
       tally = draw->tally;
     }
 
@@ -1511,7 +1534,7 @@ static bool recordRenderPass(Pass* pass, gpu_stream* stream) {
     }
 
     if ((i & 0xff) == 0 || draw->camera != cameraIndex) {
-      uint32_t dynamicOffsets[] = { draw->camera * canvas->views * sizeof(Camera), (i >> 8) * 256 * sizeof(DrawData) };
+      uint32_t dynamicOffsets[] = { draw->camera * pass->views * sizeof(Camera), (i >> 8) * 256 * sizeof(DrawData) };
       gpu_bind_bundles(stream, draw->shader->gpu, &builtinBundle, 0, 1, dynamicOffsets, COUNTOF(dynamicOffsets));
       cameraIndex = draw->camera;
     }
@@ -1581,15 +1604,15 @@ static bool recordRenderPass(Pass* pass, gpu_stream* stream) {
   }
 
   if (tally != 0xff) {
-    gpu_tally_finish(stream, pass->tally.gpu, tally * canvas->views);
+    gpu_tally_finish(stream, pass->tally.gpu, tally * pass->views);
   }
 
-  gpu_render_end(stream, &target);
+  gpu_render_end(stream, &pass->target);
 
   // Automipmap
 
   bool synchronized = false;
-  for (uint32_t t = 0; t < canvas->count; t++) {
+  for (uint32_t t = 0; t < 4 && canvas->color[t].texture; t++) {
     Texture* texture = canvas->color[t].resolve ? canvas->color[t].resolve : canvas->color[t].texture;
 
     if (texture->info.mipmaps > 1) {
@@ -1626,7 +1649,7 @@ static bool recordRenderPass(Pass* pass, gpu_stream* stream) {
     uint32_t count = MIN(tally->count, (tally->buffer->info.size - tally->bufferOffset) / 4);
     Buffer* tempBuffer = pass->tally.tempBuffer;
 
-    gpu_copy_tally_buffer(stream, tally->gpu, tempBuffer->gpu, 0, tempBuffer->base, count * canvas->views);
+    gpu_copy_tally_buffer(stream, tally->gpu, tempBuffer->gpu, 0, tempBuffer->base, count * pass->views);
 
     gpu_barrier barrier = {
       .prev = GPU_PHASE_COPY,
@@ -1635,29 +1658,23 @@ static bool recordRenderPass(Pass* pass, gpu_stream* stream) {
       .clear = GPU_CACHE_STORAGE_READ
     };
 
-    Access access = {
-      .sync = &tally->buffer->sync,
-      .object = tally->buffer,
-      .phase = GPU_PHASE_SHADER_COMPUTE,
-      .cache = GPU_CACHE_STORAGE_WRITE
-    };
-
-    syncResource(&access, &barrier);
     gpu_sync(stream, &barrier, 1);
 
     gpu_binding bindings[] = {
-      { 0, GPU_SLOT_STORAGE_BUFFER, .buffer = { tempBuffer->gpu, tempBuffer->base, count * canvas->views * sizeof(uint32_t) } },
+      { 0, GPU_SLOT_STORAGE_BUFFER, .buffer = { tempBuffer->gpu, tempBuffer->base, count * pass->views * sizeof(uint32_t) } },
       { 1, GPU_SLOT_STORAGE_BUFFER, .buffer = { tally->buffer->gpu, tally->buffer->base + tally->bufferOffset, count * sizeof(uint32_t) } }
     };
 
     Shader* shader = lovrGraphicsGetDefaultShader(SHADER_TALLY_MERGE);
+    if (!shader) return false;
+
     gpu_bundle* bundle = getBundle(shader->layout, bindings, COUNTOF(bindings));
-    if (!shader || !bundle) return false;
+    if (!bundle) return false;
 
     gpu_compute_begin(stream);
     gpu_bind_pipeline(stream, shader->computePipeline, GPU_PIPELINE_COMPUTE);
     gpu_bind_bundles(stream, shader->gpu, &bundle, 0, 1, NULL, 0);
-    gpu_push_constants(stream, shader->gpu, (uint32_t[2]) { count, canvas->views }, 2 * sizeof(uint32_t));
+    gpu_push_constants(stream, shader->gpu, (uint32_t[2]) { count, pass->views }, 2 * sizeof(uint32_t));
     gpu_compute(stream, (count + 31) / 32, 1, 1);
     gpu_compute_end(stream);
   }
@@ -1667,7 +1684,7 @@ static bool recordRenderPass(Pass* pass, gpu_stream* stream) {
 
 static Readback* lovrReadbackCreateTimestamp(TimingInfo* passes, uint32_t count, BufferView view);
 
-static void syncAttachment(Attachment* attachment, Texture* texture, bool depth, bool resolve) {
+static void syncAttachment(Texture* texture, bool depth, bool resolve, bool load, bool temporary) {
   if (!texture) return;
 
   Access access = {
@@ -1675,10 +1692,10 @@ static void syncAttachment(Attachment* attachment, Texture* texture, bool depth,
     .object = texture
   };
 
-  bool read = !resolve && !attachment->automsaa && attachment->load == LOAD_KEEP;
+  bool read = !temporary && load;
 
   // Depth resolve operations act like color resolves w.r.t. sync
-  if (!depth || resolve || attachment->automsaa) {
+  if (!depth || resolve || temporary) {
     access.phase = GPU_PHASE_COLOR;
     access.cache = GPU_CACHE_COLOR_WRITE | (read ? GPU_CACHE_COLOR_READ : 0);
   } else {
@@ -1704,12 +1721,14 @@ bool lovrGraphicsSubmit(Pass** passes, uint32_t count) {
     return false;
   }
 
+  size_t stack = stackPush(&thread.stack);
+
   bool xrCanvas = false;
   uint32_t streamCount = 0;
   uint32_t maxStreams = count + 3;
-  gpu_stream** streams = tempAlloc(&state.allocator, maxStreams * sizeof(gpu_stream*));
-  gpu_barrier* computeBarriers = tempAlloc(&state.allocator, count * sizeof(gpu_barrier));
-  gpu_barrier* renderBarriers = tempAlloc(&state.allocator, count * sizeof(gpu_barrier));
+  gpu_stream** streams = allocate(&thread.stack, maxStreams * sizeof(gpu_stream*));
+  gpu_barrier* computeBarriers = allocate(&thread.stack, count * sizeof(gpu_barrier));
+  gpu_barrier* renderBarriers = allocate(&thread.stack, count * sizeof(gpu_barrier));
 
   if (count > 0) {
     memset(computeBarriers, 0, count * sizeof(gpu_barrier));
@@ -1742,19 +1761,23 @@ bool lovrGraphicsSubmit(Pass** passes, uint32_t count) {
     }
 
     // Color attachments
-    for (uint32_t a = 0; a < canvas->count; a++) {
+    for (uint32_t a = 0; a < 4 && canvas->color[a].texture; a++) {
       Attachment* attachment = &canvas->color[a];
+      bool load = pass->target.color[a].load == GPU_LOAD_OP_KEEP;
+      bool temporary = pass->target.color[a].texture != attachment->texture->renderView;
       if (attachment->texture == state.window) continue;
-      syncAttachment(attachment, attachment->texture, false, false);
-      syncAttachment(attachment, attachment->resolve, false, true);
+      syncAttachment(attachment->texture, false, false, load, temporary);
+      syncAttachment(attachment->resolve, false, true, false, false);
       xrCanvas |= attachment->texture->info.xr || (attachment->resolve && attachment->resolve->info.xr);
     }
 
     // Depth attachment
     if (canvas->depth.texture) {
       Attachment* attachment = &canvas->depth;
-      syncAttachment(attachment, attachment->texture, true, false);
-      syncAttachment(attachment, attachment->resolve, true, true);
+      bool load = pass->target.depth.load == GPU_LOAD_OP_KEEP;
+      bool temporary = pass->target.depth.texture != attachment->texture->renderView;
+      syncAttachment(attachment->texture, true, false, load, temporary);
+      syncAttachment(attachment->resolve, true, true, false, false);
       xrCanvas |= attachment->texture->info.xr || (attachment->resolve && attachment->resolve->info.xr);
     }
 
@@ -1763,6 +1786,19 @@ bool lovrGraphicsSubmit(Pass** passes, uint32_t count) {
       for (uint64_t j = 0; j < block->count; j++) {
         syncResource(&block->list[j], block->list[j].sync->barrier);
       }
+    }
+
+    // Tally buffer (we write to it with a compute shader after the render pass)
+    if (pass->tally.buffer && pass->tally.count > 0) {
+      Access access = {
+        .sync = &pass->tally.buffer->sync,
+        .object = pass->tally.buffer,
+        .phase = GPU_PHASE_SHADER_COMPUTE,
+        .cache = GPU_CACHE_STORAGE_WRITE
+      };
+
+      syncResource(&access, access.sync->barrier);
+      access.sync->barrier = &renderBarriers[i];
     }
   }
 
@@ -1790,7 +1826,7 @@ bool lovrGraphicsSubmit(Pass** passes, uint32_t count) {
         .count = timestampCount
       };
 
-      lovrAssert(gpu_tally_init(state.timestamps, &info), "Failed to create timestamp tally: %s", gpu_get_error());
+      lovrAssertGoto(fail, gpu_tally_init(state.timestamps, &info), "Failed to create timestamp tally: %s", gpu_get_error());
       state.timestampCount = timestampCount;
     }
 
@@ -1799,7 +1835,7 @@ bool lovrGraphicsSubmit(Pass** passes, uint32_t count) {
 
   gpu_sync(state.stream, &state.barrier, 1);
 
-  lovrAssert(gpu_stream_end(state.stream), "Failed to end GPU command buffer: %s", gpu_get_error());
+  lovrAssertGoto(fail, gpu_stream_end(state.stream), "Failed to end GPU command buffer: %s", gpu_get_error());
 
   for (uint32_t i = 0; i < count; i++) {
     gpu_stream* stream = streams[streamCount++] = gpu_stream_begin(passes[i]->label);
@@ -1810,13 +1846,13 @@ bool lovrGraphicsSubmit(Pass** passes, uint32_t count) {
     }
 
     if (!recordComputePass(passes[i], stream)) {
-      return false;
+      goto fail;
     }
 
     gpu_sync(stream, &computeBarriers[i], 1);
 
     if (!recordRenderPass(passes[i], stream)) {
-      return false;
+      goto fail;
     }
 
     gpu_sync(stream, &renderBarriers[i], 1);
@@ -1826,20 +1862,20 @@ bool lovrGraphicsSubmit(Pass** passes, uint32_t count) {
       gpu_tally_mark(stream, state.timestamps, 2 * i + 1);
     }
 
-    lovrAssert(gpu_stream_end(stream), "Failed to end GPU command buffer: %s", gpu_get_error());
+    lovrAssertGoto(fail, gpu_stream_end(stream), "Failed to end GPU command buffer: %s", gpu_get_error());
   }
 
   if (xrCanvas || (state.timingEnabled && count > 0)) {
     gpu_stream* stream = streams[streamCount++] = gpu_stream_begin(NULL);
-    lovrAssert(stream, "Failed to begin command buffer: %s", gpu_get_error());
+    lovrAssertGoto(fail, stream, "Failed to begin command buffer: %s", gpu_get_error());
 
     // Timestamp Readback
     if (state.timingEnabled) {
       BufferView view = getBuffer(GPU_BUFFER_DOWNLOAD, 2 * count * sizeof(uint32_t), 4);
-      if (!view.buffer) return false;
+      if (!view.buffer) goto fail;
       gpu_copy_tally_buffer(stream, state.timestamps, view.buffer, 0, view.offset, 2 * count);
       Readback* readback = lovrReadbackCreateTimestamp(times, count, view);
-      if (!readback) return false;
+      if (!readback) goto fail;
       lovrRelease(readback, lovrReadbackDestroy); // It gets freed when it completes
     }
 
@@ -1847,7 +1883,7 @@ bool lovrGraphicsSubmit(Pass** passes, uint32_t count) {
     for (uint32_t i = 0; i < count; i++) {
       Canvas* canvas = &passes[i]->canvas;
 
-      for (uint32_t t = 0; t < canvas->count; t++) {
+      for (uint32_t t = 0; t < 4 && canvas->color[t].texture; t++) {
         Texture* texture = canvas->color[t].texture;
         Texture* resolve = canvas->color[t].resolve;
 
@@ -1878,7 +1914,7 @@ bool lovrGraphicsSubmit(Pass** passes, uint32_t count) {
       }
     }
 
-    lovrAssert(gpu_stream_end(stream), "Failed to end GPU command buffer: %s", gpu_get_error());
+    lovrAssertGoto(fail, gpu_stream_end(stream), "Failed to end GPU command buffer: %s", gpu_get_error());
   }
 
   // Cleanup
@@ -1886,7 +1922,7 @@ bool lovrGraphicsSubmit(Pass** passes, uint32_t count) {
     Canvas* canvas = &passes[i]->canvas;
 
     // Reset barriers back to the default
-    for (uint32_t t = 0; t < canvas->count; t++) {
+    for (uint32_t t = 0; t < 4 && canvas->color[t].texture; t++) {
       if (canvas->color[t].texture) canvas->color[t].texture->sync.barrier = &state.barrier;
       if (canvas->color[t].resolve) canvas->color[t].resolve->sync.barrier = &state.barrier;
     }
@@ -1903,16 +1939,50 @@ bool lovrGraphicsSubmit(Pass** passes, uint32_t count) {
     }
 
     // Mark the tick for any buffers that filled up, so we know when to recycle them
-    for (BufferBlock* block = passes[i]->buffers.freelist; block; block = block->next) {
-      block->tick = state.tick;
+    if (passes[i]->buffers.current) {
+      for (BufferBlock* block = passes[i]->buffers.current->next; block; block = block->next) {
+        block->tick = state.tick;
+      }
+    }
+
+    // Merge any new pipelines into the global pipeline lookup
+    for (PipelineJob* job = atomic_load(&state.newPipelines); job; job = job->next) {
+      if (map_get(&state.pipelineLookup, job->hash) == MAP_NIL) {
+        map_set(&state.pipelineLookup, job->hash, (uint64_t) (uintptr_t) job->pipeline);
+      }
+    }
+
+    atomic_store(&state.newPipelines, NULL);
+  }
+
+  lovrAssertGoto(fail, gpu_submit(streams, streamCount), "Failed to submit GPU command buffers: %s", gpu_get_error());
+
+  // All of the non-static buffers after the front of the 'current' list are the buffers that filled
+  // up while this frame was being recorded.  Set their tick to the current tick and chain them onto
+  // the end of the freelist.
+  for (size_t i = 0; i < COUNTOF(state.bufferAllocators); i++) {
+    if (i != GPU_BUFFER_STATIC) {
+      BufferAllocator* allocator = &state.bufferAllocators[i];
+
+      if (allocator->current) {
+        for (BufferBlock* block = allocator->current->next; block; block = block->next) {
+          block->tick = state.tick;
+        }
+
+        recycleBlocks(allocator, allocator->current->next);
+        allocator->current->next = NULL;
+      }
     }
   }
 
-  lovrAssert(gpu_submit(streams, streamCount), "Failed to submit GPU command buffers: %s", gpu_get_error());
-
+  stackPop(&thread.stack, stack);
   state.active = false;
   state.stream = NULL;
   return true;
+fail:
+  stackPop(&thread.stack, stack);
+  atomic_store(&state.newPipelines, NULL);
+  return false;
 }
 
 bool lovrGraphicsPresent(void) {
@@ -2001,7 +2071,7 @@ uint32_t lovrGraphicsAlignFields(DataField* parent, DataLayout layout) {
 
       if (field->length > 0) {
         subalign = layout == LAYOUT_STD140 ? MAX(subalign, 16) : subalign;
-        field->stride = MAX(subalign, table[field->type].size);
+        field->stride = field->stride ? field->stride : MAX(subalign, table[field->type].size);
       } else {
         field->stride = table[field->type].size;
       }
@@ -2117,7 +2187,6 @@ Buffer* lovrBufferCreate(const BufferInfo* info, void** data) {
   buffer->gpu = view.buffer;
   buffer->base = view.offset;
   buffer->block = view.block;
-  atomic_fetch_add(&buffer->block->ref, 1);
 
   if (data) {
     if (view.pointer) {
@@ -2140,10 +2209,7 @@ Buffer* lovrBufferCreate(const BufferInfo* info, void** data) {
 
 void lovrBufferDestroy(void* ref) {
   Buffer* buffer = ref;
-  BufferAllocator* allocator = &state.bufferAllocators[GPU_BUFFER_STATIC];
-  if (buffer->block != allocator->current && atomic_fetch_sub(&buffer->block->ref, 1) == 1) {
-    freeBlock(allocator, buffer->block);
-  }
+  releaseBlock(buffer->block);
   lovrFree(buffer);
 }
 
@@ -2238,7 +2304,6 @@ bool lovrGraphicsGetWindowTexture(Texture** texture) {
     state.window->renderView = NULL;
     state.window->info = (TextureInfo) {
       .type = TEXTURE_2D,
-      .format = GPU_FORMAT_SURFACE,
       .width = width,
       .height = height,
       .layers = 1,
@@ -2250,7 +2315,7 @@ bool lovrGraphicsGetWindowTexture(Texture** texture) {
 
     bool vsync = state.config.vsync;
 #ifndef LOVR_DISABLE_HEADSET
-    if (lovrHeadsetInterface && lovrHeadsetInterface->driverType != DRIVER_SIMULATOR) {
+    if (lovrHeadsetIsActive()) {
       vsync = false;
     }
 #endif
@@ -2259,6 +2324,7 @@ bool lovrGraphicsGetWindowTexture(Texture** texture) {
       .width = width,
       .height = height,
       .vsync = vsync,
+      .hdr = state.config.hdr,
 #if defined(_WIN32)
       .win32.window = os_get_win32_window(),
       .win32.instance = os_get_win32_instance()
@@ -2274,6 +2340,8 @@ bool lovrGraphicsGetWindowTexture(Texture** texture) {
       lovrFree(state.window);
       return lovrSetError("Failed to create window surface: %s", gpu_get_error());
     }
+
+    state.window->info.format = gpu_surface_get_format();
 
     os_on_resize(onResize);
 
@@ -2357,13 +2425,7 @@ Texture* lovrTextureCreate(const TextureInfo* info) {
   texture->info.mipmaps = mipmaps;
   texture->info.samples = samples;
   texture->info.srgb = srgb;
-
-  if (info->label) {
-    size_t size = strlen(info->label) + 1;
-    char* label = lovrMalloc(size);
-    memcpy(label, info->label, size);
-    texture->info.label = label;
-  }
+  texture->info.label = lovrStrdup(info->label);
 
   uint32_t levelCount = 0;
   uint32_t levelOffsets[16];
@@ -2469,8 +2531,8 @@ Texture* lovrTextureCreate(const TextureInfo* info) {
   }
 
   // Automatically create a renderable view for renderable non-volume textures
-  if ((info->usage & TEXTURE_RENDER) && info->type != TEXTURE_3D && info->layers <= state.limits.renderSize[2]) {
-    if (info->mipmaps == 1) {
+  if ((info->usage & TEXTURE_RENDER) && info->layers <= state.limits.renderSize[2]) {
+    if (info->mipmaps == 1 && info->type != TEXTURE_3D) {
       texture->renderView = texture->gpu;
     } else {
       gpu_texture_view_info view = {
@@ -2551,14 +2613,7 @@ Texture* lovrTextureCreateView(Texture* parent, const TextureViewInfo* info) {
   texture->ref = 1;
   texture->gpu = (gpu_texture*) (texture + 1);
   texture->info = *base;
-
-  if (info->label) {
-    size_t size = strlen(info->label) + 1;
-    char* label = lovrMalloc(size);
-    memcpy(label, info->label, size);
-    texture->info.label = label;
-  }
-
+  texture->info.label = lovrStrdup(info->label);
   texture->root = parent->root;
   texture->baseLayer = parent->baseLayer + info->layerIndex;
   texture->baseLevel = parent->baseLevel + info->levelIndex;
@@ -2617,13 +2672,14 @@ Texture* lovrTextureCreateView(Texture* parent, const TextureViewInfo* info) {
   }
 
   if ((base->usage & TEXTURE_RENDER) && layers <= state.limits.renderSize[2]) {
-    if (levels == 1) {
+    if (levels == 1 && info->type != TEXTURE_3D) {
       texture->renderView = texture->gpu;
     } else {
       gpu_texture_view_info subview = {
         .source = texture->root->gpu,
         .type = GPU_TEXTURE_ARRAY,
         .usage = GPU_TEXTURE_RENDER,
+        .srgb = base->srgb,
         .layerIndex = texture->baseLayer,
         .layerCount = layers,
         .levelIndex = texture->baseLevel,
@@ -2902,10 +2958,19 @@ Sampler* lovrSamplerCreate(const SamplerInfo* info) {
   sampler->gpu = (gpu_sampler*) (sampler + 1);
   sampler->info = *info;
 
+  if (sampler->info.mip == FILTER_CUBIC) {
+    sampler->info.mip = FILTER_LINEAR;
+  }
+
+  if (!state.features.cubic) {
+    sampler->info.min = sampler->info.min == FILTER_CUBIC ? FILTER_LINEAR : sampler->info.min;
+    sampler->info.mag = sampler->info.mag == FILTER_CUBIC ? FILTER_LINEAR : sampler->info.mag;
+  }
+
   gpu_sampler_info gpu = {
-    .min = (gpu_filter) info->min,
-    .mag = (gpu_filter) info->mag,
-    .mip = (gpu_filter) info->mip,
+    .min = (gpu_filter) sampler->info.min,
+    .mag = (gpu_filter) sampler->info.mag,
+    .mip = (gpu_filter) sampler->info.mip,
     .wrap[0] = (gpu_wrap) info->wrap[0],
     .wrap[1] = (gpu_wrap) info->wrap[1],
     .wrap[2] = (gpu_wrap) info->wrap[2],
@@ -2940,7 +3005,7 @@ static glsl_include_result_t* includer(void* cb, const char* path, const char* i
   if (!strcmp(path, includer)) {
     return NULL;
   }
-  glsl_include_result_t* result = tempAlloc(&state.allocator, sizeof(*result));
+  glsl_include_result_t* result = allocate(&thread.stack, sizeof(*result));
   result->header_name = path;
   result->header_data = ((ShaderIncluder*) cb)(path, &result->header_length);
   if (!result->header_data) return NULL;
@@ -2976,6 +3041,8 @@ bool lovrGraphicsCompileShader(ShaderSource* stages, ShaderSource* outputs, uint
     lovrUnreachable();
   }
 
+  size_t stack = stackPush(&thread.stack);
+
   for (uint32_t i = 0; i < stageCount; i++) {
     ShaderSource* source = &stages[i];
 
@@ -3008,7 +3075,7 @@ bool lovrGraphicsCompileShader(ShaderSource* stages, ShaderSource* outputs, uint
     char* code = NULL;
 
     if (raw) {
-      code = tempAlloc(&state.allocator, source->size + 1);
+      code = allocate(&thread.stack, source->size + 1);
       memcpy(code, source->code, source->size);
       code[source->size] = '\0';
     } else {
@@ -3018,7 +3085,7 @@ bool lovrGraphicsCompileShader(ShaderSource* stages, ShaderSource* outputs, uint
       }
 
       size_t cursor = 0;
-      code = tempAlloc(&state.allocator, totalLength + 1);
+      code = allocate(&thread.stack, totalLength + 1);
       for (size_t i = 0; i < COUNTOF(strings); i++) {
         memcpy(code + cursor, strings[i], lengths[i]);
         cursor += lengths[i];
@@ -3055,16 +3122,12 @@ bool lovrGraphicsCompileShader(ShaderSource* stages, ShaderSource* outputs, uint
 
     if (!glslang_shader_preprocess(shaders[i], &input)) {
       lovrSetError("Could not preprocess %s shader:\n%s", stageNames[source->stage], glslang_shader_get_info_log(shaders[i]));
-      glslang_shader_delete(shaders[i]);
-      glslang_program_delete(program);
-      return false;
+      goto fail;
     }
 
     if (!glslang_shader_parse(shaders[i], &input)) {
       lovrSetError("Could not parse %s shader:\n%s", stageNames[source->stage], glslang_shader_get_info_log(shaders[i]));
-      glslang_shader_delete(shaders[i]);
-      glslang_program_delete(program);
-      return false;
+      goto fail;
     }
 
     glslang_program_add_shader(program, shaders[i]);
@@ -3072,19 +3135,18 @@ bool lovrGraphicsCompileShader(ShaderSource* stages, ShaderSource* outputs, uint
 
   // We might not need to do anything if all the inputs were already SPIR-V
   if (!program) {
+    stackPop(&thread.stack, stack);
     return true;
   }
 
   if (!glslang_program_link(program, 0)) {
     lovrSetError("Could not link shader:\n%s", glslang_program_get_info_log(program));
-    glslang_program_delete(program);
-    return false;
+    goto fail;
   }
 
   if (!glslang_program_map_io(program)) {
     lovrSetError("Could not map shader IO:\n%s", glslang_program_get_info_log(program));
-    glslang_program_delete(program);
-    return false;
+    goto fail;
   }
 
   glslang_spv_options_t spvOptions = { 0 };
@@ -3120,7 +3182,15 @@ bool lovrGraphicsCompileShader(ShaderSource* stages, ShaderSource* outputs, uint
   }
 
   glslang_program_delete(program);
+  stackPop(&thread.stack, stack);
   return true;
+fail:
+  for (uint32_t i = 0; i < COUNTOF(shaders); i++) {
+    if (shaders[i]) glslang_shader_delete(shaders[i]);
+  }
+  if (program) glslang_program_delete(program);
+  stackPop(&thread.stack, stack);
+  return false;
 #else
   return lovrSetError("Could not compile shader: No shader compiler available");
 #endif
@@ -3178,9 +3248,9 @@ static bool lovrShaderInit(Shader* shader) {
       .flagCount = shader->overrideCount
     };
 
-    lovrAssert(state.pipelineCount < MAX_PIPELINES, "Too many pipelines!");
-    shader->computePipeline = getPipeline(state.pipelineCount++);
-    lovrAssert(os_vm_commit(state.pipelines, state.pipelineCount * gpu_sizeof_pipeline()), "Out of pipeline memory");
+    uint32_t index = atomic_fetch_add(&state.pipelineCount, 1);
+    lovrAssert(index < MAX_PIPELINES, "Too many pipelines!");
+    shader->computePipeline = getPipeline(index);
     lovrAssert(gpu_pipeline_init_compute(shader->computePipeline, &pipelineInfo), "Failed to create compute shader pipeline: %s", gpu_get_error());
   }
 
@@ -3236,15 +3306,11 @@ ShaderSource lovrGraphicsGetDefaultShaderSource(DefaultShader type, ShaderStage 
 }
 
 Shader* lovrGraphicsGetDefaultShader(DefaultShader type) {
-  if (state.defaultShaders[type]) {
-    return state.defaultShaders[type];
-  }
+  Shader* shader = atomic_load(&state.defaultShaders[type]);
 
-  switch (type) {
-    case SHADER_ANIMATOR:
-    case SHADER_BLENDER:
-    case SHADER_TALLY_MERGE:
-      return state.defaultShaders[type] = lovrShaderCreate(&(ShaderInfo) {
+  if (!shader) {
+    if (type == SHADER_ANIMATOR || type == SHADER_BLENDER || type == SHADER_TALLY_MERGE) {
+      shader = lovrShaderCreate(&(ShaderInfo) {
         .type = SHADER_COMPUTE,
         .stages = (ShaderSource[1]) {
           lovrGraphicsGetDefaultShaderSource(type, STAGE_COMPUTE)
@@ -3254,8 +3320,8 @@ Shader* lovrGraphicsGetDefaultShader(DefaultShader type) {
         .flagCount = 1,
         .isDefault = true
       });
-    default:
-      return state.defaultShaders[type] = lovrShaderCreate(&(ShaderInfo) {
+    } else {
+      shader = lovrShaderCreate(&(ShaderInfo) {
         .type = SHADER_GRAPHICS,
         .stages = (ShaderSource[2]) {
           lovrGraphicsGetDefaultShaderSource(type, STAGE_VERTEX),
@@ -3264,23 +3330,30 @@ Shader* lovrGraphicsGetDefaultShader(DefaultShader type) {
         .stageCount = 2,
         .isDefault = true
       });
+    }
+
+    if (!shader) {
+      return NULL;
+    }
+
+    Shader* expected = NULL;
+    if (!atomic_compare_exchange_strong(&state.defaultShaders[type], &expected, shader)) {
+      lovrShaderDestroy(shader);
+      shader = expected;
+    }
   }
+
+  return shader;
 }
 
 Shader* lovrShaderCreate(const ShaderInfo* info) {
-  size_t stack = tempPush(&state.allocator);
+  size_t stack = stackPush(&thread.stack);
 
   Shader* shader = lovrCalloc(sizeof(Shader) + gpu_sizeof_shader());
   shader->ref = 1;
   shader->gpu = (gpu_shader*) (shader + 1);
   shader->info = *info;
-
-  if (info->label) {
-    size_t size = strlen(info->label) + 1;
-    char* label = lovrMalloc(size);
-    memcpy(label, info->label, size);
-    shader->info.label = label;
-  }
+  shader->info.label = lovrStrdup(info->label);
 
   // Validate stage combinations
   for (uint32_t i = 0; i < info->stageCount; i++) {
@@ -3296,7 +3369,7 @@ Shader* lovrShaderCreate(const ShaderInfo* info) {
   // Copy the source to temp memory (we perform edits on the SPIR-V and the input might be readonly)
   void* source[2];
   for (uint32_t i = 0; i < info->stageCount; i++) {
-    source[i] = tempAlloc(&state.allocator, info->stages[i].size);
+    source[i] = allocate(&thread.stack, info->stages[i].size);
     memcpy(source[i], info->stages[i].code, info->stages[i].size);
   }
 
@@ -3312,11 +3385,11 @@ Shader* lovrShaderCreate(const ShaderInfo* info) {
     lovrAssertGoto(fail, result == SPV_OK, "Failed to load Shader: %s", spv_result_to_string(result));
     lovrAssertGoto(fail, spv[i].version <= 0x00010300, "Invalid SPIR-V version (up to 1.3 is supported)");
 
-    spv[i].features = tempAlloc(&state.allocator, spv[i].featureCount * sizeof(uint32_t));
-    spv[i].specConstants = tempAlloc(&state.allocator, spv[i].specConstantCount * sizeof(spv_spec_constant));
-    spv[i].attributes = tempAlloc(&state.allocator, spv[i].attributeCount * sizeof(spv_attribute));
-    spv[i].resources = tempAlloc(&state.allocator, spv[i].resourceCount * sizeof(spv_resource));
-    spv[i].fields = tempAlloc(&state.allocator, spv[i].fieldCount * sizeof(spv_field));
+    spv[i].features = allocate(&thread.stack, spv[i].featureCount * sizeof(uint32_t));
+    spv[i].specConstants = allocate(&thread.stack, spv[i].specConstantCount * sizeof(spv_spec_constant));
+    spv[i].attributes = allocate(&thread.stack, spv[i].attributeCount * sizeof(spv_attribute));
+    spv[i].resources = allocate(&thread.stack, spv[i].resourceCount * sizeof(spv_resource));
+    spv[i].fields = allocate(&thread.stack, spv[i].fieldCount * sizeof(spv_field));
     if (spv[i].fields) memset(spv[i].fields, 0, spv[i].fieldCount * sizeof(spv_field));
 
     result = spv_parse(source[i], info->stages[i].size, &spv[i]);
@@ -3596,7 +3669,7 @@ Shader* lovrShaderCreate(const ShaderInfo* info) {
   }
 
   // Layout
-  gpu_slot* slots = tempAlloc(&state.allocator, shader->resourceCount * sizeof(gpu_slot));
+  gpu_slot* slots = allocate(&thread.stack, shader->resourceCount * sizeof(gpu_slot));
   for (uint32_t i = 0; i < shader->resourceCount; i++) {
     ShaderResource* resource = &shader->resources[i];
     slots[i] = (gpu_slot) {
@@ -3617,7 +3690,7 @@ Shader* lovrShaderCreate(const ShaderInfo* info) {
 
   gpu_shader_info gpu = {
     .stageCount = info->stageCount,
-    .stages = tempAlloc(&state.allocator, info->stageCount * sizeof(gpu_shader_source)),
+    .stages = allocate(&thread.stack, info->stageCount * sizeof(gpu_shader_source)),
     .label = info->label
   };
 
@@ -3659,10 +3732,10 @@ Shader* lovrShaderCreate(const ShaderInfo* info) {
     goto fail;
   }
 
-  tempPop(&state.allocator, stack);
+  stackPop(&thread.stack, stack);
   return shader;
 fail:
-  tempPop(&state.allocator, stack);
+  stackPop(&thread.stack, stack);
   lovrShaderDestroy(shader);
   return NULL;
 }
@@ -3809,78 +3882,69 @@ Material* lovrMaterialCreate(const MaterialInfo* info) {
   for (uint32_t i = 0; i < COUNTOF(textures); i++) {
     if (!textures[i]) continue;
     lovrCheck(i == 0 || textures[i]->info.type == TEXTURE_2D, "Material textures must be 2D");
-    lovrCheck(textures[i]->info.samples == 1, "Material textures can not be multisample");
+    lovrCheck(textures[i]->info.samples == 1, "Material textures can not be multisampled");
     lovrCheck(textures[i]->info.usage & TEXTURE_SAMPLE, "Textures must be created with the 'sample' usage to use them in Materials");
   }
 
-  MaterialBlock* block = state.materialBlocks.length > 0 ? &state.materialBlocks.data[state.materialBlock] : NULL;
-  const uint32_t MATERIALS_PER_BLOCK = 256;
+  MaterialBlock* block = NULL;
 
-  if (!block || block->head == ~0u || !gpu_is_complete(block->list[block->head].tick)) {
-    bool found = false;
-
-    for (size_t i = 0; i < state.materialBlocks.length; i++) {
-      block = &state.materialBlocks.data[i];
-      if (block->head != ~0u && gpu_is_complete(block->list[block->head].tick)) {
-        state.materialBlock = i;
-        found = true;
-        break;
-      }
-    }
-
-    if (!found) {
-      arr_expand(&state.materialBlocks, 1);
-      lovrAssert(state.materialBlocks.length < UINT16_MAX, "Out of memory");
-      uint16_t blockIndex = (uint16_t) state.materialBlocks.length;
-      block = &state.materialBlocks.data[blockIndex];
-      block->list = lovrMalloc(MATERIALS_PER_BLOCK * sizeof(Material));
-      block->bundlePool = lovrMalloc(gpu_sizeof_bundle_pool());
-      block->bundles = lovrMalloc(MATERIALS_PER_BLOCK * gpu_sizeof_bundle());
-
-      for (uint32_t i = 0; i < MATERIALS_PER_BLOCK; i++) {
-        block->list[i].next = i + 1;
-        block->list[i].tick = 0;
-        block->list[i].block = blockIndex;
-        block->list[i].index = i;
-        block->list[i].bundle = (gpu_bundle*) ((char*) block->bundles + i * gpu_sizeof_bundle());
-        block->list[i].hasWritableTexture = false;
-      }
-      block->list[MATERIALS_PER_BLOCK - 1].next = ~0u;
-      block->tail = MATERIALS_PER_BLOCK - 1;
-      block->head = 0;
-
-      gpu_bundle_pool_info poolInfo = {
-        .bundles = block->bundles,
-        .layout = state.materialLayout->gpu,
-        .count = MATERIALS_PER_BLOCK
-      };
-
-      if (!gpu_bundle_pool_init(block->bundlePool, &poolInfo)) {
-        lovrFree(block->list);
-        lovrFree(block->bundlePool);
-        lovrFree(block->bundles);
-        return NULL;
-      }
-
-      size_t align = state.limits.uniformBufferAlign;
-      uint32_t bufferSize = MATERIALS_PER_BLOCK * (uint32_t) ALIGN(sizeof(MaterialData), align);
-      block->view = getBuffer(GPU_BUFFER_STATIC, bufferSize, align);
-
-      if (!block->view.buffer) {
-        lovrFree(block->list);
-        lovrFree(block->bundlePool);
-        lovrFree(block->bundles);
-        gpu_bundle_pool_destroy(block->bundlePool);
-        return NULL;
-      }
-
-      atomic_fetch_add(&block->view.block->ref, 1);
-      state.materialBlock = blockIndex;
-      state.materialBlocks.length++;
+  for (MaterialBlock* node = state.materials; node != NULL; node = node->next) {
+    if (node->head != ~0u && gpu_is_complete(node->materials[node->head].tick)) {
+      block = node;
+      break;
     }
   }
 
-  Material* material = &block->list[block->head];
+  if (!block) {
+    const uint32_t count = 256;
+    block = lovrMalloc(sizeof(*block));
+    block->materials = lovrMalloc(count * sizeof(Material));
+    block->bundlePool = lovrMalloc(gpu_sizeof_bundle_pool());
+    block->bundles = lovrMalloc(count * gpu_sizeof_bundle());
+
+    for (uint32_t i = 0; i < count; i++) {
+      block->materials[i] = (Material) {
+        .index = i,
+        .next = i + 1,
+        .block = block,
+        .bundle = (gpu_bundle*) ((char*) block->bundles + i * gpu_sizeof_bundle())
+      };
+    }
+
+    block->materials[count - 1].next = ~0u;
+    block->tail = count - 1;
+    block->head = 0;
+
+    gpu_bundle_pool_info poolInfo = {
+      .bundles = block->bundles,
+      .layout = state.materialLayout->gpu,
+      .count = count
+    };
+
+    if (!gpu_bundle_pool_init(block->bundlePool, &poolInfo)) {
+      lovrFree(block->materials);
+      lovrFree(block->bundlePool);
+      lovrFree(block->bundles);
+      return NULL;
+    }
+
+    size_t align = state.limits.uniformBufferAlign;
+    uint32_t bufferSize = count * (uint32_t) ALIGN(sizeof(MaterialData), align);
+    block->view = getBuffer(GPU_BUFFER_STATIC, bufferSize, align);
+
+    if (!block->view.buffer) {
+      lovrFree(block->materials);
+      lovrFree(block->bundlePool);
+      lovrFree(block->bundles);
+      gpu_bundle_pool_destroy(block->bundlePool);
+      return NULL;
+    }
+
+    block->next = state.materials;
+    state.materials = block;
+  }
+
+  Material* material = &block->materials[block->head];
   material->ref = 1;
   material->info = *info;
 
@@ -3939,10 +4003,9 @@ Material* lovrMaterialCreate(const MaterialInfo* info) {
 
 void lovrMaterialDestroy(void* ref) {
   Material* material = ref;
-  MaterialBlock* block = &state.materialBlocks.data[material->block];
   material->tick = state.tick;
-  block->tail = material->index;
-  if (block->head == ~0u) block->head = block->tail;
+  material->block->tail = material->index;
+  if (material->block->head == ~0u) material->block->head = material->block->tail;
   lovrRelease(material->info.texture, lovrTextureDestroy);
   lovrRelease(material->info.glowTexture, lovrTextureDestroy);
   lovrRelease(material->info.metalnessTexture, lovrTextureDestroy);
@@ -4228,8 +4291,8 @@ static Glyph* lovrFontGetGlyph(Font* font, uint32_t codepoint, bool* resized) {
   font->atlasX += pixelWidth;
   font->rowHeight = MAX(font->rowHeight, pixelHeight);
 
-  size_t stack = tempPush(&state.allocator);
-  float* pixels = tempAlloc(&state.allocator, pixelWidth * pixelHeight * 4 * sizeof(float));
+  size_t stack = stackPush(&thread.stack);
+  float* pixels = allocate(&thread.stack, pixelWidth * pixelHeight * 4 * sizeof(float));
   lovrRasterizerGetPixels(font->info.rasterizer, codepoint, pixels, pixelWidth, pixelHeight, font->info.spread);
   float* src = pixels;
   uint8_t* dst = bufferView.pointer;
@@ -4244,7 +4307,7 @@ static Glyph* lovrFontGetGlyph(Font* font, uint32_t codepoint, bool* resized) {
   uint32_t dstOffset[4] = { glyph->x - font->padding, glyph->y - font->padding, 0, 0 };
   uint32_t extent[3] = { pixelWidth, pixelHeight, 1 };
   gpu_copy_buffer_texture(state.stream, bufferView.buffer, font->atlas->gpu, bufferView.offset, dstOffset, extent);
-  tempPop(&state.allocator, stack);
+  stackPop(&thread.stack, stack);
 
   state.barrier.prev |= GPU_PHASE_COPY;
   state.barrier.next |= GPU_PHASE_SHADER_FRAGMENT;
@@ -4301,8 +4364,8 @@ void lovrFontGetLines(Font* font, ColoredString* strings, uint32_t count, float 
     totalLength += strings[i].length;
   }
 
-  size_t stack = tempPush(&state.allocator);
-  char* string = tempAlloc(&state.allocator, totalLength + 1);
+  size_t stack = stackPush(&thread.stack);
+  char* string = allocate(&thread.stack, totalLength + 1);
   string[totalLength] = '\0';
 
   size_t cursor = 0;
@@ -4371,7 +4434,7 @@ void lovrFontGetLines(Font* font, ColoredString* strings, uint32_t count, float 
     callback(context, lineStart, end - lineStart);
   }
 
-  tempPop(&state.allocator, stack);
+  stackPop(&thread.stack, stack);
 }
 
 static void aline(GlyphVertex* vertices, uint32_t head, uint32_t tail, float width, HorizontalAlign align) {
@@ -5010,9 +5073,9 @@ Model* lovrModelCreate(const ModelInfo* info) {
   // Within each section, primitives are still sorted by their index
   // All of a node's primitives will remain together, since skin/blend shapes are per-node
 
-  stack = tempPush(&state.allocator);
-  uint64_t* primitiveOrder = tempAlloc(&state.allocator, data->primitiveCount * sizeof(uint64_t));
-  uint32_t* baseVertex = tempAlloc(&state.allocator, data->primitiveCount * sizeof(uint32_t));
+  stack = stackPush(&thread.stack);
+  uint64_t* primitiveOrder = allocate(&thread.stack, data->primitiveCount * sizeof(uint64_t));
+  uint32_t* baseVertex = allocate(&thread.stack, data->primitiveCount * sizeof(uint32_t));
 
   // The sort key only has 31 bits for the skin
   lovrCheckGoto(fail, data->skinCount < (1u << 31), "Too many skins!");
@@ -5142,11 +5205,11 @@ Model* lovrModelCreate(const ModelInfo* info) {
   model->globalTransforms = lovrMalloc(16 * sizeof(float) * data->nodeCount);
   lovrModelResetNodeTransforms(model);
 
-  tempPop(&state.allocator, stack);
+  stackPop(&thread.stack, stack);
 
   return model;
 fail:
-  if (stack) tempPop(&state.allocator, stack);
+  if (stack) stackPop(&thread.stack, stack);
   lovrModelDestroy(model);
   return NULL;
 }
@@ -5292,7 +5355,7 @@ bool lovrModelAnimate(Model* model, uint32_t animationIndex, float time, float a
   ModelAnimation* animation = &data->animations[animationIndex];
   time = fmodf(time, animation->duration);
 
-  size_t stack = tempPush(&state.allocator);
+  size_t stack = stackPush(&thread.stack);
 
   for (uint32_t i = 0; i < animation->channelCount; i++) {
     ModelAnimationChannel* channel = &animation->channels[i];
@@ -5311,7 +5374,7 @@ bool lovrModelAnimate(Model* model, uint32_t animationIndex, float time, float a
       case PROP_WEIGHTS: n = data->nodes[node].blendShapeCount; break;
     }
 
-    float* property = tempAlloc(&state.allocator, n * sizeof(float));
+    float* property = allocate(&thread.stack, n * sizeof(float));
 
     // Handle the first/last keyframe case (no interpolation)
     if (keyframe == 0 || keyframe >= channel->keyframeCount) {
@@ -5388,7 +5451,7 @@ bool lovrModelAnimate(Model* model, uint32_t animationIndex, float time, float a
     }
   }
 
-  tempPop(&state.allocator, stack);
+  stackPop(&thread.stack, stack);
   return true;
 }
 
@@ -5768,7 +5831,7 @@ Image* lovrReadbackGetImage(Readback* readback) {
 // Pass
 
 static void* lovrPassAllocate(Pass* pass, size_t size) {
-  return tempAlloc(&pass->allocator, size);
+  return allocate(&pass->allocator, size);
 }
 
 static BufferView lovrPassGetBuffer(Pass* pass, uint32_t size, size_t align) {
@@ -5776,12 +5839,10 @@ static BufferView lovrPassGetBuffer(Pass* pass, uint32_t size, size_t align) {
 }
 
 static void lovrPassRelease(Pass* pass) {
-  // Chain all of the Pass's full buffers onto the end of the global freelist
-  if (pass->buffers.freelist) {
-    BufferBlock** list = &state.bufferAllocators[GPU_BUFFER_STREAM].freelist;
-    while (*list) list = (BufferBlock**) &(*list)->next;
-    *list = pass->buffers.freelist;
-    pass->buffers.freelist = NULL;
+  // Chain all of the full buffers onto the end of the freelist, since they are now unreferenced
+  if (pass->buffers.current && pass->buffers.current->next) {
+    recycleBlocks(&pass->buffers, pass->buffers.current->next);
+    pass->buffers.current->next = NULL;
   }
 
   if (pass->pipeline) {
@@ -5835,9 +5896,19 @@ bool lovrGraphicsGetWindowPass(Pass** pass) {
   }
 
   lovrPassReset(state.windowPass);
-  memcpy(state.windowPass->canvas.color[0].clear, state.background, 4 * sizeof(float));
-  CanvasTexture color[4] = { [0].texture = window };
-  lovrPassSetCanvas(state.windowPass, color, NULL, state.depthFormat, NULL, state.config.antialias ? 4 : 1);
+  memcpy(state.windowPass->target.color[0].clear, state.background, 4 * sizeof(float));
+
+  Canvas canvas = {
+    .color[0].texture = window,
+    .depthFormat = state.depthFormat,
+    .samples = state.config.antialias ? 4 : 1
+  };
+
+  if (!lovrPassSetCanvas(state.windowPass, &canvas)) {
+    *pass = NULL;
+    return false;
+  }
+
   *pass = state.windowPass;
   return true;
 }
@@ -5846,11 +5917,7 @@ Pass* lovrPassCreate(const char* label) {
   Pass* pass = lovrCalloc(sizeof(Pass));
   pass->ref = 1;
 
-  pass->allocator.limit = 1 << 28;
-  pass->allocator.length = 1 << 12;
-  pass->allocator.memory = os_vm_init(pass->allocator.limit);
-  lovrAssert(pass->allocator.memory, "Out of memory");
-  os_vm_commit(pass->allocator.memory, pass->allocator.length);
+  initAllocator(&pass->allocator);
 
   if (label) {
     size_t size = strlen(label) + 1;
@@ -5864,24 +5931,14 @@ Pass* lovrPassCreate(const char* label) {
 
 void lovrPassDestroy(void* ref) {
   Pass* pass = ref;
-  lovrPassRelease(pass);
-  for (uint32_t i = 0; i < COUNTOF(pass->canvas.color); i++) {
-    lovrRelease(pass->canvas.color[i].texture, lovrTextureDestroy);
-    lovrRelease(pass->canvas.color[i].resolve, lovrTextureDestroy);
-  }
-  lovrRelease(pass->canvas.depth.texture, lovrTextureDestroy);
-  lovrRelease(pass->canvas.depth.resolve, lovrTextureDestroy);
-  lovrRelease(pass->canvas.foveation, lovrTextureDestroy);
+  lovrPassSetCanvas(pass, NULL);
   lovrRelease(pass->tally.buffer, lovrBufferDestroy);
   if (pass->tally.gpu) {
     gpu_tally_destroy(pass->tally.gpu);
     lovrRelease(pass->tally.tempBuffer, lovrBufferDestroy);
   }
-  if (pass->buffers.current) {
-    pass->buffers.current->tick = state.tick;
-    freeBlock(&state.bufferAllocators[GPU_BUFFER_STREAM], pass->buffers.current);
-  }
-  os_vm_free(pass->allocator.memory, pass->allocator.limit);
+  destroyBuffers(&pass->buffers);
+  lovrFree(pass->allocator.memory);
   lovrFree(pass->label);
   lovrFree(pass);
 }
@@ -5918,7 +5975,6 @@ void lovrPassReset(Pass* pass) {
   pass->pipeline->color[1] = 1.f;
   pass->pipeline->color[2] = 1.f;
   pass->pipeline->color[3] = 1.f;
-  pass->pipeline->info.pass = pass->gpu;
   pass->pipeline->info.depth.test = GPU_COMPARE_GEQUAL;
   pass->pipeline->info.depth.write = true;
   pass->pipeline->info.stencil.testMask = 0xff;
@@ -5926,28 +5982,39 @@ void lovrPassReset(Pass* pass) {
 
   for (uint32_t i = 0; i < 4; i++) {
     lovrPassSetBlendMode(pass, i, BLEND_ALPHA, BLEND_ALPHA_MULTIPLY);
-    pass->pipeline->info.colorMask[i] = 0xf;
+    pass->pipeline->info.color[i].mask = 0xf;
   }
 
   Canvas* canvas = &pass->canvas;
+
+  for (uint32_t i = 0; i < 4 && canvas->color[i].texture; i++) {
+    pass->pipeline->info.color[i].format = (gpu_texture_format) canvas->color[i].texture->info.format;
+    pass->pipeline->info.color[i].srgb = canvas->color[i].texture->info.srgb;
+    pass->pipeline->info.attachmentCount++;
+  }
+
+  pass->pipeline->info.depth.format = (gpu_texture_format) (canvas->depth.texture ? canvas->depth.texture->info.format : canvas->depthFormat);
+  pass->pipeline->info.multisample.count = canvas->samples;
+  pass->pipeline->info.viewCount = pass->views;
+  pass->pipeline->info.foveated = canvas->foveation;
 
   pass->cameraCount = 0;
   pass->viewportCount = 0;
   pass->scissorCount = 0;
 
-  if (canvas->views > 0) {
+  if (pass->views > 0) {
     float viewMatrix[16];
     float projection[16];
     mat4_identity(viewMatrix);
-    mat4_perspective(projection, 1.2f, (float) canvas->width / canvas->height, .01f, 0.f);
-    for (uint32_t i = 0; i < canvas->views; i++) {
+    mat4_perspective(projection, 1.2f, (float) pass->width / pass->height, .01f, 0.f);
+    for (uint32_t i = 0; i < pass->views; i++) {
       lovrPassSetViewMatrix(pass, i, viewMatrix);
       lovrPassSetProjection(pass, i, projection);
     }
   }
 
-  lovrPassSetViewport(pass, (float[6]) { 0.f, 0.f, (float) canvas->width, (float) canvas->height, 0.f, 1.f });
-  lovrPassSetScissor(pass, (uint32_t[4]) { 0, 0, canvas->width, canvas->height });
+  lovrPassSetViewport(pass, (float[6]) { 0.f, 0.f, (float) pass->width, (float) pass->height, 0.f, 1.f });
+  lovrPassSetScissor(pass, (uint32_t[4]) { 0, 0, pass->width, pass->height });
 
   pass->sampler = NULL;
 }
@@ -5955,7 +6022,7 @@ void lovrPassReset(Pass* pass) {
 const PassStats* lovrPassGetStats(Pass* pass) {
   pass->stats.draws = pass->drawCount;
   pass->stats.computes = pass->computeCount;
-  pass->stats.cpuMemoryReserved = pass->allocator.length;
+  pass->stats.cpuMemoryReserved = pass->allocator.cursor;
   pass->stats.cpuMemoryUsed = pass->allocator.cursor;
   return &pass->stats;
 }
@@ -5964,208 +6031,322 @@ const char* lovrPassGetLabel(Pass* pass) {
   return pass->label;
 }
 
-void lovrPassGetCanvas(Pass* pass, CanvasTexture color[4], CanvasTexture* depth, uint32_t* depthFormat, Texture** foveation, uint32_t* samples) {
-  for (uint32_t i = 0; i < COUNTOF(pass->canvas.color); i++) {
-    color[i].texture = pass->canvas.color[i].texture;
-    color[i].resolve = pass->canvas.color[i].resolve;
-  }
-  depth->texture = pass->canvas.depth.texture;
-  depth->resolve = pass->canvas.depth.resolve;
-  *depthFormat = pass->canvas.depth.format;
-  *foveation = pass->canvas.foveation;
-  *samples = pass->canvas.samples;
+void lovrPassGetCanvas(Pass* pass, Canvas* canvas) {
+  *canvas = pass->canvas;
 }
 
-bool lovrPassSetCanvas(Pass* pass, CanvasTexture color[4], CanvasTexture* depth, uint32_t depthFormat, Texture* foveation, uint32_t samples) {
-  Canvas* canvas = &pass->canvas;
+bool lovrPassSetCanvas(Pass* pass, Canvas* canvas) {
+  gpu_canvas* target = &pass->target;
 
-  for (uint32_t i = 0; i < canvas->count; i++) {
-    lovrRelease(canvas->color[i].texture, lovrTextureDestroy);
-    lovrRelease(canvas->color[i].resolve, lovrTextureDestroy);
-    canvas->color[i].texture = NULL;
-    canvas->color[i].resolve = NULL;
-  }
+  if (!canvas || (!canvas->color->texture && !canvas->depth.texture)) {
+    canvas = &pass->canvas;
 
-  lovrRelease(canvas->depth.texture, lovrTextureDestroy);
-  lovrRelease(canvas->depth.resolve, lovrTextureDestroy);
-  canvas->depth.texture = NULL;
-  canvas->depth.resolve = NULL;
-  canvas->depth.format = 0;
+    for (uint32_t i = 0; i < 4 && canvas->color[i].texture; i++) {
+      if (target->color[i].texture && target->color[i].texture != canvas->color[i].texture->renderView) {
+        gpu_texture_destroy(target->color[i].texture);
+        lovrFree(target->color[i].texture);
+        target->color[i].texture = NULL;
+      }
 
-  lovrRelease(canvas->foveation, lovrTextureDestroy);
-  canvas->foveation = NULL;
+      lovrRelease(canvas->color[i].texture, lovrTextureDestroy);
+      lovrRelease(canvas->color[i].resolve, lovrTextureDestroy);
+    }
 
-  canvas->count = 0;
-  canvas->width = 0;
-  canvas->height = 0;
-  canvas->views = 0;
-  canvas->samples = 0;
+    if (target->depth.texture && (!canvas->depth.texture || target->depth.texture != canvas->depth.texture->renderView)) {
+      gpu_texture_destroy(target->depth.texture);
+      lovrFree(target->depth.texture);
+      target->depth.texture = NULL;
+    }
 
-  pass->gpu = NULL;
-  lovrPassReset(pass);
-
-  if ((!color || !color->texture) && (!depth || !depth->texture)) {
+    lovrRelease(canvas->depth.texture, lovrTextureDestroy);
+    lovrRelease(canvas->depth.resolve, lovrTextureDestroy);
+    lovrRelease(canvas->foveation, lovrTextureDestroy);
+    memset(canvas, 0, sizeof(Canvas));
+    pass->width = 0;
+    pass->height = 0;
+    pass->views = 0;
+    lovrPassReset(pass);
     return true;
   }
 
-  const TextureInfo* t = color && color->texture ? &color->texture->info : &depth->texture->info;
+  Attachment* color = canvas->color;
+  Attachment* depth = &canvas->depth;
+  const TextureInfo* texture = color->texture ? &color->texture->info : &depth->texture->info;
 
-  if (t->samples > 1) {
-    samples = t->samples;
-  }
+  // Validation
 
-  lovrCheck(t->width <= state.limits.renderSize[0], "Pass canvas width (%d) exceeds the renderSize limit of this GPU (%d)", t->width, state.limits.renderSize[0]);
-  lovrCheck(t->height <= state.limits.renderSize[1], "Pass canvas height (%d) exceeds the renderSize limit of this GPU (%d)", t->height, state.limits.renderSize[1]);
-  lovrCheck(t->layers <= state.limits.renderSize[2], "Pass canvas layer count (%d) exceeds the renderSize limit of this GPU (%d)", t->layers, state.limits.renderSize[2]);
-  lovrCheck(samples == 1 || samples == 4, "Currently, canvas sample count must be 1 or 4");
+  lovrCheck(texture->width <= state.limits.renderSize[0], "Canvas width (%d) exceeds the renderSize limit of this GPU (%d)", texture->width, state.limits.renderSize[0]);
+  lovrCheck(texture->height <= state.limits.renderSize[1], "Canvas height (%d) exceeds the renderSize limit of this GPU (%d)", texture->height, state.limits.renderSize[1]);
+  lovrCheck(texture->layers <= state.limits.renderSize[2], "Canvas layer count (%d) exceeds the renderSize limit of this GPU (%d)", texture->layers, state.limits.renderSize[2]);
 
-  uint32_t count = 0;
-  for (uint32_t i = 0; i < 4 && color && color[i].texture; i++, count++) {
-    const TextureInfo* texture = &color[i].texture->info;
-    bool renderable = texture->format == GPU_FORMAT_SURFACE || (state.features.formats[texture->format][texture->srgb] & GPU_FEATURE_RENDER);
-    lovrCheck(!isDepthFormat(texture->format), "Unable to use a depth texture as a color texture in a canvas");
-    lovrCheck(renderable, "This GPU does not support rendering to the texture format/encoding used by canvas texture #%d", i + 1);
-    lovrCheck(texture->usage & TEXTURE_RENDER, "Texture must be created with the 'render' flag to render to it");
-    lovrCheck(texture->width == t->width, "Canvas texture sizes must match");
-    lovrCheck(texture->height == t->height, "Canvas texture sizes must match");
-    lovrCheck(texture->layers == t->layers, "Canvas texture layer counts must match");
-    lovrCheck(texture->samples == 1 || texture->samples == t->samples, "Multisampled canvas textures must have the same sample count");
+  uint32_t samples = texture->samples > 1 ? texture->samples : MAX(canvas->samples, 1);
+  lovrCheck((samples & (samples - 1)) == 0, "Canvas sample count must be a power of 2");
+  lovrCheck(state.features.sampleCounts & samples, "This GPU does not support rendering to a canvas with this sample count (%d)", samples);
+
+  for (uint32_t i = 0; i < 4 && color[i].texture; i++) {
+    const TextureInfo* info = &color[i].texture->info;
+    lovrCheck(!isDepthFormat(info->format), "Unable to use a depth texture as a color texture in a canvas");
+    lovrCheck(state.features.formats[info->format][info->srgb] & GPU_FEATURE_RENDER, "This GPU does not support rendering to the texture format/encoding used by canvas texture #%d", i + 1);
+    lovrCheck(info->usage & TEXTURE_RENDER, "Texture must be created with the 'render' usage to render to it");
+    lovrCheck(info->width == texture->width, "Canvas texture sizes must match");
+    lovrCheck(info->height == texture->height, "Canvas texture sizes must match");
+    lovrCheck(info->layers == texture->layers, "Canvas texture layer counts must match");
+    lovrCheck(info->samples == 1 || info->samples == texture->samples, "Multisampled canvas textures must have the same sample count");
     if (color[i].resolve) {
       TextureInfo* resolve = &color[i].resolve->info;
-      lovrCheck(resolve->format == texture->format, "Resolve texture format does not match format of its corresponding color texture");
-      lovrCheck(resolve->usage & TEXTURE_RENDER, "Texture must be created with the 'render' flag to render to it");
-      lovrCheck(resolve->width == t->width, "Canvas texture sizes must match");
-      lovrCheck(resolve->height == t->height, "Canvas texture sizes must match");
-      lovrCheck(resolve->layers == t->layers, "Canvas texture layer counts match");
+      lovrCheck(resolve->format == info->format, "Resolve texture format does not match format of its corresponding color texture");
+      lovrCheck(resolve->usage & TEXTURE_RENDER, "Texture must be created with the 'render' usage to render to it");
+      lovrCheck(resolve->width == texture->width, "Canvas texture sizes must match");
+      lovrCheck(resolve->height == texture->height, "Canvas texture sizes must match");
+      lovrCheck(resolve->layers == texture->layers, "Canvas texture layer counts match");
       lovrCheck(resolve->samples == 1, "Resolve textures must have a sample count of 1");
-      lovrCheck(texture->samples > 1, "When a resolve texture is given, the main canvas texture must be multisampled");
+      lovrCheck(info->samples > 1, "When a resolve texture is given, the main canvas texture must be multisampled");
     }
   }
 
-  if (depth && depth->texture) {
-    const TextureInfo* texture = &depth->texture->info;
-    lovrCheck(isDepthFormat(texture->format), "Canvas depth textures must have a depth format");
-    lovrCheck(state.features.formats[texture->format][0] & GPU_FEATURE_RENDER, "Canvas depth format is not supported by this GPU");
-    lovrCheck(texture->usage & TEXTURE_RENDER, "Texture must be created with the 'render' flag to render to it");
-    lovrCheck(texture->width == t->width, "Canvas texture sizes must match");
-    lovrCheck(texture->height == t->height, "Canvas texture sizes must match");
-    lovrCheck(texture->layers == t->layers, "Canvas texture layer counts must match");
-    lovrCheck(texture->samples == 1 || texture->samples == t->samples, "Multisampled canvas textures must have the same sample count");
-    lovrCheck(!(texture->samples == 1 && samples > 1) || state.features.depthResolve, "This GPU does not support resolving depth textures");
+  if (depth->texture) {
+    const TextureInfo* info = &depth->texture->info;
+    lovrCheck(isDepthFormat(info->format), "Canvas depth textures must have a depth format");
+    lovrCheck(state.features.formats[info->format][0] & GPU_FEATURE_RENDER, "Canvas depth format is not supported by this GPU");
+    lovrCheck(info->usage & TEXTURE_RENDER, "Texture must be created with the 'render' usage to render to it");
+    lovrCheck(info->width == texture->width, "Canvas texture sizes must match");
+    lovrCheck(info->height == texture->height, "Canvas texture sizes must match");
+    lovrCheck(info->layers == texture->layers, "Canvas texture layer counts must match");
+    lovrCheck(info->samples == 1 || info->samples == texture->samples, "Multisampled canvas textures must have the same sample count");
+    lovrCheck(!(info->samples == 1 && samples > 1) || state.features.depthResolve, "This GPU does not support resolving depth textures");
     if (depth->resolve) {
       TextureInfo* resolve = &depth->resolve->info;
       lovrCheck(state.features.depthResolve, "This GPU does not support resolving depth textures");
-      lovrCheck(resolve->format == texture->format, "Depth resolve texture format does not match main depth texture format");
+      lovrCheck(resolve->format == info->format, "Depth resolve texture format does not match main depth texture format");
       lovrCheck(resolve->usage & TEXTURE_RENDER, "Depth resolve texture format does not match main depth texture format");
-      lovrCheck(resolve->width == t->width, "Canvas texture sizes must match");
-      lovrCheck(resolve->height == t->height, "Canvas texture sizes must match");
-      lovrCheck(resolve->layers == t->layers, "Canvas texture layer counts match");
+      lovrCheck(resolve->width == texture->width, "Canvas texture sizes must match");
+      lovrCheck(resolve->height == texture->height, "Canvas texture sizes must match");
+      lovrCheck(resolve->layers == texture->layers, "Canvas texture layer counts match");
       lovrCheck(resolve->samples == 1, "Resolve textures must have a sample count of 1");
-      lovrCheck(texture->samples > 1, "When a resolve texture is given, the main canvas texture must be multisampled");
+      lovrCheck(info->samples > 1, "When a resolve texture is given, the main canvas texture must be multisampled");
     }
-  } else if (depthFormat) {
-    lovrCheck(isDepthFormat(depthFormat), "Expected depth format for canvas depth (received color format)");
-    lovrCheck(state.features.formats[depthFormat][0] & GPU_FEATURE_RENDER, "Canvas depth format is not supported by this GPU");
+  } else if (canvas->depthFormat) {
+    lovrCheck(isDepthFormat(canvas->depthFormat), "Expected depth format for canvas depth (received color format)");
+    lovrCheck(state.features.formats[canvas->depthFormat][0] & GPU_FEATURE_RENDER, "Canvas depth format is not supported by this GPU");
   }
 
-  canvas->count = count;
-  canvas->width = t->width;
-  canvas->height = t->height;
-  canvas->views = t->layers;
-  canvas->samples = samples;
+  // Create temporary textures, trying to reuse existing ones when possible
 
-  for (uint32_t i = 0; i < canvas->count; i++) {
-    canvas->color[i].texture = color[i].texture;
-    canvas->color[i].resolve = color[i].resolve;
-    canvas->color[i].format = color[i].texture->info.format;
-    canvas->color[i].automsaa = color[i].texture->info.samples == 1 && samples > 1;
-    lovrRetain(color[i].texture);
-    lovrRetain(color[i].resolve);
+  if (!beginFrame()) {
+    return false;
   }
 
-  if (depth && depth->texture) {
-    canvas->depth.texture = depth->texture;
-    canvas->depth.resolve = depth->resolve;
-    canvas->depth.format = depth->texture->info.format;
-    canvas->depth.automsaa = depth->texture->info.samples == 1 && samples > 1;
-    lovrRetain(depth->texture);
-    lovrRetain(depth->resolve);
+  gpu_texture* tempColorTextures[4] = { 0 };
+  gpu_texture* tempDepthTexture = NULL;
+
+  bool compatible = true;
+  compatible &= pass->width == texture->width;
+  compatible &= pass->height == texture->height;
+  compatible &= pass->views == texture->layers;
+  compatible &= pass->canvas.samples == samples;
+
+  for (uint32_t i = 0; i < 4 && color[i].texture; i++) {
+    const TextureInfo* self = &color[i].texture->info;
+    const TextureInfo* other = pass->canvas.color[i].texture ? &pass->canvas.color[i].texture->info : NULL;
+
+    // See if we even need a temporary MSAA texture
+    if (samples == 1 || self->samples > 1) {
+      continue;
+    }
+
+    lovrCheck(target->color[i].load != GPU_LOAD_OP_KEEP, "When clear is set to false, canvas texture sample count must match the sample count of the pass");
+
+    // See if we can reuse an existing MSAA texture
+    if (compatible && other && other->samples == 1 && self->format == other->format && self->srgb == other->srgb) {
+      tempColorTextures[i] = target->color[i].texture;
+      continue;
+    }
+
+    // Otherwise, make a new temporary texture
+    tempColorTextures[i] = createTemporaryTexture(texture, self->format, self->srgb, samples);
+
+    if (!tempColorTextures[i]) {
+      for (uint32_t j = 0; j < i; j++) {
+        if (tempColorTextures[j] && tempColorTextures[j] != target->color[j].texture) {
+          gpu_texture_destroy(tempColorTextures[j]);
+        }
+      }
+
+      lovrSetError("Failed to create temporary texture: %s", gpu_get_error());
+      return false;
+    }
+  }
+
+  if (depth->texture ? (depth->texture->info.samples == 1 && samples > 1) : canvas->depthFormat) {
+    TextureFormat format = depth->texture ? depth->texture->info.format : canvas->depthFormat;
+    const TextureInfo* other = pass->canvas.depth.texture ? &pass->canvas.depth.texture->info : NULL;
+
+    lovrCheck(target->depth.load != GPU_LOAD_OP_KEEP, "When clear is set to false, canvas texture sample count must match the sample count of the pass");
+
+    if (compatible && ((other && other->samples == 1 && other->format == format) || pass->canvas.depthFormat == format)) {
+      tempDepthTexture = target->depth.texture;
+    } else {
+      tempDepthTexture = createTemporaryTexture(texture, format, false, samples);
+
+      if (!tempDepthTexture) {
+        for (uint32_t i = 0; i < 4; i++) {
+          if (tempColorTextures[i] && tempColorTextures[i] != target->color[i].texture) {
+            gpu_texture_destroy(tempColorTextures[i]);
+          }
+        }
+
+        lovrSetError("Failed to create temporary texture: %s", gpu_get_error());
+        return false;
+      }
+    }
+  }
+
+  // Release old canvas, assign new one
+
+  for (uint32_t i = 0; i < 4; i++) {
+    if (target->color[i].texture && target->color[i].texture != tempColorTextures[i]) {
+      gpu_texture_destroy(target->color[i].texture);
+      lovrFree(target->color[i].texture);
+    }
+
+    lovrRelease(pass->canvas.color[i].texture, lovrTextureDestroy);
+    lovrRelease(pass->canvas.color[i].resolve, lovrTextureDestroy);
+    lovrRetain(canvas->color[i].texture);
+    lovrRetain(canvas->color[i].resolve);
+  }
+
+  if (target->depth.texture && target->depth.texture != tempDepthTexture) {
+    gpu_texture_destroy(pass->target.depth.texture);
+    lovrFree(pass->target.depth.texture);
+  }
+
+  lovrRelease(pass->canvas.depth.texture, lovrTextureDestroy);
+  lovrRelease(pass->canvas.depth.resolve, lovrTextureDestroy);
+  lovrRetain(canvas->depth.texture);
+  lovrRetain(canvas->depth.resolve);
+
+  lovrRelease(pass->canvas.foveation, lovrTextureDestroy);
+  lovrRetain(canvas->foveation);
+
+  pass->canvas = *canvas;
+  pass->canvas.samples = samples;
+  pass->width = texture->width;
+  pass->height = texture->height;
+  pass->views = texture->layers;
+
+  // Set up gpu_canvas
+
+  target->width = texture->width;
+  target->height = texture->height;
+
+  Attachment* attachment = pass->canvas.color;
+  for (uint32_t i = 0; i < 4; i++, attachment++) {
+    if (attachment->texture) {
+      if (tempColorTextures[i]) {
+        target->color[i].texture = tempColorTextures[i];
+        target->color[i].resolve = attachment->texture->renderView;
+        target->color[i].save = GPU_SAVE_OP_DISCARD;
+      } else {
+        target->color[i].texture = attachment->texture->renderView;
+        target->color[i].resolve = attachment->resolve ? attachment->resolve->renderView : NULL;
+        target->color[i].save = attachment->resolve ? GPU_SAVE_OP_DISCARD : GPU_SAVE_OP_KEEP;
+      }
+    } else {
+      target->color[i].texture = NULL;
+      target->color[i].resolve = NULL;
+    }
+  }
+
+  if (canvas->depth.texture || canvas->depthFormat) {
+    if (tempDepthTexture) {
+      target->depth.texture = tempDepthTexture;
+      target->depth.resolve = canvas->depth.texture ? canvas->depth.texture->renderView : NULL;
+      target->depth.save = GPU_SAVE_OP_DISCARD;
+    } else {
+      target->depth.texture = canvas->depth.texture->renderView;
+      target->depth.resolve = canvas->depth.resolve ? canvas->depth.resolve->renderView : NULL;
+      target->depth.save = canvas->depth.resolve ? GPU_SAVE_OP_DISCARD : GPU_SAVE_OP_KEEP;
+      target->depth.stencilSave = target->depth.save;
+    }
   } else {
-    canvas->depth.format = depthFormat;
-    canvas->depth.automsaa = true;
+    target->depth.texture = NULL;
+    target->depth.resolve = NULL;
   }
 
-  lovrRetain(foveation);
-  canvas->foveation = foveation;
-
-  pass->gpu = getPass(canvas);
-
-  if (!pass->gpu) {
-    return lovrPassSetCanvas(pass, NULL, NULL, 0, NULL, 0);
-  }
+  target->foveation = canvas->foveation ? canvas->foveation->gpu : NULL;
 
   lovrPassReset(pass);
   return true;
 }
 
 void lovrPassGetClear(Pass* pass, LoadAction loads[4], float clears[4][4], LoadAction* depthLoad, float* depthClear) {
-  for (uint32_t i = 0; i < pass->canvas.count; i++) {
-    loads[i] = pass->canvas.color[i].load;
-    if (pass->canvas.color[i].load == LOAD_CLEAR) {
-      clears[i][0] = lovrMathLinearToGamma(pass->canvas.color[i].clear[0]);
-      clears[i][1] = lovrMathLinearToGamma(pass->canvas.color[i].clear[1]);
-      clears[i][2] = lovrMathLinearToGamma(pass->canvas.color[i].clear[2]);
-      clears[i][3] = pass->canvas.color[i].clear[3];
+  gpu_canvas* target = &pass->target;
+  for (uint32_t i = 0; i < 4 && pass->canvas.color[i].texture; i++) {
+    loads[i] = (LoadAction) target->color[i].load;
+    if (target->color[i].load == GPU_LOAD_OP_CLEAR) {
+      clears[i][0] = lovrMathLinearToGamma(target->color[i].clear[0]);
+      clears[i][1] = lovrMathLinearToGamma(target->color[i].clear[1]);
+      clears[i][2] = lovrMathLinearToGamma(target->color[i].clear[2]);
+      clears[i][3] = target->color[i].clear[3];
     }
   }
-  *depthLoad = pass->canvas.depth.load;
-  *depthClear = pass->canvas.depth.clear[0];
+  *depthLoad = (LoadAction) target->depth.load;
+  *depthClear = target->depth.clear;
 }
 
 bool lovrPassSetClear(Pass* pass, LoadAction loads[4], float clears[4][4], LoadAction depthLoad, float depthClear) {
-  bool dirty = false;
-  for (uint32_t i = 0; i < pass->canvas.count; i++) {
-    dirty |= loads[i] != pass->canvas.color[i].load;
-    pass->canvas.color[i].load = loads[i];
+  bool temporary = false;
+  gpu_canvas* target = &pass->target;
+  for (uint32_t i = 0; i < 4 && pass->canvas.color[i].texture; i++) {
+    temporary = pass->canvas.color[i].texture->renderView != target->color[i].texture;
+    lovrCheck(loads[i] != LOAD_KEEP || !temporary, "Can not set clear to false unless canvas texture sample count matches pass sample count (try setting pass sample count to 1)");
+    target->color[i].load = (gpu_load_op) loads[i];
     if (loads[i] == LOAD_CLEAR) {
-      pass->canvas.color[i].clear[0] = lovrMathGammaToLinear(clears[i][0]);
-      pass->canvas.color[i].clear[1] = lovrMathGammaToLinear(clears[i][1]);
-      pass->canvas.color[i].clear[2] = lovrMathGammaToLinear(clears[i][2]);
-      pass->canvas.color[i].clear[3] = clears[i][3];
+      target->color[i].clear[0] = lovrMathGammaToLinear(clears[i][0]);
+      target->color[i].clear[1] = lovrMathGammaToLinear(clears[i][1]);
+      target->color[i].clear[2] = lovrMathGammaToLinear(clears[i][2]);
+      target->color[i].clear[3] = clears[i][3];
     } else {
-      memset(pass->canvas.color[i].clear, 0, 4 * sizeof(float));
+      memset(target->color[i].clear, 0, 4 * sizeof(float));
     }
   }
-  dirty |= depthLoad != pass->canvas.depth.load;
-  pass->canvas.depth.load = depthLoad;
-  pass->canvas.depth.clear[0] = depthLoad == LOAD_CLEAR ? depthClear : 0.f;
-  if (dirty) return (pass->gpu = getPass(&pass->canvas)) != NULL;
+  target->depth.load = (gpu_load_op) depthLoad;
+  target->depth.stencilLoad = (gpu_load_op) depthLoad;
+  target->depth.clear = depthLoad == LOAD_CLEAR ? depthClear : 0.f;
+  temporary = pass->canvas.depth.texture && pass->canvas.depth.texture->renderView == target->depth.texture;
+  lovrCheck(depthLoad != LOAD_KEEP || !temporary, "Can not set depth clear to false unless canvas texture sample count matches pass sample count (try setting pass sample count to 1)");
   return true;
 }
 
 uint32_t lovrPassGetAttachmentCount(Pass* pass, bool* depth) {
-  if (depth) *depth = pass->canvas.depth.texture || pass->canvas.depth.format;
-  return pass->canvas.count;
+  uint32_t count = 0;
+
+  while (count < 4 && pass->canvas.color[count].texture) {
+    count++;
+  }
+
+  if (depth) *depth = pass->canvas.depth.texture || pass->canvas.depthFormat;
+  return count;
 }
 
 uint32_t lovrPassGetWidth(Pass* pass) {
-  return pass->canvas.width;
+  return pass->width;
 }
 
 uint32_t lovrPassGetHeight(Pass* pass) {
-  return pass->canvas.height;
+  return pass->height;
 }
 
 uint32_t lovrPassGetViewCount(Pass* pass) {
-  return pass->canvas.views;
+  return pass->views;
 }
 
 static Camera* getCamera(Pass* pass) {
   if (pass->flags & DIRTY_CAMERA) {
-    return pass->cameras + (pass->cameraCount - 1) * pass->canvas.views;
+    return pass->cameras + (pass->cameraCount - 1) * pass->views;
   }
 
-  uint32_t views = pass->canvas.views;
+  uint32_t views = pass->views;
   uint32_t stride = sizeof(Camera) * views;
   uint32_t count = pass->cameraCount;
   Camera* cameras = lovrPassAllocate(pass, (count + 1) * stride);
@@ -6179,26 +6360,46 @@ static Camera* getCamera(Pass* pass) {
 }
 
 bool lovrPassGetViewMatrix(Pass* pass, uint32_t index, float viewMatrix[16]) {
-  lovrCheck(index < pass->canvas.views, "Invalid view index '%d'", index + 1);
+  lovrCheck(index < pass->views, "Invalid view index '%d'", index + 1);
   mat4_init(viewMatrix, getCamera(pass)[index].viewMatrix);
   return true;
 }
 
 bool lovrPassSetViewMatrix(Pass* pass, uint32_t index, float viewMatrix[16]) {
-  lovrCheck(index < pass->canvas.views, "Invalid view index '%d'", index + 1);
+  lovrCheck(index < pass->views, "Invalid view index '%d'", index + 1);
   mat4_init(getCamera(pass)[index].viewMatrix, viewMatrix);
   return true;
 }
 
 bool lovrPassGetProjection(Pass* pass, uint32_t index, float projection[16]) {
-  lovrCheck(index < pass->canvas.views, "Invalid view index '%d'", index + 1);
+  lovrCheck(index < pass->views, "Invalid view index '%d'", index + 1);
   mat4_init(projection, getCamera(pass)[index].projection);
   return true;
 }
 
 bool lovrPassSetProjection(Pass* pass, uint32_t index, float projection[16]) {
-  lovrCheck(index < pass->canvas.views, "Invalid view index '%d'", index + 1);
+  lovrCheck(index < pass->views, "Invalid view index '%d'", index + 1);
   mat4_init(getCamera(pass)[index].projection, projection);
+  return true;
+}
+
+bool lovrPassGetViewRay(Pass* pass, uint32_t view, uint32_t x, uint32_t y, float position[3], float direction[3]) {
+  lovrCheck(view < pass->views, "Invalid view index '%d'", view + 1);
+  x = CLAMP(x, 0, pass->width);
+  y = CLAMP(y, 0, pass->height);
+  float worldFromClip[16];
+  Camera* camera = pass->cameras + (pass->cameraCount - 1) * pass->views + view;
+  mat4_invert(mat4_mul(mat4_init(worldFromClip, camera->projection), camera->viewMatrix));
+  float nx = 2.f * ((float) x / pass->width) - 1.f;
+  float ny = 2.f * ((float) y / pass->height) - 1.f;
+  float pNear[3] = { nx, ny, 0.f };
+  float pFar[3] = { nx, ny, .5f };
+  if (camera->projection[5] > 0.f) pNear[1] *= -1.f, pFar[1] *= -1.f; // Y-up
+  if (camera->projection[10] == 0.f) pNear[2] = 1.f; // Reverse Z
+  mat4_mulPoint(worldFromClip, pNear);
+  mat4_mulPoint(worldFromClip, pFar);
+  vec3_init(position, pNear);
+  vec3_normalize(vec3_sub(vec3_init(direction, pFar), pNear));
   return true;
 }
 
@@ -6266,12 +6467,12 @@ void lovrPassSetAlphaToCoverage(Pass* pass, bool enabled) {
 
 void lovrPassSetBlendMode(Pass* pass, uint32_t index, BlendMode mode, BlendAlphaMode alphaMode) {
   if (mode == BLEND_NONE) {
-    pass->pipeline->dirty |= pass->pipeline->info.blend[index].enabled;
-    memset(&pass->pipeline->info.blend[index], 0, sizeof(gpu_blend_state));
+    pass->pipeline->dirty |= pass->pipeline->info.color[index].blend.enabled;
+    memset(&pass->pipeline->info.color[index].blend, 0, sizeof(gpu_blend_state));
     return;
   }
 
-  gpu_blend_state* blend = &pass->pipeline->info.blend[index];
+  gpu_blend_state* blend = &pass->pipeline->info.color[index].blend;
 
   static const gpu_blend_state table[] = {
     [BLEND_ALPHA] = {
@@ -6319,6 +6520,25 @@ void lovrPassSetBlendMode(Pass* pass, uint32_t index, BlendMode mode, BlendAlpha
   pass->pipeline->dirty = true;
 }
 
+void lovrPassSetBlendState(Pass* pass, uint32_t index, bool enable, BlendState color, BlendState alpha) {
+  if (!enable) {
+    pass->pipeline->dirty |= pass->pipeline->info.color[index].blend.enabled;
+    memset(&pass->pipeline->info.color[index].blend, 0, sizeof(gpu_blend_state));
+  }
+
+  gpu_blend_state* blend = &pass->pipeline->info.color[index].blend;
+
+  blend->enabled = true;
+  blend->color.op = (gpu_blend_op) color.op;
+  blend->color.src = (gpu_blend_factor) color.src;
+  blend->color.dst = (gpu_blend_factor) color.dst;
+  blend->alpha.op = (gpu_blend_op) alpha.op;
+  blend->alpha.src = (gpu_blend_factor) alpha.src;
+  blend->alpha.dst = (gpu_blend_factor) alpha.dst;
+
+  pass->pipeline->dirty = true;
+}
+
 void lovrPassSetColor(Pass* pass, float color[4]) {
   pass->pipeline->color[0] = lovrMathGammaToLinear(color[0]);
   pass->pipeline->color[1] = lovrMathGammaToLinear(color[1]);
@@ -6328,8 +6548,8 @@ void lovrPassSetColor(Pass* pass, float color[4]) {
 
 void lovrPassSetColorWrite(Pass* pass, uint32_t index, bool r, bool g, bool b, bool a) {
   uint8_t mask = (r << 0) | (g << 1) | (b << 2) | (a << 3);
-  pass->pipeline->dirty |= pass->pipeline->info.colorMask[index] != mask;
-  pass->pipeline->info.colorMask[index] = mask;
+  pass->pipeline->dirty |= pass->pipeline->info.color[index].mask != mask;
+  pass->pipeline->info.color[index].mask = mask;
 }
 
 void lovrPassSetDepthTest(Pass* pass, CompareMode test) {
@@ -6406,8 +6626,8 @@ void lovrPassSetScissor(Pass* pass, uint32_t scissor[4]) {
   } else {
     s[0] = 0;
     s[1] = 0;
-    s[2] = pass->canvas.width;
-    s[3] = pass->canvas.height;
+    s[2] = pass->width;
+    s[3] = pass->height;
   }
 }
 
@@ -6504,7 +6724,7 @@ void lovrPassSetShader(Pass* pass, Shader* shader) {
 }
 
 bool lovrPassSetStencilTest(Pass* pass, CompareMode test, uint8_t value, uint8_t mask) {
-  TextureFormat depthFormat = pass->canvas.depth.texture ? pass->canvas.depth.texture->info.format : pass->canvas.depth.format;
+  TextureFormat depthFormat = pass->canvas.depth.texture ? pass->canvas.depth.texture->info.format : pass->canvas.depthFormat;
   lovrCheck(depthFormat == FORMAT_D32FS8 || depthFormat == FORMAT_D24S8, "Trying to set stencil mode, but Pass depth texture does not use a stencil format");
   bool hasReplace = false;
   hasReplace |= pass->pipeline->info.stencil.failOp == GPU_STENCIL_REPLACE;
@@ -6529,7 +6749,7 @@ bool lovrPassSetStencilTest(Pass* pass, CompareMode test, uint8_t value, uint8_t
 }
 
 bool lovrPassSetStencilWrite(Pass* pass, StencilAction actions[3], uint8_t value, uint8_t mask) {
-  TextureFormat depthFormat = pass->canvas.depth.texture ? pass->canvas.depth.texture->info.format : pass->canvas.depth.format;
+  TextureFormat depthFormat = pass->canvas.depth.texture ? pass->canvas.depth.texture->info.format : pass->canvas.depthFormat;
   lovrCheck(depthFormat == FORMAT_D32FS8 || depthFormat == FORMAT_D24S8, "Trying to set stencil mode, but Pass depth texture does not use a stencil format");
   bool hasReplace = actions[0] == STENCIL_REPLACE || actions[1] == STENCIL_REPLACE || actions[2] == STENCIL_REPLACE;
   if (hasReplace && pass->pipeline->info.stencil.test != GPU_COMPARE_NONE) {
@@ -6564,8 +6784,8 @@ void lovrPassSetViewport(Pass* pass, float viewport[6]) {
   } else {
     v[0] = 0;
     v[1] = 0;
-    v[2] = (float) pass->canvas.width;
-    v[3] = (float) pass->canvas.height;
+    v[2] = (float) pass->width;
+    v[3] = (float) pass->height;
     v[4] = 0.f;
     v[5] = 1.f;
   }
@@ -6787,7 +7007,7 @@ static void lovrPassResolvePipeline(Pass* pass, DrawInfo* info, Draw* draw, Draw
   }
 }
 
-static gpu_bundle_info* lovrPassResolveBindings(Pass* pass, Shader* shader, gpu_bundle_info* previous) {
+static gpu_binding* lovrPassResolveBindings(Pass* pass, Shader* shader, gpu_binding* previous) {
   if (shader->resourceCount == 0) {
     return NULL;
   }
@@ -6796,20 +7016,17 @@ static gpu_bundle_info* lovrPassResolveBindings(Pass* pass, Shader* shader, gpu_
     return previous;
   }
 
-  gpu_bundle_info* bundle = lovrPassAllocate(pass, sizeof(gpu_bundle_info));
-  bundle->bindings = lovrPassAllocate(pass, shader->resourceCount * sizeof(gpu_binding));
-  bundle->layout = shader->layout->gpu;
-  bundle->count = shader->resourceCount;
+  gpu_binding* bindings = lovrPassAllocate(pass, shader->resourceCount * sizeof(gpu_binding));
 
-  for (uint32_t i = 0; i < bundle->count; i++) {
-    bundle->bindings[i] = pass->bindings[shader->resources[i].binding];
-    bundle->bindings[i].type = shader->resources[i].type;
-    bundle->bindings[i].number = shader->resources[i].binding;
-    bundle->bindings[i].count = 0;
+  for (uint32_t i = 0; i < shader->resourceCount; i++) {
+    bindings[i] = pass->bindings[shader->resources[i].binding];
+    bindings[i].type = shader->resources[i].type;
+    bindings[i].number = shader->resources[i].binding;
+    bindings[i].count = 0;
   }
 
   pass->flags &= ~DIRTY_BINDINGS;
-  return bundle;
+  return bindings;
 }
 
 static bool lovrPassResolveUniforms(Pass* pass, Shader* shader, gpu_buffer** buffer, uint32_t* offset, void* previous) {
@@ -6931,7 +7148,7 @@ bool lovrPassDraw(Pass* pass, DrawInfo* info) {
   draw->baseVertex = info->baseVertex;
 
   lovrPassResolvePipeline(pass, info, draw, previous);
-  draw->bundleInfo = lovrPassResolveBindings(pass, draw->shader, previous ? previous->bundleInfo : NULL);
+  draw->bindings = lovrPassResolveBindings(pass, draw->shader, previous ? previous->bindings : NULL);
   if (!lovrPassResolveUniforms(pass, draw->shader, &draw->uniformBuffer, &draw->uniformOffset, previous)) return false;
   if (!lovrPassResolveVertices(pass, info, draw)) return false;
 
@@ -7809,8 +8026,8 @@ bool lovrPassText(Pass* pass, ColoredString* strings, uint32_t count, float* tra
     return false;
   }
 
-  size_t stack = tempPush(&state.allocator);
-  GlyphVertex* vertices = tempAlloc(&state.allocator, totalLength * 4 * sizeof(GlyphVertex));
+  size_t stack = stackPush(&thread.stack);
+  GlyphVertex* vertices = allocate(&thread.stack, totalLength * 4 * sizeof(GlyphVertex));
   uint32_t glyphCount;
   uint32_t lineCount;
 
@@ -7820,9 +8037,9 @@ bool lovrPassText(Pass* pass, ColoredString* strings, uint32_t count, float* tra
   wrap /= scale;
 
   Material* material;
-  bool flip = pass->cameraCount > 0 && pass->cameras[(pass->cameraCount - 1) * pass->canvas.views].projection[5] > 0.f;
+  bool flip = pass->cameraCount > 0 && pass->cameras[(pass->cameraCount - 1) * pass->views].projection[5] > 0.f;
   if (!lovrFontGetVertices(font, strings, count, wrap, halign, valign, vertices, &glyphCount, &lineCount, &material, flip)) {
-    tempPop(&state.allocator, stack);
+    stackPop(&thread.stack, stack);
     return false;
   }
 
@@ -7846,7 +8063,7 @@ bool lovrPassText(Pass* pass, ColoredString* strings, uint32_t count, float* tra
   };
 
   if (!lovrPassDraw(pass, &draw)) {
-    tempPop(&state.allocator, stack);
+    stackPop(&thread.stack, stack);
     return false;
   }
 
@@ -7858,7 +8075,7 @@ bool lovrPassText(Pass* pass, ColoredString* strings, uint32_t count, float* tra
     indices += COUNTOF(quad);
   }
 
-  tempPop(&state.allocator, stack);
+  stackPop(&thread.stack, stack);
   return true;
 }
 
@@ -8114,7 +8331,7 @@ bool lovrPassMeshIndirect(Pass* pass, Buffer* vertices, Buffer* indices, Buffer*
   draw->indirect.stride = stride;
 
   lovrPassResolvePipeline(pass, &info, draw, previous);
-  draw->bundleInfo = lovrPassResolveBindings(pass, shader, previous ? previous->bundleInfo : NULL);
+  draw->bindings = lovrPassResolveBindings(pass, shader, previous ? previous->bindings : NULL);
   if (!lovrPassResolveUniforms(pass, draw->shader, &draw->uniformBuffer, &draw->uniformOffset, previous)) return false;
   if (!lovrPassResolveVertices(pass, &info, draw)) return false;
 
@@ -8174,7 +8391,7 @@ bool lovrPassCompute(Pass* pass, uint32_t x, uint32_t y, uint32_t z, Buffer* ind
 
   compute->flags = 0;
   compute->shader = shader;
-  compute->bundleInfo = lovrPassResolveBindings(pass, shader, previous ? previous->bundleInfo : NULL);
+  compute->bindings = lovrPassResolveBindings(pass, shader, previous ? previous->bindings : NULL);
   if (!lovrPassResolveUniforms(pass, shader, &compute->uniformBuffer, &compute->uniformOffset, previous)) return false;
   lovrRetain(shader);
 
@@ -8200,30 +8417,33 @@ void lovrPassBarrier(Pass* pass) {
 
 // Helpers
 
-static void* tempAlloc(Allocator* allocator, size_t size) {
+static void initAllocator(Allocator* allocator) {
+  allocator->cursor = 0;
+  allocator->limit = 1 << 26;
+  allocator->memory = lovrMalloc(allocator->limit);
+}
+
+static void* allocate(Allocator* allocator, size_t size) {
   if (size == 0) {
     return NULL;
   }
 
-  while (allocator->cursor + size > allocator->length) {
-    if ((allocator->length << 1) > allocator->limit) {
-      fprintf(stderr, "Out of memory");
-      abort();
-    }
-    os_vm_commit(allocator->memory + allocator->length, allocator->length);
-    allocator->length <<= 1;
+  uint32_t cursor = ALIGN(allocator->cursor, 8);
+
+  if (cursor + size > allocator->limit) {
+    fprintf(stderr, "Out of memory");
+    abort();
   }
 
-  uint32_t cursor = ALIGN(allocator->cursor, 8);
   allocator->cursor = cursor + size;
   return allocator->memory + cursor;
 }
 
-static size_t tempPush(Allocator* allocator) {
+static size_t stackPush(Allocator* allocator) {
   return allocator->cursor;
 }
 
-static void tempPop(Allocator* allocator, size_t stack) {
+static void stackPop(Allocator* allocator, size_t stack) {
   allocator->cursor = stack;
 }
 
@@ -8231,60 +8451,65 @@ static gpu_pipeline* getPipeline(uint32_t index) {
   return (gpu_pipeline*) ((char*) state.pipelines + index * gpu_sizeof_pipeline());
 }
 
-static BufferBlock* getBlock(gpu_buffer_type type, uint32_t size) {
-  BufferBlock* block = state.bufferAllocators[type].freelist;
-
-  if (block && block->size >= size && gpu_is_complete(block->tick)) {
-    state.bufferAllocators[type].freelist = block->next;
-    block->next = NULL;
-    return block;
-  }
-
-  block = lovrMalloc(sizeof(BufferBlock) + gpu_sizeof_buffer());
-  block->handle = (gpu_buffer*) (block + 1);
-  block->size = MAX(size, 1 << 22);
-  block->next = NULL;
-  block->ref = 0;
-
-  gpu_buffer_info info = {
-    .type = type,
-    .size = block->size,
-    .pointer = &block->pointer,
-    .label = "Buffer Block"
-  };
-
-  if (!gpu_buffer_init(block->handle, &info)) {
-    lovrSetError("Failed to create GPU buffer: %s", gpu_get_error());
-    lovrFree(block);
-    return NULL;
-  }
-
-  return block;
-}
-
-static void freeBlock(BufferAllocator* allocator, BufferBlock* block) {
-  BufferBlock** list = &allocator->freelist;
-  while (*list) list = (BufferBlock**) &(*list)->next;
-  block->next = NULL;
-  *list = block;
-}
-
 static BufferView allocateBuffer(BufferAllocator* allocator, gpu_buffer_type type, uint32_t size, size_t align) {
   uint32_t cursor = (uint32_t) ((allocator->cursor + (align - 1)) / align * align);
   BufferBlock* block = allocator->current;
 
   if (!block || cursor + size > block->size) {
-    if (block && type != GPU_BUFFER_STATIC) {
-      block->tick = state.tick;
-      freeBlock(allocator, block);
+    BufferBlock** list = &allocator->freelist;
+    BufferBlock** prev = NULL;
+
+    // Search through the freelist for the smallest block that is big enough to satisfy the request.
+    // If we reach a block that the GPU is still using, we can stop looking.
+    while (*list) {
+      if (!gpu_is_complete((*list)->tick)) {
+        break;
+      } else if ((*list)->size >= size && (!prev || (*list)->size < (*prev)->size)) {
+        prev = list;
+      } else {
+        list = (BufferBlock**) &(*list)->next;
+      }
     }
 
-    if ((block = getBlock(type, size)) == NULL) {
-      return (BufferView) { 0 };
+    // If we found a usable block, remove it from the freelist, otherwise make a new block!
+    if (prev) {
+      block = *prev;
+      *prev = block->next;
+      block->next = NULL;
+    } else {
+      block = lovrMalloc(sizeof(BufferBlock) + gpu_sizeof_buffer());
+      block->handle = (gpu_buffer*) (block + 1);
+      block->size = MAX(size, 1 << 22);
+      block->next = NULL;
+      block->ref = 0;
+
+      gpu_buffer_info info = {
+        .type = type,
+        .size = block->size,
+        .pointer = &block->pointer,
+        .label = "Buffer Block"
+      };
+
+      if (!gpu_buffer_init(block->handle, &info)) {
+        lovrFree(block);
+        lovrSetError("Failed to create GPU buffer: %s", gpu_get_error());
+        return (BufferView) { 0 };
+      }
+    }
+
+    // Non-static buffers keep a chain of "current" buffers.  Current buffers periodically get
+    // recycled on to the freelist (e.g. when a new frame starts, when the pass gets reset).
+    if (type != GPU_BUFFER_STATIC) {
+      block->next = allocator->current;
     }
 
     allocator->current = block;
     cursor = 0;
+  }
+
+  // Static buffers are refcounted, and get recycled when their refcount reaches zero.
+  if (type == GPU_BUFFER_STATIC) {
+    atomic_fetch_add(&block->ref, 1);
   }
 
   allocator->cursor = cursor + size;
@@ -8300,6 +8525,35 @@ static BufferView allocateBuffer(BufferAllocator* allocator, gpu_buffer_type typ
 
 static BufferView getBuffer(gpu_buffer_type type, uint32_t size, size_t align) {
   return allocateBuffer(&state.bufferAllocators[type], type, size, align);
+}
+
+// Should only be called for static buffers
+static void releaseBlock(BufferBlock* block) {
+  BufferAllocator* allocator = &state.bufferAllocators[GPU_BUFFER_STATIC];
+  if (atomic_fetch_sub(&block->ref, 1) == 1 && block != allocator->current) {
+    block->tick = state.tick;
+    recycleBlocks(allocator, block);
+  }
+}
+
+static void recycleBlocks(BufferAllocator* allocator, BufferBlock* blocks) {
+  BufferBlock** tail = &allocator->freelist;
+  while (*tail) tail = (BufferBlock**) &(*tail)->next;
+  *tail = blocks;
+}
+
+static void destroyBuffers(BufferAllocator* allocator) {
+  for (BufferBlock* block = allocator->current, *next; block; block = next) {
+    gpu_buffer_destroy(block->handle);
+    next = block->next;
+    lovrFree(block);
+  }
+
+  for (BufferBlock* block = allocator->freelist, *next; block; block = next) {
+    gpu_buffer_destroy(block->handle);
+    next = block->next;
+    lovrFree(block);
+  }
 }
 
 static int u64cmp(const void* a, const void* b) {
@@ -8324,7 +8578,6 @@ static bool beginFrame(void) {
     state.active = true;
     memset(&state.barrier, 0, sizeof(gpu_barrier));
     memset(&state.transferBarrier, 0, sizeof(gpu_barrier));
-    state.allocator.cursor = 0;
     processReadbacks();
   }
 
@@ -8342,10 +8595,8 @@ static bool beginFrame(void) {
 // memory used by Font:getLines and Pass:text).
 static void flushTransfers(void) {
   if (state.active) {
-    size_t cursor = state.allocator.cursor;
     lovrGraphicsSubmit(NULL, 0);
     beginFrame();
-    state.allocator.cursor = cursor;
   }
 }
 
@@ -8383,53 +8634,6 @@ static void processReadbacks(void) {
   }
 }
 
-static gpu_pass* getPass(Canvas* canvas) {
-  gpu_pass_info info = { 0 };
-
-  for (uint32_t i = 0; i < canvas->count; i++) {
-    Attachment* attachment = &canvas->color[i];
-    info.color[i].format = (gpu_texture_format) attachment->texture->info.format;
-    info.color[i].srgb = attachment->texture->info.srgb;
-    info.color[i].load = (gpu_load_op) attachment->load;
-    info.color[i].save = attachment->resolve || attachment->automsaa ? GPU_SAVE_OP_DISCARD : GPU_SAVE_OP_KEEP;
-    info.color[i].resolve = attachment->resolve || attachment->automsaa;
-  }
-
-  Attachment* depth = &canvas->depth;
-
-  if (depth->texture || depth->format) {
-    info.depth.format = (gpu_texture_format) (depth->texture ? depth->texture->info.format : depth->format);
-    info.depth.load = (gpu_load_op) depth->load;
-    info.depth.save = depth->resolve || depth->automsaa ? GPU_SAVE_OP_DISCARD : GPU_SAVE_OP_KEEP;
-    info.depth.stencilLoad = info.depth.load;
-    info.depth.stencilSave = info.depth.save;
-    info.depth.resolve = depth->resolve || (depth->texture && depth->automsaa);
-  }
-
-  info.colorCount = canvas->count;
-  info.samples = canvas->samples;
-  info.views = canvas->views;
-  info.foveated = !!canvas->foveation;
-  info.surface = canvas->count > 0 && canvas->color[0].texture == state.window;
-
-  uint64_t hash = hash64(&info, sizeof(info));
-  uint64_t value = map_get(&state.passLookup, hash);
-
-  if (value == MAP_NIL) {
-    gpu_pass* pass = lovrMalloc(gpu_sizeof_pass());
-
-    if (!gpu_pass_init(pass, &info)) {
-      lovrFree(pass);
-      return NULL;
-    }
-
-    map_set(&state.passLookup, hash, (uint64_t) (uintptr_t) pass);
-    return pass;
-  }
-
-  return (gpu_pass*) (uintptr_t) value;
-}
-
 static Layout* getLayout(gpu_slot* slots, uint32_t count) {
   uint64_t hash = hash64(slots, count * sizeof(gpu_slot));
 
@@ -8449,8 +8653,15 @@ static Layout* getLayout(gpu_slot* slots, uint32_t count) {
     .count = count
   };
 
+  if (mtx_init(&layout->lock, mtx_plain)) {
+    lovrSetError("Failed to create layout mutex");
+    lovrFree(layout);
+    return NULL;
+  }
+
   if (!gpu_layout_init(layout->gpu, &info)) {
     lovrSetError("Failed to create GPU layout: %s", gpu_get_error());
+    mtx_destroy(&layout->lock);
     lovrFree(layout);
     return NULL;
   }
@@ -8461,106 +8672,107 @@ static Layout* getLayout(gpu_slot* slots, uint32_t count) {
 }
 
 static gpu_bundle* getBundle(Layout* layout, gpu_binding* bindings, uint32_t count) {
-  BundlePool* pool = layout->head;
-  const uint32_t POOL_SIZE = 512;
-  gpu_bundle* bundle = NULL;
+  gpu_bundle* bundle;
 
-  if (pool) {
-    if (pool->cursor < POOL_SIZE) {
-      bundle = (gpu_bundle*) ((char*) pool->bundles + gpu_sizeof_bundle() * pool->cursor++);
-      goto write;
-    }
-
-    // If the pool's closed, move it to the end of the list and try to use the next pool
-    layout->tail->next = pool;
-    layout->tail = pool;
-    layout->head = pool->next;
-    pool->next = NULL;
-    pool->tick = state.tick;
-    pool = layout->head;
-
-    if (pool && gpu_is_complete(pool->tick)) {
-      bundle = pool->bundles;
-      pool->cursor = 1;
-      goto write;
-    }
-  }
-
-  // If no pool was available, make a new one
-  pool = lovrMalloc(sizeof(BundlePool));
-  gpu_bundle_pool* gpu = lovrMalloc(gpu_sizeof_bundle_pool());
-  gpu_bundle* bundles = lovrMalloc(POOL_SIZE * gpu_sizeof_bundle());
-  pool->gpu = gpu;
-  pool->bundles = bundles;
-  pool->cursor = 1;
-  pool->next = layout->head;
-
-  gpu_bundle_pool_info info = {
-    .bundles = pool->bundles,
-    .layout = layout->gpu,
-    .count = POOL_SIZE
-  };
-
-  if (!gpu_bundle_pool_init(pool->gpu, &info)) {
-    lovrSetError("Failed to allocate descriptor set: %s", gpu_get_error());
-    lovrFree(bundles);
-    lovrFree(gpu);
-    lovrFree(pool);
+  if (!getBundles(layout, &bundle, 1)) {
     return NULL;
   }
 
-  layout->head = pool;
-  if (!layout->tail) layout->tail = pool;
-  bundle = pool->bundles;
-write:
-  gpu_bundle_write(&bundle, &(gpu_bundle_info) { layout->gpu, bindings, count }, 1);
+  gpu_bundle_info info = {
+    .layout = layout->gpu,
+    .bindings = bindings,
+    .count = count
+  };
+
+  gpu_bundle_write(&bundle, &info, 1);
   return bundle;
 }
 
-static gpu_texture* getScratchTexture(gpu_stream* stream, Canvas* canvas, Attachment* attachment) {
-  bool srgb = attachment->texture ? attachment->texture->info.srgb : false;
-  uint16_t key[] = { canvas->width, canvas->height, canvas->views, attachment->format, srgb, canvas->samples };
-  uint32_t hash = (uint32_t) hash64(key, sizeof(key));
+static bool getBundles(Layout* layout, gpu_bundle** bundles, uint32_t count) {
+  mtx_lock(&layout->lock);
 
-  // Find a matching scratch texture that hasn't been used this frame
-  for (uint32_t i = 0; i < state.scratchTextures.length; i++) {
-    if (state.scratchTextures.data[i].hash == hash && state.scratchTextures.data[i].tick != state.tick) {
-      return state.scratchTextures.data[i].texture;
+  BundlePool* pool = layout->head;
+  const uint32_t POOL_SIZE = 512;
+
+  while (count > 0) {
+    if (pool && pool->cursor >= POOL_SIZE) {
+      if (gpu_is_complete(pool->tick)) {
+        pool->cursor = 0;
+      } else {
+        pool = NULL;
+      }
+    }
+
+    if (!pool) {
+      pool = lovrMalloc(sizeof(BundlePool));
+      gpu_bundle_pool* gpu = lovrMalloc(gpu_sizeof_bundle_pool());
+      gpu_bundle* bundles = lovrMalloc(POOL_SIZE * gpu_sizeof_bundle());
+      pool->gpu = gpu;
+      pool->bundles = bundles;
+      pool->cursor = 0;
+      pool->next = layout->head;
+
+      gpu_bundle_pool_info info = {
+        .bundles = pool->bundles,
+        .layout = layout->gpu,
+        .count = POOL_SIZE
+      };
+
+      if (!gpu_bundle_pool_init(pool->gpu, &info)) {
+        lovrSetError("Failed to allocate descriptor pool: %s", gpu_get_error());
+        lovrFree(bundles);
+        lovrFree(gpu);
+        lovrFree(pool);
+        mtx_unlock(&layout->lock);
+        return false;
+      }
+
+      layout->head = pool;
+      if (!layout->tail) layout->tail = pool;
+    }
+
+    uint32_t available = POOL_SIZE - pool->cursor;
+    uint32_t chunk = MIN(count, available);
+
+    for (uint32_t i = 0; i < chunk; i++, pool->cursor++, count--) {
+      *bundles++ = (gpu_bundle*) ((char*) pool->bundles + gpu_sizeof_bundle() * pool->cursor);
+    }
+
+    if (pool->cursor >= POOL_SIZE) {
+      layout->tail->next = pool;
+      layout->tail = pool;
+      layout->head = pool->next;
+      pool->next = NULL;
+      pool->tick = state.tick;
+      pool = layout->head;
     }
   }
 
-  // Find something to evict
-  ScratchTexture* scratch = NULL;
-  for (uint32_t i = 0; i < state.scratchTextures.length; i++) {
-    if (state.tick - state.scratchTextures.data[i].tick > 16) {
-      scratch = &state.scratchTextures.data[i];
-      break;
-    }
-  }
+  mtx_unlock(&layout->lock);
 
-  if (scratch) {
-    gpu_texture_destroy(scratch->texture);
-  } else {
-    arr_expand(&state.scratchTextures, 1);
-    scratch = &state.scratchTextures.data[state.scratchTextures.length++];
-    scratch->texture = lovrCalloc(gpu_sizeof_texture());
-  }
+  return true;
+}
 
+static gpu_texture* createTemporaryTexture(const TextureInfo* size, TextureFormat format, bool srgb, uint32_t samples) {
   gpu_texture_info info = {
     .type = GPU_TEXTURE_ARRAY,
-    .format = (gpu_texture_format) attachment->format,
+    .format = (gpu_texture_format) format,
     .srgb = srgb,
-    .size = { canvas->width, canvas->height, canvas->views },
+    .size = { size->width, size->height, size->layers },
     .mipmaps = 1,
-    .samples = canvas->samples,
+    .samples = samples,
     .usage = GPU_TEXTURE_RENDER,
-    .upload.stream = stream
+    .upload.stream = state.stream
   };
 
-  gpu_texture_init(scratch->texture, &info);
-  scratch->hash = hash;
-  scratch->tick = state.tick;
-  return scratch->texture;
+  gpu_texture* texture = lovrMalloc(gpu_sizeof_texture());
+
+  if (!gpu_texture_init(texture, &info)) {
+    lovrFree(texture);
+    return NULL;
+  }
+
+  return texture;
 }
 
 static bool isDepthFormat(TextureFormat format) {

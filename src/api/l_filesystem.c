@@ -4,6 +4,12 @@
 #include "util.h"
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 StringEntry lovrFileAction[] = {
   [FILE_CREATE] = ENTRY("create"),
@@ -462,7 +468,9 @@ static int luaLoader(lua_State* L) {
     luax_check(L, n > 0, "Tried to require a filename that was too long (%s)", module);
   }
 
-  return 0;
+  lua_pushfstring(L, "\n\tno module '%s' in virtual filesystem", module);
+
+  return 1;
 }
 
 #ifdef __ANDROID__
@@ -473,9 +481,12 @@ extern void* os_get_java_vm();
 #endif
 
 static int libLoaderCommon(lua_State* L, bool allInOneFlag) {
-#ifdef _WIN32
+#if defined(_WIN32)
   const char* extension = ".dll";
   const char sep = '\\';
+#elif defined(__APPLE__)
+  const char* extension = ".dylib";
+  const char sep = '/';
 #else
   const char* extension = ".so";
   const char sep = '/';
@@ -505,6 +516,7 @@ static int libLoaderCommon(lua_State* L, bool allInOneFlag) {
   memcpy(p, subpath, subpathLength);
   length += subpathLength;
   p += subpathLength;
+  char* leaf = p;
 #else
   size_t length = lovrFilesystemGetExecutablePath(path, sizeof(path));
   if (length == 0) {
@@ -512,7 +524,8 @@ static int libLoaderCommon(lua_State* L, bool allInOneFlag) {
   }
 
   char* slash = strrchr(path, sep);
-  char* p = slash ? slash + 1 : path;
+  char* leaf = slash ? slash + 1 : path;
+  char* p = leaf;
   length = p - path;
 #endif
 
@@ -531,6 +544,28 @@ static int libLoaderCommon(lua_State* L, bool allInOneFlag) {
 
   *p = '\0';
 
+  // Open the library
+#ifdef _WIN32
+  HMODULE plugin = LoadLibrary(path);
+#else
+  void* plugin = dlopen(path, RTLD_NOW);
+#endif
+
+#ifdef __APPLE__
+  // Try .so if .dylib didn't work
+  if (!plugin) {
+    p[-5] = 's';
+    p[-4] = 'o';
+    p[-3] = '\0';
+    plugin = dlopen(path, RTLD_NOW);
+  }
+#endif
+
+  if (!plugin) {
+    lua_pushfstring(L, "\n\tno plugin '%s'", leaf);
+    return 1;
+  }
+
 #ifdef __ANDROID__
   // This is very appropriately cursed, but on Android (before API level 31) there is no way for a
   // plugin to retrieve a pointer to the Java VM.  Normally there is a JNI_OnLoad callback that Java
@@ -540,38 +575,48 @@ static int libLoaderCommon(lua_State* L, bool allInOneFlag) {
   // no way to get the path to the APK without JNI.  Also it's not possible to load liblovr.so with
   // RTLD_GLOBAL which would expose symbols via RTLD_DEFAULT.  The chosen solution is to emulate
   // JNI_OnLoad for LÖVR plugins (before they're loaded by Lua so they can use JNI in luaopen_*).
-  void* plugin = dlopen(path, RTLD_LAZY);
-  if (plugin) {
-    fn_JNI_OnLoad* JNI_OnLoad = (fn_JNI_OnLoad*) dlsym(plugin, "JNI_OnLoad");
-    if (JNI_OnLoad) {
-      JNI_OnLoad(os_get_java_vm(), NULL);
-    } else {
-      dlclose(plugin);
-      plugin = NULL;
-    }
-  }
+  fn_JNI_OnLoad* JNI_OnLoad = (fn_JNI_OnLoad*) dlsym(plugin, "JNI_OnLoad");
+  if (JNI_OnLoad) JNI_OnLoad(os_get_java_vm(), NULL);
 #endif
 
-  lua_getglobal(L, "package");
-  lua_getfield(L, -1, "loadlib");
-  lua_pushlstring(L, path, length);
+  // Synthesize the full luaopen_<name> symbol name
+  char fullsymbol[64];
+  const char* prefix = "luaopen_";
+  size_t prefixLength = strlen(prefix);
+  size_t symbolLength = strlen(symbol);
 
-  // Synthesize luaopen_<module> symbol
-  luaL_Buffer buffer;
-  luaL_buffinit(L, &buffer);
-  luaL_addstring(&buffer, "luaopen_");
+  if (prefixLength + symbolLength >= sizeof(fullsymbol)) {
+    lua_pushfstring(L, "\n\tno plugin '%s' (name too long)", leaf);
+    return 1;
+  }
+
+  memcpy(fullsymbol, prefix, prefixLength);
+
+  size_t cursor = prefixLength;
   for (const char* s = symbol; *s; s++) {
-    luaL_addchar(&buffer, *s == '.' ? '_' : *s);
+    fullsymbol[cursor++] = *s == '.' ? '_' : *s;
   }
-  luaL_pushresult(&buffer);
 
-  lua_call(L, 2, 1);
+  fullsymbol[cursor] = '\0';
 
-#ifdef __ANDROID__
-  if (plugin) {
-    dlclose(plugin);
-  }
+  // Try to load the luaopen_<module> function from the library
+#ifdef _WIN32
+  lua_CFunction entrypoint = (lua_CFunction) GetProcAddress(plugin, fullsymbol);
+#else
+  lua_CFunction entrypoint = (lua_CFunction) dlsym(plugin, fullsymbol);
 #endif
+
+  if (!entrypoint) {
+#ifdef _WIN32
+    FreeLibrary(plugin);
+#else
+    dlclose(plugin);
+#endif
+    lua_pushfstring(L, "\n\tno plugin '%s' (no symbol '%s')", leaf, symbol);
+    return 1;
+  }
+
+  lua_pushcfunction(L, entrypoint);
   return 1;
 }
 

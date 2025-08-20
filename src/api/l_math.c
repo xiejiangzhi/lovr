@@ -284,7 +284,6 @@ static int l_lovrMathDrain(lua_State* L) {
   return 0;
 }
 
-
 static const luaL_Reg lovrMath[] = {
   { "newCurve", l_lovrMathNewCurve },
   { "newRandomGenerator", l_lovrMathNewRandomGenerator },

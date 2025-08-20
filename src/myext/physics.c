@@ -1,6 +1,4 @@
 
-#include "joltc_ext/ext.h"
-
 TriangleShape* lovrTriangleShapeCreate(float vertices[9]) {
   TriangleShape* shape = lovrCalloc(sizeof(TriangleShape));
   shape->ref = 1;
