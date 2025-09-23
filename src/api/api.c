@@ -630,3 +630,4 @@ int luax_readmesh(lua_State* L, int index, float** vertices, uint32_t* vertexCou
 }
 
 #include "myext/api.c"
+#include "myext/capi.c"
