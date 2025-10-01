@@ -2278,7 +2278,6 @@ ConvexShape* lovrConvexShapeCreate(float points[], uint32_t count, float scale[3
   JPH_ConvexHullShapeSettings* settings = JPH_ConvexHullShapeSettings_Create((const JPH_Vec3*) points, count, .05f);
   JPH_Shape* hull = (JPH_Shape*) JPH_ConvexHullShapeSettings_CreateShape(settings);
   JPH_ShapeSettings_Destroy((JPH_ShapeSettings*) settings);
-  // float scale3[3] = { scale, scale, scale * 2 };
   shape->handle = (JPH_Shape*) JPH_ScaledShape_Create(hull, vec3_toJolt(scale));
   JPH_Shape_SetUserData(shape->handle, (uint64_t) (uintptr_t) shape);
   quat_identity(shape->rotation);
@@ -2290,7 +2289,6 @@ ConvexShape* lovrConvexShapeClone(ConvexShape* parent, float scale[3]) {
   ConvexShape* shape = lovrCalloc(sizeof(ConvexShape));
   shape->ref = 1;
   shape->type = SHAPE_CONVEX;
-  // float scale3[3] = { scale, scale, scale * 2 };
   const JPH_Shape* hull = JPH_DecoratedShape_GetInnerShape((const JPH_DecoratedShape*) parent->handle);
   shape->handle = (JPH_Shape*) JPH_ScaledShape_Create(hull, scale);
   JPH_Shape_SetUserData(shape->handle, (uint64_t) (uintptr_t) shape);
