@@ -6,7 +6,7 @@
 
 #pragma once
 
-#define MAX_THREAD_ARGUMENTS 4
+#define MAX_THREAD_ARGUMENTS 8
 
 struct Blob;
 struct Variant;
