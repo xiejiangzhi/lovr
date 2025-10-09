@@ -2315,7 +2315,7 @@ bool lovrCylinderShapeSetLength(CylinderShape* shape, float length) {
   return lovrShapeReplace(shape, makeCylinder(radius, length));
 }
 
-ConvexShape* lovrConvexShapeCreate(float points[], uint32_t count, float scale) {
+ConvexShape* lovrConvexShapeCreate(float points[], uint32_t count, float scale[3]) {
   ConvexShape* shape = lovrCalloc(sizeof(ConvexShape));
   shape->ref = 1;
   shape->type = SHAPE_CONVEX;
@@ -2323,21 +2323,19 @@ ConvexShape* lovrConvexShapeCreate(float points[], uint32_t count, float scale) 
   JPH_Shape* hull = (JPH_Shape*) JPH_ConvexHullShapeSettings_CreateShape(settings);
   lovrCheck(hull, "Invalid convex hull!");
   JPH_ShapeSettings_Destroy((JPH_ShapeSettings*) settings);
-  float scale3[3] = { scale, scale, scale };
-  shape->handle = (JPH_Shape*) JPH_ScaledShape_Create(hull, vec3_toJolt(scale3));
+  shape->handle = (JPH_Shape*) JPH_ScaledShape_Create(hull, vec3_toJolt(scale));
   JPH_Shape_SetUserData(shape->handle, (uint64_t) (uintptr_t) shape);
   quat_identity(shape->rotation);
   JPH_Shape_Destroy(hull);
   return shape;
 }
 
-ConvexShape* lovrConvexShapeClone(ConvexShape* parent, float scale) {
+ConvexShape* lovrConvexShapeClone(ConvexShape* parent, float scale[3]) {
   ConvexShape* shape = lovrCalloc(sizeof(ConvexShape));
   shape->ref = 1;
   shape->type = SHAPE_CONVEX;
-  float scale3[3] = { scale, scale, scale };
   const JPH_Shape* hull = JPH_DecoratedShape_GetInnerShape((const JPH_DecoratedShape*) parent->handle);
-  shape->handle = (JPH_Shape*) JPH_ScaledShape_Create(hull, vec3_toJolt(scale3));
+  shape->handle = (JPH_Shape*) JPH_ScaledShape_Create(hull, scale);
   JPH_Shape_SetUserData(shape->handle, (uint64_t) (uintptr_t) shape);
   quat_identity(shape->rotation);
   return shape;
@@ -2433,10 +2431,12 @@ bool lovrConvexShapeGetVertices(ConvexShape* shape, float* vertices, uint32_t ma
   return true;
 }
 
-float lovrConvexShapeGetScale(ConvexShape* shape) {
+void lovrConvexShapeGetScale(ConvexShape* shape, float scale[3]) {
   JPH_Vec3 v;
   JPH_ScaledShape_GetScale((JPH_ScaledShape*) shape->handle, &v);
-  return v.x;
+  scale[0] = v.x;
+  scale[1] = v.y;
+  scale[2] = v.z;
 }
 
 MeshShape* lovrMeshShapeCreate(uint32_t vertexCount, float* vertices, uint32_t indexCount, uint32_t* indices, float scale) {
