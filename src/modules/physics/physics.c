@@ -1907,37 +1907,35 @@ void lovrContactGetPoint(Contact* contact, uint32_t index, float point[3]) {
 }
 
 float lovrContactGetFriction(Contact* contact) {
-  return JPH_ContactSettings_GetFriction(contact->settings);
+  return contact->settings->combinedFriction;
 }
 
 void lovrContactSetFriction(Contact* contact, float friction) {
-  JPH_ContactSettings_SetFriction(contact->settings, MAX(friction, 0.f));
+  contact->settings->combinedFriction = MAX(friction, 0.f);
 }
 
 float lovrContactGetRestitution(Contact* contact) {
-  return JPH_ContactSettings_GetRestitution(contact->settings);
+  return contact->settings->combinedRestitution;
 }
 
 void lovrContactSetRestitution(Contact* contact, float restitution) {
-  JPH_ContactSettings_SetRestitution(contact->settings, MAX(restitution, 0.f));
+  contact->settings->combinedRestitution = MAX(restitution, 0.f);
 }
 
 bool lovrContactIsEnabled(Contact* contact) {
-  return JPH_ContactSettings_GetIsSensor(contact->settings);
+  return contact->settings->isSensor;
 }
 
 void lovrContactSetEnabled(Contact* contact, bool enable) {
-  JPH_ContactSettings_SetIsSensor(contact->settings, !enable);
+  contact->settings->isSensor = !enable;
 }
 
 void lovrContactGetSurfaceVelocity(Contact* contact, float velocity[3]) {
-  JPH_Vec3 v;
-  JPH_ContactSettings_GetRelativeLinearSurfaceVelocity(contact->settings, &v);
-  vec3_fromJolt(velocity, &v);
+  vec3_fromJolt(velocity, &contact->settings->relativeLinearSurfaceVelocity);
 }
 
 void lovrContactSetSurfaceVelocity(Contact* contact, float velocity[3]) {
-  JPH_ContactSettings_SetRelativeLinearSurfaceVelocity(contact->settings, vec3_toJolt(velocity));
+  contact->settings->relativeLinearSurfaceVelocity = *vec3_toJolt(velocity);
 }
 
 // Shapes
@@ -2323,6 +2321,7 @@ ConvexShape* lovrConvexShapeCreate(float points[], uint32_t count, float scale) 
   shape->type = SHAPE_CONVEX;
   JPH_ConvexHullShapeSettings* settings = JPH_ConvexHullShapeSettings_Create((const JPH_Vec3*) points, count, .05f);
   JPH_Shape* hull = (JPH_Shape*) JPH_ConvexHullShapeSettings_CreateShape(settings);
+  lovrCheck(hull, "Invalid convex hull!");
   JPH_ShapeSettings_Destroy((JPH_ShapeSettings*) settings);
   float scale3[3] = { scale, scale, scale };
   shape->handle = (JPH_Shape*) JPH_ScaledShape_Create(hull, vec3_toJolt(scale3));
@@ -2477,6 +2476,7 @@ MeshShape* lovrMeshShapeClone(MeshShape* parent, float scale) {
   float scale3[3] = { scale, scale, scale };
   const JPH_Shape* mesh = JPH_DecoratedShape_GetInnerShape((const JPH_DecoratedShape*) parent->handle);
   shape->handle = (JPH_Shape*) JPH_ScaledShape_Create(mesh, vec3_toJolt(scale3));
+  lovrCheck(shape->handle, "Invalid mesh data!");
   JPH_Shape_SetUserData(shape->handle, (uint64_t) (uintptr_t) shape);
   quat_identity(shape->rotation);
   return shape;
@@ -2508,6 +2508,7 @@ TerrainShape* lovrTerrainShapeCreate(float* vertices, uint32_t n, float scaleXZ,
 
   JPH_HeightFieldShapeSettings* shape_settings = JPH_HeightFieldShapeSettings_Create(vertices, &offset, &scale, n);
   shape->handle = (JPH_Shape*) JPH_HeightFieldShapeSettings_CreateShape(shape_settings);
+  lovrCheck(shape->handle, "Invalid terrain data!");
   JPH_Shape_SetUserData(shape->handle, (uint64_t) (uintptr_t) shape);
   JPH_ShapeSettings_Destroy((JPH_ShapeSettings*) shape_settings);
   return shape;
