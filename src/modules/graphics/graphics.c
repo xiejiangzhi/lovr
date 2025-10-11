@@ -2473,7 +2473,7 @@ Texture* lovrTextureCreate(const TextureInfo* info) {
       ((info->usage & TEXTURE_FOVEATION) ? GPU_TEXTURE_FOVEATION : 0),
     .srgb = srgb,
     .handle = info->handle,
-    .label = texture->info.label,
+    .label = info->label,
     .upload = {
       .stream = state.stream,
       .buffer = view.buffer,
