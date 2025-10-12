@@ -120,8 +120,8 @@ JPH_SoftBodySharedSettings* JPH_SoftBodySharedSettings_CreateByVertices(
   JPH_SoftBodyBendType bend_type,
   const float vertex_compliance[3] // Compliance, ShearCompliance, BendCompliance
 ) {
-	// Create settings
-	JPH::SoftBodySharedSettings *settings = new JPH::SoftBodySharedSettings;
+  // Create settings
+  JPH::SoftBodySharedSettings *settings = new JPH::SoftBodySharedSettings;
 
   if (vertices && vs_total > 0) {
     for (size_t i = 0; i < vs_total; ++i) {
@@ -167,28 +167,28 @@ JPH_SoftBodySharedSettings* JPH_SoftBodySharedSettings_CreateByVertices(
       v.mVertex[3] = volumes[idx + 3];
       settings->mVolumeConstraints.push_back(v);
     }
-	  settings->CalculateVolumeConstraintVolumes();
+    settings->CalculateVolumeConstraintVolumes();
   }
 
   const SoftBodySharedSettings::VertexAttributes &inVertexAttributes = {
     vertex_compliance[0], vertex_compliance[1], vertex_compliance[2]
   };
 
-	// Create constraints
-	settings->CreateConstraints(&inVertexAttributes, 1, (JPH::SoftBodySharedSettings::EBendType)bend_type);
+  // Create constraints
+  settings->CreateConstraints(&inVertexAttributes, 1, (JPH::SoftBodySharedSettings::EBendType)bend_type);
 
-	// Optimize the settings
-	settings->Optimize();
+  // Optimize the settings
+  settings->Optimize();
 
   settings->mVertexRadius = vertex_radius;
 
-	return ToSoftBodySharedSettings(settings);
+  return ToSoftBodySharedSettings(settings);
 }
 
 void JPH_SoftBodySharedSettings_Destroy(JPH_SoftBodySharedSettings* settings) {
   if (settings) {
-		delete AsSoftBodySharedSettings(settings);
-	}
+    delete AsSoftBodySharedSettings(settings);
+  }
 }
 
 JPH_SoftBodyCreationSettings* JPH_SoftBodyCreationSettings_CreateBySharedSettings(
@@ -214,7 +214,7 @@ uint32_t JPH_SoftBody_GetNumVertices(const JPH_Body* body) {
 uint32_t JPH_SoftBody_GetNumFaces(const JPH_Body* body) {
   if (!AsBody(body)->IsSoftBody()) { return 0; }
   JPH::SoftBodyMotionProperties *p = (JPH::SoftBodyMotionProperties*)(AsBody(body)->GetMotionProperties());
-	return p->GetFaces().size();
+  return p->GetFaces().size();
 }
 
 uint32_t JPH_SoftBody_GetVertices(const JPH_Body* body, float* outVertices) {

@@ -141,8 +141,9 @@ Collider* lovrColliderCreateSoftBody(
   collider->body = JPH_BodyInterface_CreateSoftBody(world->bodyInterfaceLocked, settings);
   collider->id = JPH_Body_GetID(collider->body);
   JPH_Body_SetUserData(collider->body, (uint64_t) (uintptr_t) collider);
-  // JPH_SoftBodySharedSettings_Destroy(shared_settings);
   JPH_SoftBodyCreationSettings_Destroy(settings);
+  // TODO free, cannot delete SoftBodySharedSetting before remove collider
+  // JPH_SoftBodySharedSettings_Destroy(shared_settings);
 
   JPH_BodyInterface_AddBody(world->bodyInterfaceLocked, collider->id, JPH_Activation_Activate);
 
