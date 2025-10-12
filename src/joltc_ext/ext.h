@@ -17,7 +17,7 @@ typedef enum JPH_SoftBodyBendType {
 
 JPH_CAPI JPH_SoftBodySharedSettings* JPH_SoftBodySharedSettings_CreateByVertices(
   const float* vertices, size_t vs_total, // vertices = vs_total * 3
-  const float* vertices_inv_mass,
+  const float* vertices_inv_mass, float vertex_radius,
   const uint32_t* faces, size_t faces_total, // faces: vs index list, 3 points per face
 
   // constraints

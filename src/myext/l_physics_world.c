@@ -80,6 +80,9 @@ static int l_lovrWorldNewSoftBodyCollider(lua_State* L) {
   }
   index++;
 
+  float vertex_radius = lua_tonumber(L, index);
+  index++;
+
   uint32_t faces_total = luax_len(L, index);
   uint32_t *faces = faces_total > 0 ? lovrMalloc(sizeof(uint32_t) * faces_total) : NULL;
   luax_readobjarr_i(L, index, faces_total, faces, "Faces");
@@ -107,7 +110,7 @@ static int l_lovrWorldNewSoftBodyCollider(lua_State* L) {
 
   Collider* collider = lovrColliderCreateSoftBody(
     world, pos, rot,
-    vs, vs_total, vs_mass,
+    vs, vs_total, vs_mass, vertex_radius,
     faces, faces_total / 3,
     edges, edges_total / 2,
     volumes, volumes_total / 4,

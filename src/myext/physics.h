@@ -17,7 +17,8 @@ Collider* lovrColliderCreateSoftBody(
   World* world,
   float position[3], float rot[4],
   const float* vertices, size_t vs_total, // vertices = vs_total * 3
-  const float* vertices_mass, // vs_total
+  const float* vertices_mass, // vs_total,
+  float vertex_radius,
   const uint32_t* faces, size_t faces_total, // faces: vs index list, 3 points per face
 
   const uint32_t* edges, size_t edges_total, // edges: vs index list, 2 points per edge

@@ -102,7 +102,7 @@ bool lovrConvexShapeGetVertices(ConvexShape* shape, float* vertices, uint32_t ma
 Collider* lovrColliderCreateSoftBody(
   World* world, float position[3], float rot[4],
   const float* vertices, size_t vs_total, // vertices = vs_total * 3
-  const float* vertices_inv_mass,
+  const float* vertices_inv_mass, float vertex_radius,
   const uint32_t* faces, size_t faces_total, // faces: vs index list, 3 points per face
 
   const uint32_t* edges, size_t edges_total, // edges: vs index list, 2 points per edge
@@ -125,7 +125,7 @@ Collider* lovrColliderCreateSoftBody(
   JPH_ObjectLayer objectLayer = world->tagCount + 1; // Untagged/shapeless layer
 
   JPH_SoftBodySharedSettings* shared_settings = JPH_SoftBodySharedSettings_CreateByVertices(
-    vertices, vs_total, vertices_inv_mass,
+    vertices, vs_total, vertices_inv_mass, vertex_radius,
     faces, faces_total,
     edges, edges_total,
     volumes, volumes_total,
