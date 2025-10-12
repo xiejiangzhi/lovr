@@ -1,4 +1,5 @@
 void luax_readobjarr(lua_State* L, int index, int n, float* out_arr, const char* name) {
+  if (n <= 0) return;
   lovrAssert(luax_len(L, index) >= n, "length of %s table must >= %i", name, n);
 
   if (index < 0) index = lua_gettop(L) + index + 1;

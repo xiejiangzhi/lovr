@@ -1,3 +1,4 @@
+#include <joltc_ext/ext.h>
 
 uint32_t lovrWorldGetActiveColliderCount(World* world) {
   return JPH_PhysicsSystem_GetNumActiveBodies(world->system, JPH_BodyType_Rigid);
@@ -96,4 +97,85 @@ bool lovrConvexShapeGetVertices(ConvexShape* shape, float* vertices, uint32_t ma
   }
   lovrFree(fvs);
   return true;
+}
+
+Collider* lovrColliderCreateSoftBody(
+  World* world, float position[3], float rot[4],
+  const float* vertices, size_t vs_total, // vertices = vs_total * 3
+  const float* vertices_inv_mass,
+  const float* faces, size_t faces_total, // faces: vs index list, 3 points per face
+
+  const float* edges, size_t edges_total, // edges: vs index list, 2 points per edge
+  const float* volumes, size_t volumes_total, // edges: vs index list, 4 points per volums
+
+  uint32_t bend_type,
+  const float vertex_compliance[3] // Compliance, ShearCompliance, BendCompliance
+) {
+  uint32_t count = JPH_PhysicsSystem_GetNumBodies(world->system);
+  uint32_t limit = JPH_PhysicsSystem_GetMaxBodies(world->system);
+  lovrCheck(count < limit, "Too many colliders!");
+
+  Collider* collider = lovrCalloc(sizeof(Collider));
+  collider->ref = 1;
+  collider->world = world;
+  collider->tag = 0xff;
+  collider->enabled = true;
+  collider->automaticMass = true;
+
+  JPH_ObjectLayer objectLayer = world->tagCount + 1; // Untagged/shapeless layer
+
+  JPH_SoftBodySharedSettings* shared_settings = JPH_SoftBodySharedSettings_CreateByVertices(
+    vertices, vs_total, vertices_inv_mass,
+    faces, faces_total,
+    edges, edges_total,
+    volumes, volumes_total,
+    bend_type, vertex_compliance
+  );
+
+  JPH_RVec3* p = vec3_toJolt(position);
+  JPH_Quat* q = quat_toJolt(rot);
+  JPH_SoftBodyCreationSettings* settings = JPH_SoftBodyCreationSettings_CreateBySharedSettings(
+    shared_settings, p, q, objectLayer
+  );
+
+  collider->body = JPH_BodyInterface_CreateSoftBody(world->bodyInterfaceLocked, settings);
+  collider->id = JPH_Body_GetID(collider->body);
+  JPH_Body_SetUserData(collider->body, (uint64_t) (uintptr_t) collider);
+  // JPH_SoftBodySharedSettings_Destroy(shared_settings);
+  JPH_SoftBodyCreationSettings_Destroy(settings);
+
+  JPH_BodyInterface_AddBody(world->bodyInterfaceLocked, collider->id, JPH_Activation_Activate);
+
+  vec3_init(collider->lastPosition, position);
+  quat_init(collider->lastOrientation, rot);
+
+  // lovrColliderSetLinearDamping(collider, world->defaultLinearDamping);
+  // lovrColliderSetAngularDamping(collider, world->defaultAngularDamping);
+  // lovrColliderSetSleepingAllowed(collider, world->defaultIsSleepingAllowed);
+
+  if (world->colliders) {
+    collider->next = world->colliders;
+    collider->next->prev = collider;
+  }
+
+  world->colliders = collider;
+
+  lovrRetain(collider);
+  return collider;
+}
+
+size_t lovrColliderGetSoftBodyVerticesCount(Collider* collider) {
+  return JPH_SoftBody_GetNumVertices(collider->body);
+}
+
+void lovrColliderGetSoftBodyVertices(Collider* collider, float* outVertices) {
+  JPH_SoftBody_GetVertices(collider->body, outVertices);
+}
+
+size_t lovrColliderGetSoftBodyFacesCount(Collider* collider) {
+  return JPH_SoftBody_GetNumFaces(collider->body);
+}
+
+void lovrColliderGetSoftBodyFaces(Collider* collider, float* outFaces) {
+  JPH_SoftBody_GetFaces(collider->body, outFaces);
 }

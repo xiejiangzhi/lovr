@@ -674,6 +674,7 @@ const luaL_Reg lovrWorld[] = {
   { "newMeshCollider", l_lovrWorldNewMeshCollider },
   { "newTerrainCollider", l_lovrWorldNewTerrainCollider },
   { "newPlaneCollider", l_lovrWorldNewPlaneCollider },
+  { "newSoftBodyCollider", l_lovrWorldNewSoftBodyCollider },
 
   { "destroy", l_lovrWorldDestroy },
   { "isDestroyed", l_lovrWorldIsDestroyed },

@@ -330,6 +330,8 @@ static const luaL_Reg lovrPhysics[] = {
   { "newDistanceJoint", l_lovrPhysicsNewDistanceJoint },
   { "newHingeJoint", l_lovrPhysicsNewHingeJoint },
   { "newSliderJoint", l_lovrPhysicsNewSliderJoint },
+
+  { "getSoftBodyMeshData", l_lovrPhysicsGetSoftBodyMeshData },
   { NULL, NULL }
 };
 
