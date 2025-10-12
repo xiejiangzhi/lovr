@@ -109,14 +109,14 @@ DEF_MAP_DECL(Body, JPH_Body)
 JPH_SoftBodySharedSettings* JPH_SoftBodySharedSettings_CreateByVertices(
   const float* vertices, size_t vs_total, // vertices = vs_total * 3
   const float* vertices_inv_mass, // vs_total
-  const float* faces, size_t faces_total, // faces: vs index list, 3 points per face
+  const uint32_t* faces, size_t faces_total, // faces: vs index list, 3 points per face
 
   // constraints
-  const float* edges, size_t edges_total, // edges: vs index list, 2 points per edge
-  const float* volumes, size_t volumes_total, // edges: vs index list, 2 points per edge
+  const uint32_t* edges, size_t edges_total, // edges: vs index list, 2 points per edge
+  const uint32_t* volumes, size_t volumes_total, // edges: vs index list, 2 points per edge
 
   JPH_SoftBodyBendType bend_type,
-  float vertex_compliance[3] // Compliance, ShearCompliance, BendCompliance
+  const float vertex_compliance[3] // Compliance, ShearCompliance, BendCompliance
 ) {
 	// Create settings
 	JPH::SoftBodySharedSettings *settings = new JPH::SoftBodySharedSettings;
@@ -188,7 +188,8 @@ void JPH_SoftBodySharedSettings_Destroy(JPH_SoftBodySharedSettings* settings) {
 }
 
 JPH_SoftBodyCreationSettings* JPH_SoftBodyCreationSettings_CreateBySharedSettings(
-  JPH_SoftBodySharedSettings* shared_settings, const JPH_RVec3* pos, JPH_Quat* rot, uint32_t numObjectLayers
+  JPH_SoftBodySharedSettings* shared_settings, const JPH_RVec3* pos, JPH_Quat* rot,
+  JPH_ObjectLayer numObjectLayers, float pressure, int32_t update_position
 ) {
   JPH::SoftBodyCreationSettings *creation_settings = new JPH::SoftBodyCreationSettings(
     AsSoftBodySharedSettings(shared_settings),
@@ -196,19 +197,25 @@ JPH_SoftBodyCreationSettings* JPH_SoftBodyCreationSettings_CreateBySharedSetting
     rot != nullptr ? JPH::Quat(rot->x, rot->y, rot->z, rot->w) : JPH::Quat::sIdentity(),
     numObjectLayers
   );
+  creation_settings->mPressure = pressure;
+  creation_settings->mUpdatePosition = update_position ? true : false;
   return ToSoftBodyCreationSettings(creation_settings);
 }
 
 uint32_t JPH_SoftBody_GetNumVertices(const JPH_Body* body) {
+  if (!AsBody(body)->IsSoftBody()) { return 0; }
   JPH::SoftBodyMotionProperties *p = (JPH::SoftBodyMotionProperties*)(AsBody(body)->GetMotionProperties());
   return p->GetVertices().size();
 }
 uint32_t JPH_SoftBody_GetNumFaces(const JPH_Body* body) {
+  if (!AsBody(body)->IsSoftBody()) { return 0; }
   JPH::SoftBodyMotionProperties *p = (JPH::SoftBodyMotionProperties*)(AsBody(body)->GetMotionProperties());
 	return p->GetFaces().size();
 }
 
 uint32_t JPH_SoftBody_GetVertices(const JPH_Body* body, float* outVertices) {
+  if (!AsBody(body)->IsSoftBody()) { return 0; }
+
   JPH::SoftBodyMotionProperties *p = (JPH::SoftBodyMotionProperties*)(AsBody(body)->GetMotionProperties());
   auto &vertices = p->GetVertices();
   for (size_t i = 0; i < vertices.size(); i++) {
@@ -220,14 +227,15 @@ uint32_t JPH_SoftBody_GetVertices(const JPH_Body* body, float* outVertices) {
   return vertices.size();
 }
 
-uint32_t JPH_SoftBody_GetFaces(const JPH_Body* body, float* outFaces) {
+uint32_t JPH_SoftBody_GetFaces(const JPH_Body* body, uint32_t* outFaces) {
+  if (!AsBody(body)->IsSoftBody()) { return 0; }
   JPH::SoftBodyMotionProperties *p = (JPH::SoftBodyMotionProperties*)(AsBody(body)->GetMotionProperties());
   auto &faces = p->GetFaces();
   for (size_t i = 0; i < faces.size(); i++) {
     size_t fi = i * 3;
     outFaces[fi] = faces[i].mVertex[0];
-    outFaces[fi] = faces[i].mVertex[1];
-    outFaces[fi] = faces[i].mVertex[2];
+    outFaces[fi + 1] = faces[i].mVertex[1];
+    outFaces[fi + 2] = faces[i].mVertex[2];
   }
   return faces.size();
 }

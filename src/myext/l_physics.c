@@ -15,7 +15,7 @@ static int l_lovrPhysicsGetSoftBodyMeshData(lua_State* L) {
   size_t fs_total = lovrColliderGetSoftBodyFacesCount(collider);
 
   float* vertices = lovrMalloc(sizeof(float) * vs_total * 3);
-  float* faces = lovrMalloc(sizeof(float) * fs_total * 3);
+  uint32_t* faces = lovrMalloc(sizeof(uint32_t) * fs_total * 3);
 
   lovrColliderGetSoftBodyVertices(collider, vertices);
   Blob* vs_blob = lovrBlobCreate(vertices, sizeof(float) * vs_total * 3, "Vertices");
@@ -23,7 +23,7 @@ static int l_lovrPhysicsGetSoftBodyMeshData(lua_State* L) {
   lovrRelease(vs_blob, lovrBlobDestroy);
 
   lovrColliderGetSoftBodyFaces(collider, faces);
-  Blob* fs_blob = lovrBlobCreate(faces, sizeof(float) * fs_total * 3, "Faces");
+  Blob* fs_blob = lovrBlobCreate(faces, sizeof(uint32_t) * fs_total * 3, "Faces");
   luax_pushtype(L, Blob, fs_blob);
   lovrRelease(fs_blob, lovrBlobDestroy);
 

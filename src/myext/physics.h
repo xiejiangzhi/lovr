@@ -18,10 +18,10 @@ Collider* lovrColliderCreateSoftBody(
   float position[3], float rot[4],
   const float* vertices, size_t vs_total, // vertices = vs_total * 3
   const float* vertices_mass, // vs_total
-  const float* faces, size_t faces_total, // faces: vs index list, 3 points per face
+  const uint32_t* faces, size_t faces_total, // faces: vs index list, 3 points per face
 
-  const float* edges, size_t edges_total, // edges: vs index list, 2 points per edge
-  const float* volumes, size_t volumes_total, // edges: vs index list, 4 points per volums
+  const uint32_t* edges, size_t edges_total, // edges: vs index list, 2 points per edge
+  const uint32_t* volumes, size_t volumes_total, // edges: vs index list, 4 points per volums
 
   uint32_t bend_type,
   const float vertex_compliance[3] // Compliance, ShearCompliance, BendCompliance
@@ -31,7 +31,7 @@ size_t lovrColliderGetSoftBodyVerticesCount(Collider* collider);
 size_t lovrColliderGetSoftBodyFacesCount(Collider* collider);
 
 void lovrColliderGetSoftBodyVertices(Collider* collider, float* outVertices);
-void lovrColliderGetSoftBodyFaces(Collider* collider, float* outFaces);
+void lovrColliderGetSoftBodyFaces(Collider* collider, uint32_t* outFaces);
 
 // struct Character;
 // struct CharacterVirtual;

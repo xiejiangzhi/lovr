@@ -33,11 +33,23 @@ static int l_lovrWorldNewPlaneCollider(lua_State* L) {
   return 1;
 }
 
-static void format_index(lua_State* L, float* indices, size_t len, size_t max_i) {
+static void format_index(lua_State* L, uint32_t* indices, size_t len, size_t max_i) {
   for (size_t i = 0; i < len; i++) {
     lovrAssert(indices[i] >= 1 && indices[i] <= max_i, "Invalid index %i", indices[i]);
     indices[i] = indices[i] - 1;
   }
+}
+
+static void luax_readobjarr_i(lua_State* L, int index, int n, uint32_t* out_arr, const char* name) {
+  if (n <= 0) return;
+  lovrAssert(luax_len(L, index) >= n, "length of %s table must >= %i", name, n);
+
+  if (index < 0) index = lua_gettop(L) + index + 1;
+  for (int i = 0; i < n; i++) {
+    lua_rawgeti(L, index, i + 1);
+    out_arr[i] = lua_tointeger(L, -1);
+  }
+  lua_pop(L, n);
 }
 
 // vs: { 1,2,3, 4,5,6, ... }
@@ -55,7 +67,8 @@ static int l_lovrWorldNewSoftBodyCollider(lua_State* L) {
   luax_readobjarr(L, index, vs_val_total, vs, "Vertices");
   index++;
 
-  float *vs_mass = lovrMalloc(sizeof(float) * vs_total);
+   float *vs_mass = lovrMalloc(sizeof(float) * vs_total);
+  uint32_t mass_total = luax_len(L, index);
   luax_readobjarr(L, index, vs_total, vs_mass, "VerticesMass");
   // to inv_mass
   for (uint32_t i = 0; i < vs_total; i++) {
@@ -68,20 +81,20 @@ static int l_lovrWorldNewSoftBodyCollider(lua_State* L) {
   index++;
 
   uint32_t faces_total = luax_len(L, index);
-  float *faces = faces_total > 0 ? lovrMalloc(sizeof(float) * faces_total) : NULL;
-  luax_readobjarr(L, index, faces_total, faces, "Faces");
+  uint32_t *faces = faces_total > 0 ? lovrMalloc(sizeof(uint32_t) * faces_total) : NULL;
+  luax_readobjarr_i(L, index, faces_total, faces, "Faces");
   format_index(L, faces, faces_total, vs_total);
   index++;
 
   uint32_t edges_total = luax_len(L, index);
-  float *edges = edges_total > 0 ? lovrMalloc(sizeof(float) * edges_total) : NULL;
-  luax_readobjarr(L, index, edges_total, edges, "Edges");
+  uint32_t *edges = edges_total > 0 ? lovrMalloc(sizeof(uint32_t) * edges_total) : NULL;
+  luax_readobjarr_i(L, index, edges_total, edges, "Edges");
   format_index(L, edges, edges_total, vs_total);
   index++;
 
   uint32_t volumes_total = luax_len(L, index);
-  float *volumes = volumes_total > 0 ? lovrMalloc(sizeof(float) * volumes_total) : NULL;
-  luax_readobjarr(L, index, volumes_total, volumes, "Volumes");
+  uint32_t *volumes = volumes_total > 0 ? lovrMalloc(sizeof(uint32_t) * volumes_total) : NULL;
+  luax_readobjarr_i(L, index, volumes_total, volumes, "Volumes");
   format_index(L, volumes, volumes_total, vs_total);
   index++;
 
@@ -90,7 +103,7 @@ static int l_lovrWorldNewSoftBodyCollider(lua_State* L) {
   lovrAssert(bend_type >= 0 && bend_type <= 2, "Invalid blend_type %i, 0 <= bend_type <= 2", bend_type);
 
   float vertex_compliance[3];
-  luax_readobjarr(L, index, vertex_compliance, 3, "VertexCompliance");
+  luax_readobjarr(L, index, 3, vertex_compliance, "VertexCompliance");
 
   Collider* collider = lovrColliderCreateSoftBody(
     world, pos, rot,
