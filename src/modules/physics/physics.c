@@ -1334,10 +1334,11 @@ bool lovrColliderSetTag(Collider* collider, const char* tag) {
     JPH_BodyInterface_SetMotionType(interface, collider->id, JPH_MotionType_Static, JPH_Activation_DontActivate);
   }
 
+  // soft body no lovr shapes
   // Colliders without shapes go on a special object layer that doesn't collide with anything
-  if (!collider->shapes) {
-    return true;
-  }
+  // if (!collider->shapes) {
+  //   return true;
+  // }
 
   JPH_ObjectLayer objectLayer = collider->tag == 0xff ? collider->world->tagCount : collider->tag;
   JPH_BodyInterface_SetObjectLayer(interface, collider->id, objectLayer);
