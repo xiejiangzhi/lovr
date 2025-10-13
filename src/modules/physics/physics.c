@@ -132,6 +132,8 @@ static uint8_t findTag(World* world, const char* name, size_t length) {
 static Shape* subshapeToShape(Collider* collider, JPH_SubShapeID id, uint32_t* triangle) {
   Shape* shape = collider->shapes;
 
+  if (!shape) return;
+
   // If the Collider has more than one shape, we have to figure out which shape it is
   if (shape->next) {
     const JPH_Shape* parent = JPH_BodyInterface_GetShape(getBodyInterface(collider, READ), collider->id);

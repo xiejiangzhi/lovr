@@ -8,6 +8,11 @@
 #include <string.h>
 
 void luax_pushshape(lua_State* L, Shape* shape) {
+  if (!shape) {
+    lua_pushnil(L);
+    return;
+  }
+
   switch (lovrShapeGetType(shape)) {
     case SHAPE_BOX: luax_pushtype(L, BoxShape, shape); break;
     case SHAPE_SPHERE: luax_pushtype(L, SphereShape, shape); break;
