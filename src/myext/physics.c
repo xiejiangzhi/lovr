@@ -135,7 +135,7 @@ Collider* lovrColliderCreateSoftBody(
   JPH_RVec3* p = vec3_toJolt(position);
   JPH_Quat* q = quat_toJolt(rot);
   JPH_SoftBodyCreationSettings* settings = JPH_SoftBodyCreationSettings_CreateBySharedSettings(
-    shared_settings, p, q, objectLayer, 0.f, 0
+    shared_settings, p, q, objectLayer, 0.f, 1
   );
 
   collider->shapes = NULL;
