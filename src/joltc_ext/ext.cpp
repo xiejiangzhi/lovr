@@ -122,6 +122,7 @@ JPH_SoftBodySharedSettings* JPH_SoftBodySharedSettings_CreateByVertices(
 ) {
   // Create settings
   JPH::SoftBodySharedSettings *settings = new JPH::SoftBodySharedSettings;
+  settings->AddRef();
 
   if (vertices && vs_total > 0) {
     for (size_t i = 0; i < vs_total; ++i) {
@@ -187,7 +188,7 @@ JPH_SoftBodySharedSettings* JPH_SoftBodySharedSettings_CreateByVertices(
 
 void JPH_SoftBodySharedSettings_Destroy(JPH_SoftBodySharedSettings* settings) {
   if (settings) {
-    delete AsSoftBodySharedSettings(settings);
+    AsSoftBodySharedSettings(settings)->Release();
   }
 }
 
