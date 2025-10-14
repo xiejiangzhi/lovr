@@ -145,6 +145,23 @@ JPH_SoftBodySharedSettings* JPH_SoftBodySharedSettings_CreateByVertices(
       f.mVertex[2] = faces[idx + 2];
       settings->AddFace(f);
     }
+
+    JPH::SoftBodySharedSettings::ELRAType lra_type;
+    int lra_v = (int)vertex_compliance[3];
+    if (lra_v == 1) {
+      lra_type = JPH::SoftBodySharedSettings::ELRAType::EuclideanDistance;
+    } else if (lra_v == 2) {
+      lra_type = JPH::SoftBodySharedSettings::ELRAType::GeodesicDistance;
+    } else {
+      lra_type = JPH::SoftBodySharedSettings::ELRAType::None;
+    }
+    const SoftBodySharedSettings::VertexAttributes &inVertexAttributes = {
+      vertex_compliance[0], vertex_compliance[1], vertex_compliance[2],
+      lra_type, vertex_compliance[4],
+    };
+
+    // Create edge constraints from faces, will clear mEdgeConstraints
+    settings->CreateConstraints(&inVertexAttributes, 1, (JPH::SoftBodySharedSettings::EBendType)bend_type);
   }
 
   if (edges && edges_total > 0) {
@@ -171,28 +188,8 @@ JPH_SoftBodySharedSettings* JPH_SoftBodySharedSettings_CreateByVertices(
     settings->CalculateVolumeConstraintVolumes();
   }
 
-  JPH::SoftBodySharedSettings::ELRAType lra_type;
-  int lra_v = (int)vertex_compliance[3];
-  if (lra_v == 1) {
-    lra_type = JPH::SoftBodySharedSettings::ELRAType::EuclideanDistance;
-  } else if (lra_v == 2) {
-    lra_type = JPH::SoftBodySharedSettings::ELRAType::GeodesicDistance;
-  } else {
-    lra_type = JPH::SoftBodySharedSettings::ELRAType::None;
-  }
-  const SoftBodySharedSettings::VertexAttributes &inVertexAttributes = {
-    vertex_compliance[0], vertex_compliance[1], vertex_compliance[2],
-    lra_type, vertex_compliance[4],
-  };
-
-  // Create constraints
-  settings->CreateConstraints(&inVertexAttributes, 1, (JPH::SoftBodySharedSettings::EBendType)bend_type);
-
-  // Optimize the settings
-  settings->Optimize();
-
   settings->mVertexRadius = vertex_radius;
-
+  settings->Optimize();
   return ToSoftBodySharedSettings(settings);
 }
 
