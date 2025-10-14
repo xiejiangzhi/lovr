@@ -136,6 +136,20 @@ JPH_SoftBodySharedSettings* JPH_SoftBodySharedSettings_CreateByVertices(
     return NULL;
   }
 
+  JPH::SoftBodySharedSettings::ELRAType lra_type;
+  int lra_v = (int)vertex_compliance[3];
+  if (lra_v == 1) {
+    lra_type = JPH::SoftBodySharedSettings::ELRAType::EuclideanDistance;
+  } else if (lra_v == 2) {
+    lra_type = JPH::SoftBodySharedSettings::ELRAType::GeodesicDistance;
+  } else {
+    lra_type = JPH::SoftBodySharedSettings::ELRAType::None;
+  }
+  const SoftBodySharedSettings::VertexAttributes &inVertexAttributes = {
+    vertex_compliance[0], vertex_compliance[1], vertex_compliance[2],
+    lra_type, vertex_compliance[4],
+  };
+
   if (faces && faces_total > 0) {
     for (size_t i = 0; i < faces_total; ++i) {
       JPH::SoftBodySharedSettings::Face f;
@@ -145,20 +159,6 @@ JPH_SoftBodySharedSettings* JPH_SoftBodySharedSettings_CreateByVertices(
       f.mVertex[2] = faces[idx + 2];
       settings->AddFace(f);
     }
-
-    JPH::SoftBodySharedSettings::ELRAType lra_type;
-    int lra_v = (int)vertex_compliance[3];
-    if (lra_v == 1) {
-      lra_type = JPH::SoftBodySharedSettings::ELRAType::EuclideanDistance;
-    } else if (lra_v == 2) {
-      lra_type = JPH::SoftBodySharedSettings::ELRAType::GeodesicDistance;
-    } else {
-      lra_type = JPH::SoftBodySharedSettings::ELRAType::None;
-    }
-    const SoftBodySharedSettings::VertexAttributes &inVertexAttributes = {
-      vertex_compliance[0], vertex_compliance[1], vertex_compliance[2],
-      lra_type, vertex_compliance[4],
-    };
 
     // Create edge constraints from faces, will clear mEdgeConstraints
     settings->CreateConstraints(&inVertexAttributes, 1, (JPH::SoftBodySharedSettings::EBendType)bend_type);
@@ -170,6 +170,7 @@ JPH_SoftBodySharedSettings* JPH_SoftBodySharedSettings_CreateByVertices(
       size_t idx = i * 2;
       e.mVertex[0] = edges[idx];
       e.mVertex[1] = edges[idx + 1];
+      e.mCompliance = inVertexAttributes.mCompliance;
       settings->mEdgeConstraints.push_back(e);
     }
     settings->CalculateEdgeLengths();
