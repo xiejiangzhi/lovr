@@ -35,14 +35,14 @@ static int l_lovrWorldNewPlaneCollider(lua_State* L) {
 
 static void format_index(lua_State* L, uint32_t* indices, size_t len, size_t max_i) {
   for (size_t i = 0; i < len; i++) {
-    lovrAssert(indices[i] >= 1 && indices[i] <= max_i, "Invalid index %i", indices[i]);
+    luax_check(L, indices[i] >= 1 && indices[i] <= max_i, "Invalid index %i", indices[i]);
     indices[i] = indices[i] - 1;
   }
 }
 
 static void luax_readobjarr_i(lua_State* L, int index, int n, uint32_t* out_arr, const char* name) {
   if (n <= 0) return;
-  lovrAssert(luax_len(L, index) >= n, "length of %s table must >= %i", name, n);
+  luax_check(L, luax_len(L, index) >= n, "length of %s table must >= %i", name, n);
 
   if (index < 0) index = lua_gettop(L) + index + 1;
   for (int i = 0; i < n; i++) {
@@ -53,8 +53,8 @@ static void luax_readobjarr_i(lua_State* L, int index, int n, uint32_t* out_arr,
 }
 
 // vs: { 1,2,3, 4,5,6, ... }
-// faces: { 123, 4,5,6, ... }
-// NewSoftBodyCollider(vs, faces, edges, volums, bend_type, vertex_compliances{ 1, 2, 3 })
+// faces: { 1,2,3, 4,5,6, ... }
+// NewSoftBodyCollider(vs, faces, edges, volums, bend_type, vertex_attrs{ 1e-3, 1e-3, 1e-3, 0, 1 })
 static int l_lovrWorldNewSoftBodyCollider(lua_State* L) {
   World* world = luax_checkworld(L, 1);
   float pos[3], rot[4];
@@ -103,10 +103,13 @@ static int l_lovrWorldNewSoftBodyCollider(lua_State* L) {
 
   uint32_t bend_type = lua_tointeger(L, index);
   index++;
-  lovrAssert(bend_type >= 0 && bend_type <= 2, "Invalid blend_type %i, 0 <= bend_type <= 2", bend_type);
+  luax_check(L, bend_type >= 0 && bend_type <= 2, "Invalid blend_type %i, 0 <= bend_type <= 2", bend_type);
 
-  float vertex_compliance[3];
-  luax_readobjarr(L, index, 3, vertex_compliance, "VertexCompliance");
+  float vertex_attrs[5];
+  luax_readobjarr(L, index, 5, vertex_attrs, "VertexAttrs");
+  index++;
+
+  bool update_position = lua_toboolean(L, index);
 
   Collider* collider = lovrColliderCreateSoftBody(
     world, pos, rot,
@@ -114,7 +117,7 @@ static int l_lovrWorldNewSoftBodyCollider(lua_State* L) {
     faces, faces_total / 3,
     edges, edges_total / 2,
     volumes, volumes_total / 4,
-    bend_type, vertex_compliance
+    bend_type, vertex_attrs, update_position
   );
 
   lovrFree(vs);

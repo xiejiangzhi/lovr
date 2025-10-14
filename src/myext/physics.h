@@ -25,7 +25,8 @@ Collider* lovrColliderCreateSoftBody(
   const uint32_t* volumes, size_t volumes_total, // edges: vs index list, 4 points per volums
 
   uint32_t bend_type,
-  const float vertex_compliance[3] // Compliance, ShearCompliance, BendCompliance
+  const float vertex_compliance[5], // Compliance, ShearCompliance, BendCompliance
+  bool update_position
 );
 
 size_t lovrColliderGetSoftBodyVerticesCount(Collider* collider);

@@ -22,10 +22,10 @@ JPH_CAPI JPH_SoftBodySharedSettings* JPH_SoftBodySharedSettings_CreateByVertices
 
   // constraints
   const uint32_t* edges, size_t edges_total, // edges: vs index list, 2 points per edge
-  const uint32_t* volumes, size_t volumes_total, // edges: vs index list, 4 points per volums
+  const uint32_t* volumes, size_t volumes_total, // volumes: vs index list, 4 points per volums
 
   JPH_SoftBodyBendType bend_type,
-  const float vertex_compliance[3] // Compliance, ShearCompliance, BendCompliance
+  const float vertex_compliance[5] // Compliance, ShearCompliance, BendCompliance, LRAType, LRAMaxDistMul
 );
 
 JPH_CAPI void JPH_SoftBodySharedSettings_Destroy(JPH_SoftBodySharedSettings* settings);
@@ -35,7 +35,7 @@ JPH_CAPI void JPH_SoftBodySharedSettings_Destroy(JPH_SoftBodySharedSettings* set
 JPH_CAPI JPH_SoftBodyCreationSettings* JPH_SoftBodyCreationSettings_CreateBySharedSettings(
   JPH_SoftBodySharedSettings* shared_settings, const JPH_RVec3* pos, JPH_Quat* rot,
   JPH_ObjectLayer numObjectLayers,
-  float pressure, int32_t update_position
+  float pressure, bool update_position
 );
 
 JPH_CAPI uint32_t JPH_SoftBody_GetNumVertices(const JPH_Body* body);

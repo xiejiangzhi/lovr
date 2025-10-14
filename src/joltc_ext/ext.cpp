@@ -115,10 +115,10 @@ JPH_SoftBodySharedSettings* JPH_SoftBodySharedSettings_CreateByVertices(
 
   // constraints
   const uint32_t* edges, size_t edges_total, // edges: vs index list, 2 points per edge
-  const uint32_t* volumes, size_t volumes_total, // edges: vs index list, 2 points per edge
+  const uint32_t* volumes, size_t volumes_total, // volumes: vs index list, 4 points per volums
 
   JPH_SoftBodyBendType bend_type,
-  const float vertex_compliance[3] // Compliance, ShearCompliance, BendCompliance
+  const float vertex_compliance[5] // Compliance, ShearCompliance, BendCompliance, LRAType, LRAMaxDistMul
 ) {
   // Create settings
   JPH::SoftBodySharedSettings *settings = new JPH::SoftBodySharedSettings;
@@ -171,8 +171,18 @@ JPH_SoftBodySharedSettings* JPH_SoftBodySharedSettings_CreateByVertices(
     settings->CalculateVolumeConstraintVolumes();
   }
 
+  JPH::SoftBodySharedSettings::ELRAType lra_type;
+  int lra_v = (int)vertex_compliance[3];
+  if (lra_v == 1) {
+    lra_type = JPH::SoftBodySharedSettings::ELRAType::EuclideanDistance;
+  } else if (lra_v == 2) {
+    lra_type = JPH::SoftBodySharedSettings::ELRAType::GeodesicDistance;
+  } else {
+    lra_type = JPH::SoftBodySharedSettings::ELRAType::None;
+  }
   const SoftBodySharedSettings::VertexAttributes &inVertexAttributes = {
-    vertex_compliance[0], vertex_compliance[1], vertex_compliance[2]
+    vertex_compliance[0], vertex_compliance[1], vertex_compliance[2],
+    lra_type, vertex_compliance[4],
   };
 
   // Create constraints
@@ -194,7 +204,7 @@ void JPH_SoftBodySharedSettings_Destroy(JPH_SoftBodySharedSettings* settings) {
 
 JPH_SoftBodyCreationSettings* JPH_SoftBodyCreationSettings_CreateBySharedSettings(
   JPH_SoftBodySharedSettings* shared_settings, const JPH_RVec3* pos, JPH_Quat* rot,
-  JPH_ObjectLayer numObjectLayers, float pressure, int32_t update_position
+  JPH_ObjectLayer numObjectLayers, float pressure, bool update_position
 ) {
   JPH::SoftBodyCreationSettings *creation_settings = new JPH::SoftBodyCreationSettings(
     AsSoftBodySharedSettings(shared_settings),
@@ -203,7 +213,7 @@ JPH_SoftBodyCreationSettings* JPH_SoftBodyCreationSettings_CreateBySharedSetting
     numObjectLayers
   );
   creation_settings->mPressure = pressure;
-  creation_settings->mUpdatePosition = update_position ? true : false;
+  creation_settings->mUpdatePosition = update_position;
   return ToSoftBodyCreationSettings(creation_settings);
 }
 

@@ -109,7 +109,8 @@ Collider* lovrColliderCreateSoftBody(
   const uint32_t* volumes, size_t volumes_total, // edges: vs index list, 4 points per volums
 
   uint32_t bend_type,
-  const float vertex_compliance[3] // Compliance, ShearCompliance, BendCompliance
+  const float vertex_attrs[5], // Compliance, ShearCompliance, BendCompliance, LRAType(0,1,2), LRAMaxDistMul
+  bool update_position
 ) {
   uint32_t count = JPH_PhysicsSystem_GetNumBodies(world->system);
   uint32_t limit = JPH_PhysicsSystem_GetMaxBodies(world->system);
@@ -129,13 +130,13 @@ Collider* lovrColliderCreateSoftBody(
     faces, faces_total,
     edges, edges_total,
     volumes, volumes_total,
-    bend_type, vertex_compliance
+    bend_type, vertex_attrs
   );
 
   JPH_RVec3* p = vec3_toJolt(position);
   JPH_Quat* q = quat_toJolt(rot);
   JPH_SoftBodyCreationSettings* settings = JPH_SoftBodyCreationSettings_CreateBySharedSettings(
-    shared_settings, p, q, objectLayer, 0.f, 1
+    shared_settings, p, q, objectLayer, 0.f, update_position ? 1 : 0
   );
 
   collider->shapes = NULL;
